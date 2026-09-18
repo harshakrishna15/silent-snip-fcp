@@ -1,0 +1,455 @@
+// !$*UTF8*$!
+{
+	"classes" = {
+	};
+	"objectVersion" = "56";
+	"archiveVersion" = "1";
+	"objects" = {
+        "C10000000000000000000001" = { "isa" = "PBXFileReference"; "path" = "AudioPlugin/Extension/CutdownReviewConnection.m"; "lastKnownFileType" = "sourcecode.c.objc"; "sourceTree" = "<group>"; };
+        "C10000000000000000000002" = { "isa" = "PBXFileReference"; "path" = "AudioPlugin/Extension/CutdownReviewConnection.h"; "lastKnownFileType" = "sourcecode.c.h"; "sourceTree" = "<group>"; };
+        "C10000000000000000000003" = { "isa" = "PBXBuildFile"; "fileRef" = "C10000000000000000000001"; };
+
+		"000000000000000000000006" = {
+			"path" = "CutdownAudio.app";
+			"isa" = "PBXFileReference";
+			"includeInIndex" = "0";
+			"explicitFileType" = "wrapper.application";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"00000000000000000000001E" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "000000000000000000000012";
+		};
+		"000000000000000000000019" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"000000000000000000000017",
+                "C10000000000000000000003",
+				"000000000000000000000018",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"000000000000000000000013" = {
+			"path" = "System/Library/Frameworks/AVFoundation.framework";
+			"isa" = "PBXFileReference";
+			"name" = "AVFoundation.framework";
+			"lastKnownFileType" = "wrapper.framework";
+			"sourceTree" = "SDKROOT";
+		};
+		"00000000000000000000002B" = {
+			"isa" = "XCConfigurationList";
+			"defaultConfigurationIsVisible" = "0";
+			"defaultConfigurationName" = "Debug";
+			"buildConfigurations" = (
+				"000000000000000000000029",
+				"00000000000000000000002A",
+			);
+		};
+		"00000000000000000000000A" = {
+			"path" = "AudioPlugin/Extension/CutdownAudioUnit.mm";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.cpp.objcpp";
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000005" = {
+			"buildConfigurationList" = "000000000000000000000031";
+			"productReference" = "000000000000000000000007";
+			"productType" = "com.apple.product-type.app-extension";
+			"productName" = "CutdownAudioExtension";
+			"isa" = "PBXNativeTarget";
+			"buildPhases" = (
+				"000000000000000000000019",
+				"000000000000000000000021",
+				"000000000000000000000023",
+			);
+			"dependencies" = (
+			);
+			"name" = "CutdownAudioExtension";
+			"buildRules" = (
+			);
+		};
+		"00000000000000000000001D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "000000000000000000000011";
+		};
+		"000000000000000000000033" = {
+			"isa" = "PBXGroup";
+			"name" = "Plugin";
+			"children" = (
+				"000000000000000000000008",
+				"00000000000000000000000C",
+				"00000000000000000000000E",
+				"000000000000000000000009",
+				"000000000000000000000034",
+                "C10000000000000000000001",
+                "C10000000000000000000002",
+				"00000000000000000000000A",
+				"00000000000000000000000B",
+				"00000000000000000000000D",
+			);
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000018" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "00000000000000000000000A";
+		};
+		"000000000000000000000012" = {
+			"path" = "System/Library/Frameworks/AudioToolbox.framework";
+			"isa" = "PBXFileReference";
+			"name" = "AudioToolbox.framework";
+			"lastKnownFileType" = "wrapper.framework";
+			"sourceTree" = "SDKROOT";
+		};
+		"00000000000000000000002A" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"COPY_PHASE_STRIP" = "NO";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";
+				"CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF" = "YES";
+				"DEVELOPMENT_TEAM" = "";
+				"ONLY_ACTIVE_ARCH" = "NO";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"GCC_C_LANGUAGE_STANDARD" = "gnu17";
+				"CODE_SIGN_IDENTITY" = "-";
+				"GCC_ENABLE_OBJC_EXCEPTIONS" = "YES";
+				"MACOSX_DEPLOYMENT_TARGET" = "14.0";
+				"CLANG_CXX_LANGUAGE_STANDARD" = "c++20";
+				"ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
+				"GCC_OPTIMIZATION_LEVEL" = "s";
+				"ARCHS" = "arm64";
+				"CODE_SIGN_STYLE" = "Manual";
+				"SDKROOT" = "macosx";
+				"ENABLE_HARDENED_RUNTIME" = "NO";
+				"CLANG_ENABLE_OBJC_ARC" = "YES";
+				"CLANG_CXX_LIBRARY" = "libc++";
+			};
+			"name" = "Release";
+		};
+		"000000000000000000000025" = {
+			"buildActionMask" = "2147483647";
+			"dstSubfolderSpec" = "13";
+			"isa" = "PBXCopyFilesBuildPhase";
+			"runOnlyForDeploymentPostprocessing" = "0";
+			"dstPath" = "";
+			"name" = "Embed Audio Unit Extension";
+			"files" = (
+				"000000000000000000000024",
+			);
+		};
+		"000000000000000000000004" = {
+			"buildConfigurationList" = "00000000000000000000002E";
+			"productReference" = "000000000000000000000006";
+			"productType" = "com.apple.product-type.application";
+			"productName" = "CutdownAudio";
+			"isa" = "PBXNativeTarget";
+			"buildPhases" = (
+				"000000000000000000000016",
+				"00000000000000000000001B",
+				"000000000000000000000022",
+				"000000000000000000000025",
+			);
+			"dependencies" = (
+				"000000000000000000000028",
+			);
+			"name" = "CutdownAudio";
+			"buildRules" = (
+			);
+		};
+		"000000000000000000000032" = {
+			"isa" = "PBXGroup";
+			"name" = "Frameworks";
+			"children" = (
+				"000000000000000000000010",
+				"000000000000000000000011",
+				"000000000000000000000012",
+				"000000000000000000000013",
+			);
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000017" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "000000000000000000000009";
+		};
+		"000000000000000000000011" = {
+			"path" = "System/Library/Frameworks/Foundation.framework";
+			"isa" = "PBXFileReference";
+			"name" = "Foundation.framework";
+			"lastKnownFileType" = "wrapper.framework";
+			"sourceTree" = "SDKROOT";
+		};
+		"00000000000000000000002F" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"WRAPPER_EXTENSION" = "appex";
+				"CODE_SIGN_ENTITLEMENTS" = "AudioPlugin/Sandbox.entitlements";
+				"LD_RUNPATH_SEARCH_PATHS" = (
+					"$(inherited)",
+					"@loader_path/../Frameworks",
+				);
+				"INFOPLIST_FILE" = "AudioPlugin/Extension/Info.plist";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "local.cutdown.audio.extension";
+				"SKIP_INSTALL" = "YES";
+				"APPLICATION_EXTENSION_API_ONLY" = "YES";
+				"PRODUCT_NAME" = "CutdownAudioExtension";
+			};
+			"name" = "Debug";
+		};
+		"00000000000000000000000E" = {
+			"path" = "AudioPlugin/Sandbox.entitlements";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.entitlements";
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000024" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "000000000000000000000007";
+			"settings" = {
+				"ATTRIBUTES" = (
+					"CodeSignOnCopy",
+					"RemoveHeadersOnCopy",
+				);
+			};
+		};
+		"000000000000000000000009" = {
+			"path" = "AudioPlugin/Extension/CutdownAudioUnitFactory.m";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.c.objc";
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000003" = {
+			"isa" = "PBXGroup";
+			"name" = "Products";
+			"children" = (
+				"000000000000000000000006",
+				"000000000000000000000007",
+			);
+			"sourceTree" = "<group>";
+		};
+		"00000000000000000000001B" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"00000000000000000000001A",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"000000000000000000000031" = {
+			"isa" = "XCConfigurationList";
+			"defaultConfigurationIsVisible" = "0";
+			"defaultConfigurationName" = "Debug";
+			"buildConfigurations" = (
+				"00000000000000000000002F",
+				"000000000000000000000030",
+			);
+		};
+		"000000000000000000000016" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"000000000000000000000015",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"000000000000000000000010" = {
+			"path" = "System/Library/Frameworks/AppKit.framework";
+			"isa" = "PBXFileReference";
+			"name" = "AppKit.framework";
+			"lastKnownFileType" = "wrapper.framework";
+			"sourceTree" = "SDKROOT";
+		};
+		"00000000000000000000002E" = {
+			"isa" = "XCConfigurationList";
+			"defaultConfigurationIsVisible" = "0";
+			"defaultConfigurationName" = "Debug";
+			"buildConfigurations" = (
+				"00000000000000000000002C",
+				"00000000000000000000002D",
+			);
+		};
+		"000000000000000000000029" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"COPY_PHASE_STRIP" = "NO";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf";
+				"CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF" = "YES";
+				"DEVELOPMENT_TEAM" = "";
+				"ONLY_ACTIVE_ARCH" = "YES";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"GCC_C_LANGUAGE_STANDARD" = "gnu17";
+				"CODE_SIGN_IDENTITY" = "-";
+				"GCC_ENABLE_OBJC_EXCEPTIONS" = "YES";
+				"MACOSX_DEPLOYMENT_TARGET" = "14.0";
+				"CLANG_CXX_LANGUAGE_STANDARD" = "c++20";
+				"ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
+				"GCC_OPTIMIZATION_LEVEL" = "0";
+				"ARCHS" = "arm64";
+				"CODE_SIGN_STYLE" = "Manual";
+				"SDKROOT" = "macosx";
+				"ENABLE_HARDENED_RUNTIME" = "NO";
+				"CLANG_ENABLE_OBJC_ARC" = "YES";
+				"CLANG_CXX_LIBRARY" = "libc++";
+			};
+			"name" = "Debug";
+		};
+		"00000000000000000000000D" = {
+			"path" = "AudioPlugin/Extension/Info.plist";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.xml";
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000023" = {
+			"isa" = "PBXResourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"000000000000000000000008" = {
+			"path" = "AudioPlugin/Wrapper/main.m";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.c.objc";
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000002" = {
+			"isa" = "PBXGroup";
+			"sourceTree" = "<group>";
+			"children" = (
+				"000000000000000000000033",
+				"000000000000000000000032",
+				"000000000000000000000003",
+			);
+		};
+		"00000000000000000000001A" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "000000000000000000000010";
+		};
+		"000000000000000000000030" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"WRAPPER_EXTENSION" = "appex";
+				"CODE_SIGN_ENTITLEMENTS" = "AudioPlugin/Sandbox.entitlements";
+				"LD_RUNPATH_SEARCH_PATHS" = (
+					"$(inherited)",
+					"@loader_path/../Frameworks",
+				);
+				"INFOPLIST_FILE" = "AudioPlugin/Extension/Info.plist";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "local.cutdown.audio.extension";
+				"SKIP_INSTALL" = "YES";
+				"APPLICATION_EXTENSION_API_ONLY" = "YES";
+				"PRODUCT_NAME" = "CutdownAudioExtension";
+			};
+			"name" = "Release";
+		};
+		"000000000000000000000015" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "000000000000000000000008";
+		};
+		"00000000000000000000002D" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"CODE_SIGN_ENTITLEMENTS" = "AudioPlugin/Sandbox.entitlements";
+				"INFOPLIST_FILE" = "AudioPlugin/Wrapper/Info.plist";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "local.cutdown.audio";
+				"PRODUCT_NAME" = "CutdownAudio";
+			};
+			"name" = "Release";
+		};
+		"000000000000000000000028" = {
+			"isa" = "PBXTargetDependency";
+			"target" = "000000000000000000000005";
+			"targetProxy" = "000000000000000000000027";
+		};
+		"00000000000000000000000C" = {
+			"path" = "AudioPlugin/Wrapper/Info.plist";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.xml";
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000022" = {
+			"isa" = "PBXResourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"000000000000000000000007" = {
+			"path" = "CutdownAudioExtension.appex";
+			"isa" = "PBXFileReference";
+			"includeInIndex" = "0";
+			"explicitFileType" = "wrapper.app-extension";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"000000000000000000000001" = {
+			"buildConfigurationList" = "00000000000000000000002B";
+			"targets" = (
+				"000000000000000000000004",
+				"000000000000000000000005",
+			);
+			"developmentRegion" = "en";
+			"knownRegions" = (
+				"en",
+				"Base",
+			);
+			"isa" = "PBXProject";
+			"compatibilityVersion" = "Xcode 14.0";
+			"productRefGroup" = "000000000000000000000003";
+			"projectDirPath" = "";
+			"attributes" = {
+				"LastUpgradeCheck" = "2600";
+				"BuildIndependentTargetsInParallel" = "YES";
+			};
+			"hasScannedForEncodings" = "0";
+			"projectRoot" = "";
+			"mainGroup" = "000000000000000000000002";
+		};
+		"00000000000000000000001F" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "000000000000000000000013";
+		};
+		"00000000000000000000002C" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"CODE_SIGN_ENTITLEMENTS" = "AudioPlugin/Sandbox.entitlements";
+				"INFOPLIST_FILE" = "AudioPlugin/Wrapper/Info.plist";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "local.cutdown.audio";
+				"PRODUCT_NAME" = "CutdownAudio";
+			};
+			"name" = "Debug";
+		};
+		"000000000000000000000027" = {
+			"isa" = "PBXContainerItemProxy";
+			"containerPortal" = "000000000000000000000001";
+			"remoteGlobalIDString" = "000000000000000000000005";
+			"remoteInfo" = "CutdownAudioExtension";
+			"proxyType" = "1";
+		};
+		"00000000000000000000000B" = {
+			"path" = "AudioPlugin/Extension/CutdownAudioUnit.h";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.c.h";
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000034" = {
+			"path" = "AudioPlugin/Extension/CutdownAudioUnitFactory.h";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.c.h";
+			"sourceTree" = "<group>";
+		};
+		"000000000000000000000021" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"00000000000000000000001D",
+				"00000000000000000000001E",
+				"00000000000000000000001F",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+	};
+	"rootObject" = "000000000000000000000001";
+}

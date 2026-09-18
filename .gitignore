@@ -1,0 +1,59 @@
+# Swift/Xcode builds, caches, and generated app bundles
+build/
+.build/
+DerivedData/
+/SDK/
+*.app/
+*.appex/
+*.dSYM/
+*.xcarchive/
+*.xcresult/
+
+# Xcode user state; keep shared schemes and project configuration
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# Final Cut libraries and local exports may contain personal paths/bookmarks.
+# Keep sanitized XML fixtures used by the regression tests.
+*.fcpbundle/
+*.fcpcache/
+*.fcpxmld/
+*.fcpxml
+!Tests/CutdownCoreTests/Fixtures/*.fcpxml
+/Fixtures/
+/Exports/
+/Recordings/
+
+# Local logs and Python caches
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local environment and signing credentials; keep template environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+*.p12
+*.pfx
+*.key
+*.mobileprovision
+*.provisionprofile
+
+# macOS and editor metadata
+.DS_Store
+._*
+.AppleDouble/
+.LSOverride
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# Ignore rules do not remove files from disk or erase existing Git history.

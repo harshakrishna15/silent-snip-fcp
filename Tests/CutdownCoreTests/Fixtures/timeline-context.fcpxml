@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.14">
+  <resources>
+    <format id="r1" name="FFVideoFormat1080p2997" frameDuration="1001/30000s" width="1920" height="1080"/>
+    <asset id="r2" name="Voice recording" start="100s" duration="100s" hasAudio="1" format="r1" audioChannels="2" audioRate="48000">
+      <media-rep kind="original-media" src="file:///fixtures/voice.wav"/>
+    </asset>
+    <asset id="r3" name="Music" start="0s" duration="100s" hasAudio="1">
+      <media-rep kind="original-media" src="file:///fixtures/music.wav"/>
+    </asset>
+    <asset id="r4" name="Other dialogue" start="0s" duration="100s" hasAudio="1">
+      <media-rep kind="original-media" src="file:///fixtures/dialogue.wav"/>
+    </asset>
+    <effect id="r5" name="Basic Title" uid="test.title"/>
+    <effect id="r6" name="Cutdown" uid="test.cutdown.controller"/>
+    <effect id="r7" name="Equalizer" uid="test.equalizer"/>
+  </resources>
+  <library>
+    <event name="Fixtures">
+      <project name="Timeline context" uid="project-fixture">
+        <sequence format="r1" duration="20s" tcStart="3600s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+          <spine>
+            <asset-clip ref="r2" name="Recording" offset="3600s" start="105s" duration="10s" audioRole="dialogue">
+              <title ref="r5" name="Title" lane="1" offset="107s" start="0s" duration="4s"/>
+              <asset-clip ref="r3" name="Music bed" lane="-1" offset="105s" start="0s" duration="10s" audioRole="music"/>
+              <asset-clip ref="r4" name="Connected speech" lane="-2" offset="109s" start="20s" duration="2s" audioRole="Dialogue.Voice"/>
+              <marker start="106s" duration="1001/30000s" value="Cutdown Candidate 1" note="job:fixture" completed="0"/>
+              <filter-audio ref="r6" name="Cutdown">
+                <param name="Threshold" key="1" value="-40"/>
+              </filter-audio>
+              <filter-audio ref="r7" name="Equalizer">
+                <param name="Amount" key="1" value="0.5"/>
+              </filter-audio>
+            </asset-clip>
+            <asset-clip ref="r2" name="Recording" offset="3610s" start="130s" duration="10s" audioRole="dialogue"/>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>

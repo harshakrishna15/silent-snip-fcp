@@ -1,0 +1,80 @@
+[
+  {
+    "state": "analyzing",
+    "busy": true,
+    "terminal": false,
+    "retry": false
+  },
+  {
+    "state": "capturing",
+    "busy": true,
+    "terminal": false,
+    "retry": false
+  },
+  {
+    "state": "recalculating",
+    "busy": true,
+    "terminal": false,
+    "retry": false
+  },
+  {
+    "state": "applying",
+    "busy": true,
+    "terminal": false,
+    "retry": false
+  },
+  {
+    "state": "verifying",
+    "busy": true,
+    "terminal": false,
+    "retry": false
+  },
+  {
+    "state": "navigating",
+    "busy": true,
+    "terminal": false,
+    "retry": false
+  },
+  {
+    "state": "cancelling",
+    "busy": true,
+    "terminal": false,
+    "retry": false
+  },
+  {
+    "state": "review",
+    "busy": false,
+    "terminal": false,
+    "retry": false
+  },
+  {
+    "state": "completed",
+    "busy": false,
+    "terminal": true,
+    "retry": false
+  },
+  {
+    "state": "complete",
+    "busy": false,
+    "terminal": true,
+    "retry": false
+  },
+  {
+    "state": "failed",
+    "busy": false,
+    "terminal": true,
+    "retry": true
+  },
+  {
+    "state": "cancelled",
+    "busy": false,
+    "terminal": true,
+    "retry": true
+  },
+  {
+    "state": "unavailable",
+    "busy": false,
+    "terminal": true,
+    "retry": false
+  }
+]

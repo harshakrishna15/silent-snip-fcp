@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Cutdown</string>
+	<key>CFBundleDisplayName</key>
+	<string>Cutdown</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.cutdown.helper</string>
+	<key>CFBundleExecutable</key>
+	<string>Cutdown</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>LSUIElement</key>
+	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>local.cutdown.analyze</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>cutdown</string>
+			</array>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+		</dict>
+	</array>
+	<key>com.apple.proapps.MediaAssetProtocol</key>
+	<dict/>
+	<key>NSAppleScriptEnabled</key>
+	<true/>
+	<key>OSAScriptingDefinition</key>
+	<string>Cutdown.sdef</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Final Cut Share Files</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.apple.finalcutpro.xml</string>
+				<string>com.apple.finalcutpro.xml-bundle</string>
+				<string>com.microsoft.waveform-audio</string>
+				<string>public.aiff-audio</string>
+				<string>com.apple.coreaudio-format</string>
+			</array>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>fcpxml</string>
+				<string>fcpxmld</string>
+				<string>wav</string>
+				<string>aif</string>
+				<string>aiff</string>
+				<string>caf</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

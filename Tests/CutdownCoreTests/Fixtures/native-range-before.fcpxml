@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<!-- Generated-media fixture. Paths, IDs, timestamps and bookmarks are sanitized. -->
+
+<fcpxml version="1.14">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p30" frameDuration="100/3000s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Recording" uid="77777777777777777777777777777777" start="0s" duration="10s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="77777777777777777777777777777777" src="file:///fixtures/Recording.wav">
+                <bookmark>c2FuaXRpemVk</bookmark>
+            </media-rep>
+
+        </asset>
+        <format id="r3" name="FFVideoFormatRateUndefined"/>
+        <effect id="r4" name="Cutdown Audio" uid="AudioUnit: 0x617566786374646e4374646e"/>
+    </resources>
+    <library location="file:///fixtures/Cutdown%20Integration.fcpbundle/">
+        <event name="Cutdown Integration Fixtures" uid="88888888-8888-4888-8888-888888888888">
+            <project name="Cutdown Button Verification" uid="99999999-9999-4999-8999-999999999999">
+                <sequence format="r1" duration="10s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Recording" duration="10s" format="r3" audioRole="dialogue">
+                            <filter-audio ref="r4" name="Cutdown Audio"/>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+        <smart-collection name="All Video" match="any">
+            <match-media rule="is" type="videoOnly"/>
+            <match-media rule="is" type="videoWithAudio"/>
+        </smart-collection>
+        <smart-collection name="Audio Only" match="all">
+            <match-media rule="is" type="audioOnly"/>
+        </smart-collection>
+        <smart-collection name="Stills" match="all">
+            <match-media rule="is" type="stills"/>
+        </smart-collection>
+        <smart-collection name="Favorites" match="all">
+            <match-ratings value="favorites"/>
+        </smart-collection>
+        <smart-collection name="Missing Analysis" match="all">
+            <match-analysis-type rule="isMissing" value="any"/>
+        </smart-collection>
+    </library>
+</fcpxml>

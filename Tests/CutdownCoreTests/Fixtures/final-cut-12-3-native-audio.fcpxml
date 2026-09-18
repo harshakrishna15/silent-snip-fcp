@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<!-- Native Final Cut Pro 12.3 export of generated WAV with Cutdown AU. URLs, IDs and bookmarks sanitized. -->
+
+<fcpxml version="1.14">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p30" frameDuration="100/3000s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Recording" uid="55555555555555555555555555555555" start="0s" duration="10s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="55555555555555555555555555555555" src="file:///fixtures/fcp-audio-recording.wav">
+                <bookmark>c2FuaXRpemVk</bookmark>
+            </media-rep>
+
+        </asset>
+        <format id="r3" name="FFVideoFormatRateUndefined"/>
+        <effect id="r4" name="Cutdown Audio" uid="AudioUnit: 0x617566786374646e4374646e"/>
+    </resources>
+    <library location="file:///fixtures/Cutdown%20Integration.fcpbundle/">
+        <event name="Cutdown Integration Fixtures" uid="22222222-2222-4222-8222-222222222222">
+            <project name="Cutdown Audio Native" uid="66666666-6666-4666-8666-666666666666">
+                <sequence format="r1" duration="10s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Recording" duration="10s" format="r3" audioRole="dialogue">
+                            <filter-audio ref="r4" name="Cutdown Audio">
+                                <data key="effectState">YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVtlZmZlY3RTdGF0ZYABrQsMHR4fICEiIyQlJidVJG51bGzTDQ4PEBYcV05TLmtleXNaTlMub2JqZWN0c1YkY2xhc3OlERITFBWAAoADgASABYAGpRcYGRobgAeACIAJgAqAC4AMXG1hbnVmYWN0dXJlclRkYXRhVHR5cGVXc3VidHlwZVd2ZXJzaW9uEkN0ZG5PEGMAAAAACQAAAHQAaAByAGUAcwBoAG8AbABkAAAAAMIAAAcAAABtAGkAbgBpAG0AdQBtAAAAQD8AAAYAAABiAGUAZgBvAHIAZQAAAAA+AAAAAAUAAABhAGYAdABlAHIAzczMPf8SYXVmeBJjdGRuEAHSKCkqK1okY2xhc3NuYW1lWCRjbGFzc2VzXxATTlNNdXRhYmxlRGljdGlvbmFyeaMqLC1cTlNEaWN0aW9uYXJ5WE5TT2JqZWN0AAgAEQAaACQAKQAyADcASQBMAFgAWgBoAG4AdQB9AIgAjwCVAJcAmQCbAJ0AnwClAKcAqQCrAK0ArwCxAL4AwwDIANAA2ADdAUMBSAFNAU8BVAFfAWgBfgGCAY8AAAAAAAACAQAAAAAAAAAuAAAAAAAAAAAAAAAAAAABmA==</data>
+                                <param name="Silence Threshold" key="4037165010" value="-32"/>
+                                <param name="Minimum Silence" key="3342540801" value="0.75"/>
+                                <param name="Before Speech" key="4090893112" value="0.125"/>
+                                <param name="After Speech" key="252981911" value="0.25"/>
+                            </filter-audio>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+        <smart-collection name="All Video" match="any">
+            <match-media rule="is" type="videoOnly"/>
+            <match-media rule="is" type="videoWithAudio"/>
+        </smart-collection>
+        <smart-collection name="Audio Only" match="all">
+            <match-media rule="is" type="audioOnly"/>
+        </smart-collection>
+        <smart-collection name="Stills" match="all">
+            <match-media rule="is" type="stills"/>
+        </smart-collection>
+        <smart-collection name="Favorites" match="all">
+            <match-ratings value="favorites"/>
+        </smart-collection>
+        <smart-collection name="Missing Analysis" match="all">
+            <match-analysis-type rule="isMissing" value="any"/>
+        </smart-collection>
+    </library>
+</fcpxml>

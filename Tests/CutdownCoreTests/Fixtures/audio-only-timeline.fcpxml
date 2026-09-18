@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.14">
+  <resources>
+    <format id="r1" frameDuration="1/25s" width="1920" height="1080"/>
+    <asset id="r2" name="Voice" start="100s" duration="120s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+      <media-rep kind="original-media" src="file:///fixtures/voice.m4a"/>
+    </asset>
+    <asset id="r3" name="Music" start="0s" duration="16s" hasAudio="1" audioChannels="2" audioRate="48000">
+      <media-rep kind="original-media" src="file:///fixtures/music.wav"/>
+    </asset>
+    <asset id="r4" name="Other speaker" start="0s" duration="16s" hasAudio="1" audioChannels="1" audioRate="48000">
+      <media-rep kind="original-media" src="file:///fixtures/other-voice.wav"/>
+    </asset>
+    <effect id="r5" name="Basic Title" uid="test.audio-only-title"/>
+  </resources>
+  <library>
+    <event name="Audio fixtures">
+      <project name="Audio-only timeline" uid="audio-only-fixture-project">
+        <sequence format="r1" duration="16s" tcStart="3600s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+          <spine>
+            <asset-clip ref="r2" name="Voice take" offset="3600s" start="105s" duration="8s" audioRole="dialogue.voice">
+              <asset-clip ref="r3" name="Music bed" lane="-1" offset="105s" start="0s" duration="8s" audioRole="music"/>
+              <asset-clip ref="r4" name="Other speaker" lane="-2" offset="107s" start="0s" duration="1s" audioRole="dialogue.other"/>
+              <title ref="r5" name="Title" lane="1" offset="106s" start="0s" duration="4s"/>
+              <marker start="106s" duration="1/25s" value="User voice marker"/>
+            </asset-clip>
+            <asset-clip ref="r2" name="Voice take" offset="3608s" start="135s" duration="8s" audioRole="dialogue.voice">
+              <marker start="136s" duration="1/25s" value="User voice marker"/>
+            </asset-clip>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>
