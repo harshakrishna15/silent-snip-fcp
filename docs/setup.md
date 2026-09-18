@@ -16,6 +16,12 @@ Command Line Tools alone are insufficient for the Xcode app-extension project. T
 
 ## Build and register both apps
 
+For the same Release-helper installation in one command, use
+`Scripts/build.sh --release`. For faster development builds, use
+`Scripts/build.sh`, which uses a Debug helper. Both reuse build caches and
+register the resulting apps; quit Final Cut and Cutdown first. Add `--stage`
+to build candidates only, with the Xcode registration caveat described below.
+
 Quit Final Cut Pro and any running Cutdown helper, then run:
 
 ```sh

@@ -18,6 +18,19 @@ The project uses Apple's frameworks and has no external Swift package dependenci
 
 ## Build and install
 
+For a one-command incremental development build, quit Final Cut Pro and the
+Cutdown helper, then run `Scripts/build.sh` from the repository root. It builds
+both components and registers them, reusing the existing Swift and Xcode caches.
+The helper defaults to Debug to reduce development build time; use
+`Scripts/build.sh --release` for an optimized helper and better runtime
+performance. The audio plug-in remains Debug in either mode. Build time depends
+on the changes and cache state; no speedup has been benchmarked.
+
+Use `Scripts/build.sh --stage` (optionally with `--release`) to build candidates
+without publishing installed bundles or explicitly registering them. Xcode may
+still register the audio candidate; run a normal build before live use. The
+command does not run tests or perform first-time permissions/Share setup.
+
 Clone or download this repository, open Terminal in its root, and quit Final Cut Pro and the Cutdown helper before installing:
 
 ```sh
