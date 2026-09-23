@@ -43,6 +43,7 @@ enum ImportedSettingsRecovery {
         let outputMode: String
         let originalProjectName: String
         let expectedSHA256: String
+        var replacementTarget: XMLReplacementTarget?
         var hostProjectUID: String?
     }
     let request: AnalyzeRequest
@@ -50,15 +51,23 @@ enum ImportedSettingsRecovery {
     let outputURL: URL
     let originalProjectName: String
     let projectName: String
+    let replacementTarget: XMLReplacementTarget?
     private(set) var hostProjectUID: String?
     private(set) var complete = false
 
-    init(expected: Data, outputURL: URL, originalProjectName: String, request: AnalyzeRequest) throws {
+    init(expected: Data, outputURL: URL, originalProjectName: String, request: AnalyzeRequest, replacementTarget: XMLReplacementTarget? = nil) throws {
+        self.replacementTarget = replacementTarget
         self.request = request
         self.expected = expected; self.outputURL = outputURL
         self.originalProjectName = originalProjectName
         projectName = try TimelineParser.parse(data: expected).projectName
-        guard projectName != originalProjectName else {
+        if let replacementTarget {
+            guard originalProjectName == replacementTarget.projectName else {
+                throw EditedProjectWriterError.verificationFailed("replacement receipt has the wrong original project")
+            }
+            try replacementTarget.verifyDestination(expected)
+        }
+        guard replacementTarget != nil || projectName != originalProjectName else {
             throw EditedProjectWriterError.verificationFailed("settings recovery requires a separately named result project")
         }
     }
@@ -68,7 +77,7 @@ enum ImportedSettingsRecovery {
 
     func savePending() throws {
         let receipt = Receipt(requestID: request.id, settings: request.settings, outputMode: request.outputMode.rawValue,
-            originalProjectName: originalProjectName, expectedSHA256: Self.digest(expected), hostProjectUID: hostProjectUID)
+            originalProjectName: originalProjectName, expectedSHA256: Self.digest(expected), replacementTarget: replacementTarget, hostProjectUID: hostProjectUID)
         try JSONEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
     }
 
@@ -101,7 +110,7 @@ enum ImportedSettingsRecovery {
             let result = try ImportedResultVerification(expected: data, outputURL: outputURL,
                 originalProjectName: edit.originalProjectName,
                 request: AnalyzeRequest(id: UUID(uuidString: directory.lastPathComponent) ?? edit.projectUID,
-                    settings: settings, outputMode: edit.insertedGapDuration > .zero ? .gaps : .remove))
+                    settings: settings, outputMode: edit.insertedGapDuration > .zero ? .gaps : .remove), replacementTarget: edit.replacementTarget)
             if let previous = try? JSONDecoder().decode(ProjectRoundTripReport.self,
                 from: Data(contentsOf: directory.appendingPathComponent("Import-Verification.json"))),
                previous.verified, previous.expectedProjectUID == document.projectUID {
@@ -117,7 +126,7 @@ enum ImportedSettingsRecovery {
         }
         let result = try ImportedResultVerification(expected: data, outputURL: outputURL,
             originalProjectName: receipt.originalProjectName,
-            request: AnalyzeRequest(id: receipt.requestID, settings: receipt.settings, outputMode: mode))
+            request: AnalyzeRequest(id: receipt.requestID, settings: receipt.settings, outputMode: mode), replacementTarget: receipt.replacementTarget)
         result.hostProjectUID = receipt.hostProjectUID
         return result
     }
@@ -131,7 +140,9 @@ enum ImportedSettingsRecovery {
         }
         let directory = outputURL.deletingLastPathComponent()
         let expectedSnapshot = try ProjectRoundTripVerification.Snapshot(data: expected)
-        let actualSnapshot = try await ProjectRoundTripVerification.Snapshot(data: capture())
+        let actualData = try await capture()
+        try replacementTarget?.verifyDestination(actualData)
+        let actualSnapshot = try ProjectRoundTripVerification.Snapshot(data: actualData)
         let comparison = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
             allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID)
         let reportURL = directory.appendingPathComponent("Import-Verification.json")
@@ -148,7 +159,9 @@ enum ImportedSettingsRecovery {
                 try Task.checkCancellation()
                 try await restore(correction, document)
             }
-            let recoveredSnapshot = try await ProjectRoundTripVerification.Snapshot(data: capture())
+            let recoveredData = try await capture()
+            try replacementTarget?.verifyDestination(recoveredData)
+            let recoveredSnapshot = try ProjectRoundTripVerification.Snapshot(data: recoveredData)
             report = try ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: recoveredSnapshot,
                 allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID).verify(reportURL: reportURL)
             guard report.actualProjectUID == hostProjectUID else {

@@ -4,7 +4,7 @@ Cutdown is a local, audio-only silence-removal tool for Final Cut Pro. Add **Cut
 
 The Audio Unit passes audio through unchanged. A companion macOS helper measures silence, prepares the edited project, and communicates with Final Cut. Both components must be built and installed together.
 
-**Status:** the copied source builds on Apple Silicon with Xcode 27. Current-build automatic Analyze/Apply, preview, and settings recovery still need live Final Cut verification. Successful builds and offline tests do not establish that automatic timeline cuts work.
+**Status:** Apply now targets XML replacement in the original event to avoid accumulating result projects. Repeated manual replacement probes kept one project; see [evidence and limits](docs/xml-replacement.md). The copied source builds on Apple Silicon with Xcode 27. Current-build automatic Analyze/Apply, preview, and settings recovery still need live Final Cut verification. Successful builds and offline tests do not establish that automatic timeline cuts work.
 
 ## Requirements
 

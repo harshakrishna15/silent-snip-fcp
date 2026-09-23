@@ -7,16 +7,29 @@ import FoundationXML
 #endif
 
 extension FinalCutAXSession {
-    func openImportedProject(named name: String, importedXML: URL) async throws -> FinalCutAXSession {
-        try await waitForImportCompletion(named: name, importedXML: importedXML)
+    func openImportedProject(named name: String, importedXML: URL, replacement: XMLReplacementTarget? = nil,
+                             acceptReplacement: Bool = false) async throws -> FinalCutAXSession {
+        try await waitForImportCompletion(named: name, importedXML: importedXML, replacement: replacement, acceptReplacement: acceptReplacement)
+        if let replacement {
+            // Replace closes the old timeline and may expose a previous project
+            // or an empty timeline. Re-pin solely to navigate the browser, then
+            // return a normal session; semantic verification precedes writes.
+            let browserSession = try FinalCutAXSession(allowEmptyTimeline: true)
+            try browserSession.assertReplacementEvent(replacement)
+            _ = try await browserSession.selectBrowserProject(named: name)
+            try await browserSession.pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
+            return try await browserSession.waitForProject(named: name)
+        }
         if let current = try? FinalCutAXSession(), current.projectName == name { return current }
         _ = try await selectBrowserProject(named: name)
         try await pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
         return try await waitForProject(named: name)
     }
 
-    private func waitForImportCompletion(named name: String, importedXML: URL) async throws {
+    private func waitForImportCompletion(named name: String, importedXML: URL, replacement: XMLReplacementTarget?,
+                                         acceptReplacement: Bool) async throws {
         let started = Date()
+        var replacementAccepted = false
         var readiness = FinalCutImportReadiness()
         var browserReveal = FinalCutImportBrowserReveal()
         var observed: [FinalCutImportDialog] = []
@@ -30,7 +43,7 @@ extension FinalCutAXSession {
             // our exact generated project; don't repin to another user project.
             let control = Self.search(mainWindow, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true)
             let currentName = control.flatMap { string($0, kAXTitleAttribute) }
-            if let currentName, currentName != projectName && currentName != name { throw FinalCutCaptureError.changedProject }
+            if replacement == nil, let currentName, currentName != projectName && currentName != name { throw FinalCutCaptureError.changedProject }
             let panel = currentSheet()
             if let panel {
                 let elements = importElements(in: panel)
@@ -46,6 +59,24 @@ extension FinalCutAXSession {
                     observed.append(dialog)
                     let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                     try encoder.encode(observed).write(to: reportURL, options: .atomic)
+                }
+                if let replacement, acceptReplacement, !replacementAccepted,
+                   currentName == replacement.projectName,
+                   (try? assertReplacementEvent(replacement)) != nil,
+                   dialog.isReplacementConfirmation(libraryName: replacement.libraryURL.deletingPathExtension().lastPathComponent),
+                   let replace = buttons.first(where: { string($0, kAXTitleAttribute) == "Replace" }),
+                   (attribute(replace, kAXEnabledAttribute) as? NSNumber)?.boolValue == true {
+                    application.activate(options: [])
+                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
+                       let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute), isExpectedInputWindow(focused),
+                       let current = currentSheet(), CFEqual(current, panel) {
+                        // This delivery contains exactly one project, in its
+                        // original event/library, after a fresh baseline check.
+                        replacementAccepted = true
+                        guard AXUIElementPerformAction(replace, kAXPressAction as CFString) == .success else {
+                            throw FinalCutCaptureError.unavailable("Final Cut could not confirm project replacement. Check the result before retrying verification.")
+                        }
+                    }
                 }
                 if dialog.isCompletedWarning(for: importedXML.lastPathComponent), buttons.count == 1,
                    !acknowledged.contains(where: { CFEqual($0, panel) }),
@@ -72,8 +103,14 @@ extension FinalCutAXSession {
                         && [string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute), string(element, kAXValueAttribute)].contains(name)
                 }
             } == true
-            if readiness.observe(projectVisible: visible, hasDialog: panel != nil, elapsed: Date().timeIntervalSince(started)) { return }
-            if browserReveal.observe(projectVisible: visible, originalProjectCurrent: currentName == projectName,
+            // Some deliveries complete without leaving the confirmation visible
+            // to us. Closing the original timeline is also an import transition;
+            // the subsequent export must still prove a new UID and exact edits.
+            let replacementTransition = replacement != nil && currentName != name
+            if readiness.observe(projectVisible: visible, hasDialog: panel != nil, elapsed: Date().timeIntervalSince(started),
+                                 awaitingReplacement: acceptReplacement, replacementConfirmed: replacementAccepted,
+                                 originalTimelineClosed: replacementTransition) { return }
+            if replacement == nil, browserReveal.observe(projectVisible: visible, originalProjectCurrent: currentName == projectName,
                                      hasDialog: panel != nil, elapsed: Date().timeIntervalSince(started)) {
                 try await activate()
                 try await pressMenu(path: ["Window", "Go To", "Libraries"])
@@ -89,7 +126,43 @@ extension FinalCutAXSession {
         if let dialog = lastDialog {
             throw FinalCutCaptureError.unavailable("Verification is blocked by Final Cut’s ‘\(dialog.title)’ dialog. Close it before checking the existing result. Details: \(reportURL.path)")
         }
-        throw FinalCutCaptureError.unavailable("Final Cut did not finish presenting the imported project ‘\(name)’ within 30 seconds. Check Cutdown Results before retrying verification.")
+        throw FinalCutCaptureError.unavailable("Final Cut did not finish presenting the imported project ‘\(name)’ within 30 seconds. Open the result in its event before retrying verification.")
+    }
+
+    /// Reveal the current project before delivery. Replacement by name must
+    /// never target duplicate browser items or an event in another library.
+    func prepareReplacementBrowser(_ target: XMLReplacementTarget) async throws {
+        guard projectName == target.projectName else { throw FinalCutCaptureError.changedProject }
+        try await activate()
+        try await pressMenu(path: ["File", "Reveal Project in Browser"])
+        try await waitUntil(timeout: 5, context: "the replacement's original event") {
+            (try? self.assertReplacementEvent(target)) != nil
+        }
+        _ = try await selectBrowserProject(named: target.projectName)
+        try await focusTimeline()
+    }
+
+    private func assertReplacementEvent(_ target: XMLReplacementTarget) throws {
+        guard let sidebar = Self.search(mainWindow, role: kAXOutlineRole, description: "Event media sidebar", containersOnly: true) else {
+            throw FinalCutCaptureError.unavailable("Show the original project’s event in the Libraries sidebar before replacement verification.")
+        }
+        var libraryPath: String?
+        var matches = 0
+        for row in children(sidebar) where string(row, kAXRoleAttribute) == kAXRowRole {
+            let fields = importElements(in: row).filter { string($0, kAXRoleAttribute) == kAXTextFieldRole }
+            for field in fields {
+                if let help = string(field, kAXHelpAttribute),
+                   let path = help.split(separator: "\n").last, path.hasSuffix(".fcpbundle"), path.hasPrefix("/") {
+                    libraryPath = URL(fileURLWithPath: String(path)).standardizedFileURL.path
+                }
+            }
+            if (attribute(row, kAXSelectedAttribute) as? NSNumber)?.boolValue == true,
+               libraryPath == target.libraryURL.path,
+               fields.contains(where: { string($0, kAXValueAttribute) == target.eventName }) { matches += 1 }
+        }
+        guard matches == 1 else {
+            throw FinalCutCaptureError.unavailable("Select the ‘\(target.eventName)’ event in ‘\(target.libraryURL.deletingPathExtension().lastPathComponent)’ before verifying its replacement project.")
+        }
     }
 
     /// Restrict traversal to the import panel/browser. Never inspect field

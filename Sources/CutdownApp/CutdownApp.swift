@@ -49,7 +49,7 @@ import CutdownMac
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !FinalCutAccessibility.isTrusted { FinalCutAccessibility.requestAccess() }
-        try? IntegrationReport(state: "ready", message: "Ready. Analyze captures the selected audio clip; Apply creates and sends a separate edited XML project to Final Cut Pro.").save()
+        try? IntegrationReport(state: "ready", message: "Ready. Analyze captures the selected audio clip; Apply replaces the project through XML in its existing event, with recovery XML saved first.").save()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

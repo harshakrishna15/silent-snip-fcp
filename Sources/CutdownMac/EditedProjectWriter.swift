@@ -19,6 +19,7 @@ public struct EditedProjectReport: Codable, Sendable {
     public let projectName: String
     public let projectUID: UUID
     public let eventUID: UUID
+    public var replacementTarget: XMLReplacementTarget? = nil
     public let targetID: String
     public let originalProjectDuration: RationalTime
     public let resultProjectDuration: RationalTime
@@ -56,7 +57,8 @@ public enum EditedProjectWriterError: Error, LocalizedError, Equatable {
     }
 }
 
-/// Creates a new project without modifying the input document or any media file.
+/// Generates edited XML without modifying the input document or media.
+/// Replacement retains the original event/name; ordinary output creates a copy.
 /// This deliberately supports a narrow set of timeline edits: splitting one
 /// direct audio asset, then shifting later primary-storyline items. Connections
 /// on the target and any connected content crossing a cut require native Final
@@ -70,13 +72,21 @@ public enum EditedProjectWriter {
         projectUID: UUID = UUID(),
         eventUID: UUID = UUID(),
         destinationLibrary: URL? = nil,
-        replacementGaps: [TimeRange: RationalTime] = [:]
+        replacementGaps: [TimeRange: RationalTime] = [:],
+        replaceOriginal: Bool = false
     ) throws -> EditedProjectOutput {
         let name = outputName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw EditedProjectWriterError.invalidName }
         // Run the bounded/entity-safe parser before FoundationXML. All later
         // changes use this exact data, never a caller-supplied stale document.
         let document = try TimelineParser.parse(data: projectData)
+        let replacement = try replaceOriginal ? XMLReplacementTarget(projectData: projectData) : nil
+        if let replacement {
+            guard outputName == replacement.projectName, name == outputName,
+                  destinationLibrary == nil || destinationLibrary?.standardizedFileURL == replacement.libraryURL else {
+                throw EditedProjectWriterError.unsupported("replacement must retain the original project name and library")
+            }
+        }
         let target = try document.selectedTarget(selection, requireExistingMedia: false)
         let ranges = try validatedRanges(selectedRanges, target: target, frame: document.frameDuration)
         let fadeRanges = try document.protectedRanges(for: target).filter { $0.reason.hasPrefix("Preserve the original fade-") }
@@ -221,12 +231,12 @@ public enum EditedProjectWriter {
         } else if let originalLocation { set(library, "location", originalLocation) }
         if let colorProcessing { set(library, "colorProcessing", colorProcessing) }
         let event = XMLElement(name: "event")
-        guard try root.nodes(forXPath: ".//event").allSatisfy({ node in
+        guard try replacement != nil || (root.nodes(forXPath: ".//event").allSatisfy({ node in
             (node as? XMLElement)?.attribute(forName: "uid")?.stringValue?
                 .caseInsensitiveCompare(eventUID.uuidString) != .orderedSame
-        }) else { throw EditedProjectWriterError.unsupported("the result must have a different event identity.") }
-        set(event, "name", "Cutdown Results")
-        set(event, "uid", eventUID.uuidString)
+        })) else { throw EditedProjectWriterError.unsupported("the result must have a different event identity.") }
+        set(event, "name", replacement?.eventName ?? "Cutdown Results")
+        set(event, "uid", (replacement?.eventUID ?? eventUID).uuidString)
         event.addChild(project.copy() as! XMLNode)
         library.addChild(event)
         resultRoot.addChild(library)
@@ -243,7 +253,7 @@ public enum EditedProjectWriter {
         return EditedProjectOutput(xmlData: outputData, report: .init(
             originalProjectName: document.projectName, originalProjectUID: document.projectUID,
             baselineFingerprint: document.fingerprint, projectName: name, projectUID: projectUID,
-            eventUID: eventUID, targetID: target.id,
+            eventUID: replacement?.eventUID ?? eventUID, replacementTarget: replacement, targetID: target.id,
             originalProjectDuration: try document.projectRange.checkedDuration(),
             resultProjectDuration: resultDuration, removedDuration: removed, insertedGapDuration: added, selectedRanges: ranges,
             retainedSegments: segments, removedPointMarkerCount: removedPointMarkers))

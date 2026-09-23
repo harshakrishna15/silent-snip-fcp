@@ -10,13 +10,15 @@ import FoundationXML
 struct PreparedXMLProject {
     let outputURL: URL
     let recoveryURL: URL
+    let recoveryData: Data
     let libraryURL: URL
     let output: EditedProjectOutput
 
     @MainActor func send(using importer: (URL) async throws -> Void) async throws {
         try Task.checkCancellation()
-        guard try Data(contentsOf: outputURL) == output.xmlData else {
-            throw EditedProjectWriterError.verificationFailed("the saved XML changed before import")
+        guard try Data(contentsOf: outputURL) == output.xmlData,
+              try Data(contentsOf: recoveryURL) == recoveryData else {
+            throw EditedProjectWriterError.verificationFailed("the saved result or recovery XML changed before import")
         }
         try XMLProjectApply.validateLibrary(libraryURL)
         try Task.checkCancellation()
@@ -49,7 +51,7 @@ enum XMLProjectApply {
 
     static func prepare(projectData: Data, selection: TimelineSelection, cuts: [TimeRange],
                         settings: AnalysisSettings, mode: CutdownOutputMode,
-                        outputName: String, directory: URL) throws -> PreparedXMLProject {
+                        outputName: String, directory: URL, replaceOriginal: Bool = false) throws -> PreparedXMLProject {
         let document = try TimelineParser.parse(data: projectData)
         let xml = try XMLDocument(data: projectData, options: [.nodeLoadExternalEntitiesNever])
         let libraries = try xml.nodes(forXPath: "/fcpxml/library").compactMap { $0 as? XMLElement }
@@ -63,7 +65,7 @@ enum XMLProjectApply {
         if let gap { for cut in cuts { gaps[cut] = gap } }
         let withSettings = try AudioControllerSettings.embedding(settings, in: projectData, selection: selection)
         let output = try EditedProjectWriter.write(projectData: withSettings, selection: selection,
-            selectedRanges: cuts, outputName: outputName, destinationLibrary: library, replacementGaps: gaps)
+            selectedRanges: cuts, outputName: outputName, destinationLibrary: library, replacementGaps: gaps, replaceOriginal: replaceOriginal)
         let recovery = try ProjectRecoverySnapshot.recovery(data: projectData, name: document.projectName + " — Before Cuts")
         guard directory.isFileURL, !FileManager.default.fileExists(atPath: directory.path) else {
             throw EditedProjectWriterError.unsupported("the result folder already exists or is not local")
@@ -84,7 +86,7 @@ enum XMLProjectApply {
               try Data(contentsOf: outputURL) == output.xmlData else {
             throw EditedProjectWriterError.verificationFailed("the saved result or recovery snapshot changed")
         }
-        return PreparedXMLProject(outputURL: outputURL, recoveryURL: recoveryURL, libraryURL: library, output: output)
+        return PreparedXMLProject(outputURL: outputURL, recoveryURL: recoveryURL, recoveryData: recovery, libraryURL: library, output: output)
     }
 
     @MainActor static func importIntoFinalCut(_ url: URL) async throws {

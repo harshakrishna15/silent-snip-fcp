@@ -63,6 +63,74 @@ final class XMLProjectApplyTests: XCTestCase {
         XCTAssertEqual(report.retainedSegments.count, 3)
     }
 
+    func testReplacementKeepsDestinationAndDoesNotImportRecoveryOrOtherItems() throws {
+        let input = Data(String(decoding: fixture(), as: UTF8.self)
+            .replacingOccurrences(of: "original-event", with: "BBBB0000-0000-4000-8000-000000000001").utf8)
+        let prepared = try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
+            settings: .defaults, mode: .remove, outputName: "Original", directory: destination, replaceOriginal: true)
+        let target = try XCTUnwrap(prepared.output.report.replacementTarget)
+        XCTAssertEqual(target, try XMLReplacementTarget(projectData: input))
+        let xml = try XMLDocument(data: prepared.output.xmlData)
+        XCTAssertEqual(try xml.nodes(forXPath: "//event/@name").first?.stringValue, "Fixture")
+        XCTAssertEqual(try xml.nodes(forXPath: "//event/@uid").first?.stringValue, target.eventUID.uuidString)
+        XCTAssertEqual(try xml.nodes(forXPath: "//event/*").count, 1)
+        XCTAssertEqual(try xml.nodes(forXPath: "//project/@name").first?.stringValue, "Original")
+        XCTAssertNoThrow(try target.verifyDestination(prepared.output.xmlData))
+        XCTAssertThrowsError(try target.verifyDestination(input), "An unchanged same-name original is never a successful replacement")
+        XCTAssertEqual(try TimelineParser.parse(url: prepared.recoveryURL).fingerprint,
+                       try TimelineParser.parse(data: input).fingerprint)
+        let current = try TimelineParser.parse(data: prepared.output.xmlData)
+        let next = try EditedProjectWriter.write(projectData: prepared.output.xmlData,
+            selection: .init(timelineRange: current.clips[1].timelineRange),
+            selectedRanges: [.init(start: .init(3), end: .init(4))], outputName: "Original", replaceOriginal: true)
+        XCTAssertEqual(next.report.projectName, "Original")
+        XCTAssertEqual(next.report.eventUID, target.eventUID)
+        XCTAssertEqual(next.report.resultProjectDuration, .init(6))
+        XCTAssertNotEqual(next.report.projectUID, prepared.output.report.projectUID)
+    }
+
+    @MainActor func testReplacementReceiptSurvivesRestartAndRejectsWrongDestinationBeforeSettingsWrites() async throws {
+        let input = Data(String(decoding: fixture(), as: UTF8.self)
+            .replacingOccurrences(of: "original-event", with: "BBBB0000-0000-4000-8000-000000000001").utf8)
+        let prepared = try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
+            settings: .defaults, mode: .remove, outputName: "Original", directory: destination, replaceOriginal: true)
+        let target = try XCTUnwrap(prepared.output.report.replacementTarget)
+        let verification = try ImportedResultVerification(expected: prepared.output.xmlData, outputURL: prepared.outputURL,
+            originalProjectName: "Original", request: .init(id: UUID(), settings: .defaults, outputMode: .remove), replacementTarget: target)
+        try verification.savePending()
+        let loaded = try ImportedResultVerification.load(outputURL: prepared.outputURL)
+        XCTAssertEqual(loaded.replacementTarget, target)
+        for bad in [input, Data(String(decoding: prepared.output.xmlData, as: UTF8.self)
+            .replacingOccurrences(of: "name=\"Fixture\"", with: "name=\"Other\"").utf8)] {
+            do {
+                _ = try await loaded.verify(capture: { bad }, restore: { _, _ in XCTFail("Wrong project must not receive settings") })
+                XCTFail("Must reject original/wrong event")
+            } catch {}
+        }
+        let report = try await loaded.verify(capture: { try self.hostCopy(prepared.output.xmlData, stripped: false) },
+            restore: { _, _ in XCTFail("Already retained") })
+        XCTAssertTrue(report.verified)
+    }
+
+    func testReplacementRejectsMissingEventIdentityAndRenamedDestinationBeforeSaving() throws {
+        XCTAssertThrowsError(try XMLProjectApply.prepare(projectData: fixture(), selection: selection, cuts: cuts,
+            settings: .defaults, mode: .remove, outputName: "Original", directory: destination, replaceOriginal: true))
+        let input = Data(String(decoding: fixture(), as: UTF8.self)
+            .replacingOccurrences(of: "original-event", with: "BBBB0000-0000-4000-8000-000000000001").utf8)
+        XCTAssertThrowsError(try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
+            settings: .defaults, mode: .remove, outputName: "Renamed", directory: destination, replaceOriginal: true))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @MainActor func testMissingRecoveryPreventsDelivery() async throws {
+        let prepared = try prepare()
+        try FileManager.default.removeItem(at: prepared.recoveryURL)
+        do {
+            try await prepared.send { _ in XCTFail("Never import without the verified recovery artifact") }
+            XCTFail("Missing recovery must stop delivery")
+        } catch {}
+    }
+
     func testSubmittedSettingsReplaceEmptyStateAndReportHostLoss() throws {
         let settings = try AnalysisSettings(thresholdDBFS: -31, minimumSilenceDuration: 0.75,
             beforeSpeechPadding: 0.2, afterSpeechPadding: 0.3)

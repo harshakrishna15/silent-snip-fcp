@@ -39,6 +39,19 @@ final class FinalCutImportCompletionTests: XCTestCase {
         ] { XCTAssertFalse(dialog.isCompletedWarning(for: "Cutdown.fcpxml")) }
     }
 
+    func testReplacementConfirmationRequiresExactLibraryAndButtons() {
+        let text = "Final Cut Pro has received an XML document that is about to replace existing items with matching names in the library “Fixture”. Do you want to replace them?"
+        let dialog = FinalCutImportDialog(title: "", text: [text], buttons: ["Keep Both", "Replace", "Cancel"])
+        XCTAssertTrue(dialog.isReplacementConfirmation(libraryName: "Fixture"))
+        XCTAssertFalse(dialog.isReplacementConfirmation(libraryName: "Other"))
+        XCTAssertFalse(FinalCutImportDialog(title: "", text: [text], buttons: ["Replace", "Cancel"])
+            .isReplacementConfirmation(libraryName: "Fixture"))
+        let failure = XMLProjectApplyFailure(cause: CocoaError(.fileReadUnknown), outputURL: URL(fileURLWithPath: "/tmp/Result/Cutdown.fcpxml"),
+                                            importAttempted: true, replacingOriginal: true)
+        XCTAssertFalse(failure.localizedDescription.contains("original project is unchanged"))
+        XCTAssertTrue(failure.localizedDescription.contains("Before-Cuts.fcpxml"))
+    }
+
     func testDeliveryWithoutVisibleProjectDoesNotCountAsImportCompletion() {
         var readiness = FinalCutImportReadiness()
         XCTAssertFalse(readiness.observe(projectVisible: false, hasDialog: false, elapsed: 0))
@@ -63,6 +76,18 @@ final class FinalCutImportCompletionTests: XCTestCase {
         XCTAssertFalse(readiness.observe(projectVisible: false, hasDialog: false, elapsed: 0.4))
         XCTAssertFalse(readiness.observe(projectVisible: true, hasDialog: false, elapsed: 0.8))
         XCTAssertTrue(readiness.observe(projectVisible: true, hasDialog: false, elapsed: 1.5))
+    }
+
+    func testExistingNameAndCancelledPromptCannotCompleteFreshReplacement() {
+        var readiness = FinalCutImportReadiness()
+        XCTAssertFalse(readiness.observe(projectVisible: true, hasDialog: false, elapsed: 0, awaitingReplacement: true))
+        XCTAssertFalse(readiness.observe(projectVisible: true, hasDialog: true, elapsed: 1, awaitingReplacement: true))
+        XCTAssertFalse(readiness.observe(projectVisible: true, hasDialog: false, elapsed: 20, awaitingReplacement: true))
+        // The host can close the old timeline before we observe its prompt.
+        XCTAssertFalse(readiness.observe(projectVisible: true, hasDialog: false, elapsed: 21,
+                                         awaitingReplacement: true, originalTimelineClosed: true))
+        XCTAssertTrue(readiness.observe(projectVisible: true, hasDialog: false, elapsed: 22,
+                                        awaitingReplacement: true, originalTimelineClosed: true))
     }
 
     func testPostImportFailureIsPersistedWithoutDuplicateErrorPrefixOrSuccessClaim() throws {

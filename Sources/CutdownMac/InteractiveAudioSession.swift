@@ -3,7 +3,7 @@ import CutdownCore
 import Foundation
 
 /// Connects explicit effect-window actions to capture, PCM analysis and XML
-/// project delivery. The current project and original media remain unchanged.
+/// project replacement. Recovery XML is saved before replacing the project; source media is unchanged.
 @MainActor public final class InteractiveAudioSession {
     private struct Context {
         let capture: CapturedFinalCutProject
@@ -209,7 +209,7 @@ import Foundation
             try Task.checkCancellation()
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
-                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply imports a separate edited project into Cutdown Results. Import verification automatically recovers saved Cutdown settings if Final Cut resets them. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "))
+                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply replaces this project in its current event and saves recovery XML before import. Import verification automatically recovers saved Cutdown settings if Final Cut resets them. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "))
         } catch {
             // A cancellation must not prevent bounded cleanup of a verified,
             // request-owned project after returning to the original timeline.
@@ -250,7 +250,7 @@ import Foundation
             guard !removals.isEmpty else { throw EditedProjectWriterError.noSelectedCuts }
             let exclusions = result.analyzed.dialogueContext.fingerprintExclusions
             try await session.activate()
-            progress("Checking the current project before creating the edited copy…", 0)
+            progress("Checking the current project before replacing it…", 0)
             let finalURL = try await session.exportProjectXML(to: context.directory.appendingPathComponent("Before-XML-Apply.fcpxmld"))
             let finalData = try Data(contentsOf: finalURL)
             let final = try TimelineParser.parse(data: finalData, exclusions: exclusions)
@@ -260,29 +260,32 @@ import Foundation
                 requested: result.analyzed.settings)
             try Task.checkCancellation()
             progress("Creating all selected cuts in the edited project…", 0.4)
-            let outputName = capture.projectName + " — Cutdown " + String(request.id.uuidString.prefix(6))
+            let outputName = capture.projectName
             let artifact = try XMLProjectApply.prepare(projectData: finalData, selection: capture.selection,
                 cuts: removals, settings: result.analyzed.settings, mode: request.outputMode,
-                outputName: outputName, directory: parent)
+                outputName: outputName, directory: parent, replaceOriginal: true)
             prepared = artifact
+            if let target = artifact.output.report.replacementTarget {
+                try await session.prepareReplacementBrowser(target)
+            }
             try session.assertCurrentProject()
             progress("Sending ‘\(outputName)’ to Final Cut Pro…", 0.8)
             try Data("Import requested; verification pending. Do not import again until checking Final Cut.\n".utf8)
                 .write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             let verification = try ImportedResultVerification(expected: artifact.output.xmlData, outputURL: artifact.outputURL,
-                originalProjectName: capture.projectName, request: request)
+                originalProjectName: capture.projectName, request: request, replacementTarget: artifact.output.report.replacementTarget)
             try await artifact.send { url in
                 try verification.savePending()
                 importAttempted = true
                 self.verifications.remember(request.id, at: verification.outputURL)
                 try await XMLProjectApply.importIntoFinalCut(url)
             }
-            try await retryVerification(request.id, progress: progress)
+            try await retryVerification(request.id, progress: progress, acceptReplacement: true)
         } catch {
             _ = await capture.restoreReviewWindow()
             if error is XMLProjectApplyFailure { throw error }
             if let prepared {
-                let failure = XMLProjectApplyFailure(cause: error, outputURL: prepared.outputURL, importAttempted: importAttempted)
+                let failure = XMLProjectApplyFailure(cause: error, outputURL: prepared.outputURL, importAttempted: importAttempted, replacingOriginal: prepared.output.report.replacementTarget != nil)
                 try? failure.saveStatus()
                 throw failure
             }
@@ -307,19 +310,19 @@ import Foundation
         return result.request
     }
 
-    public func retryVerification(_ id: UUID, progress: @escaping AnalysisReviewCoordinator.Progress) async throws {
+    public func retryVerification(_ id: UUID, progress: @escaping AnalysisReviewCoordinator.Progress, acceptReplacement: Bool = false) async throws {
         guard let outputURL = verifications[id] else {
             throw FinalCutCaptureError.unavailable("There is no pending imported result to verify.")
         }
         let result = try ImportedResultVerification.load(outputURL: outputURL)
         let parent = result.outputURL.deletingLastPathComponent()
         do {
-            let current = try FinalCutAXSession(allowImportDialog: true)
-            guard current.projectName == result.originalProjectName || current.projectName == result.projectName else {
+            let current = try FinalCutAXSession(allowImportDialog: true, allowEmptyTimeline: result.replacementTarget != nil)
+            guard result.replacementTarget != nil || current.projectName == result.originalProjectName || current.projectName == result.projectName else {
                 throw FinalCutCaptureError.unavailable("Open the original project or ‘\(result.projectName)’ before retrying verification.")
             }
             progress("Checking the existing imported project…", 0.9)
-            let imported = try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL)
+            let imported = try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL, replacement: result.replacementTarget, acceptReplacement: acceptReplacement)
             _ = try await result.verify(capture: {
                 let url = try await imported.exportProjectXML(to: parent.appendingPathComponent("Verification-\(UUID().uuidString).fcpxmld"))
                 return try Data(contentsOf: url)
@@ -331,13 +334,14 @@ import Foundation
                 defer { self.restoringControllerSettings = false }
                 try await imported.restoreControllerSettings(correction.settings, clip: correction.clip, document: document)
             })
-            let message = "Verified ‘\(result.projectName)’: timeline, source media, rendering effects, and Cutdown settings match. Original project unchanged."
+            let disposition = result.replacementTarget == nil ? "Original project unchanged." : "Project replaced in its original event. Recovery XML saved in the result folder."
+            let message = "Verified ‘\(result.projectName)’: timeline, source media, rendering effects, and Cutdown settings match. \(disposition)"
             try Data((message + "\n").utf8).write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             result.markComplete()
             verifications.remove(id)
             progress(message, 1)
         } catch {
-            let failure = XMLProjectApplyFailure(cause: error, outputURL: result.outputURL, importAttempted: true)
+            let failure = XMLProjectApplyFailure(cause: error, outputURL: result.outputURL, importAttempted: true, replacingOriginal: result.replacementTarget != nil)
             try? failure.saveStatus()
             throw failure
         }

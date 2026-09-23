@@ -166,7 +166,7 @@ public struct ReviewAnalysisResult: Sendable {
             job.task?.cancel()
             job.state = job.task == nil ? .cancelled : .cancelling
             if job.applyStarted {
-                job.message = "Stopping Apply. An edited project may already have been sent to Final Cut; the original project is unchanged…"
+                job.message = "Stopping Apply. The project may already have been replaced in Final Cut. Check the result or recovery XML before applying again…"
             } else {
                 job.message = job.task == nil ? "Review cancelled. No timeline edits were made." : "Stopping the export safely…"
             }

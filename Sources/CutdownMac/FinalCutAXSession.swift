@@ -10,7 +10,7 @@ import Foundation
     let root: AXUIElement
     let mainWindow: AXUIElement
     let projectName: String
-    private let projectControl: AXUIElement
+    private let permitsEmptyTimeline: Bool
     let timeline: AXUIElement
     private let windowTitle: String
     var operationStage = "Reading the selected audio-only timeline clip"
@@ -21,7 +21,7 @@ import Foundation
         set { reviewOwnership.suspended = newValue }
     }
 
-    init(allowImportDialog: Bool = false) throws {
+    init(allowImportDialog: Bool = false, allowEmptyTimeline: Bool = false) throws {
         guard FinalCutAccessibility.isTrusted else { throw FinalCutAccessibility.AccessibilityError.permissionRequired }
         guard let application = NSRunningApplication.runningApplications(withBundleIdentifier: FinalCutAccessibility.bundleIdentifier).first else {
             throw FinalCutAccessibility.AccessibilityError.notRunning
@@ -34,15 +34,17 @@ import Foundation
         }
         mainWindow = window
         windowTitle = Self.rawAttribute(window, kAXTitleAttribute) as? String ?? ""
-        guard !windowTitle.isEmpty,
-              let project = Self.search(window, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true),
-              let name = Self.rawAttribute(project, kAXTitleAttribute) as? String, !name.isEmpty,
-              let timeline = Self.search(window, role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true) else {
+        let project = Self.search(window, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true)
+        let name = project.flatMap { Self.rawAttribute($0, kAXTitleAttribute) as? String } ?? ""
+        let timeline = Self.search(window, role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true)
+        guard !windowTitle.isEmpty, allowEmptyTimeline || (!name.isEmpty && timeline != nil) else {
             throw FinalCutCaptureError.unavailable("The active project timeline could not be identified in this Final Cut layout.")
         }
-        projectControl = project
+        permitsEmptyTimeline = allowEmptyTimeline
         projectName = name
-        self.timeline = timeline
+        // Empty sessions are used only to reopen a replaced project in the
+        // browser. A normal session is required before exporting or editing it.
+        self.timeline = timeline ?? window
         // Import verification owns the bounded dialog-settling policy. Other
         // entry points still require an unobstructed project before any action.
         guard allowImportDialog || currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut dialog before continuing.") }
@@ -104,8 +106,9 @@ import Foundation
         guard !application.isTerminated else { throw FinalCutCaptureError.unavailable("Final Cut exited during \(operationStage).") }
         // Opening a native panel can rebuild the project toolbar's AX objects.
         // Resolve its current control from the pinned project window each time.
-        guard let current = Self.search(mainWindow, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true),
-              string(current, kAXTitleAttribute) == projectName else {
+        let current = Self.search(mainWindow, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true)
+        let name = current.flatMap { string($0, kAXTitleAttribute) } ?? ""
+        guard name == projectName, permitsEmptyTimeline || !name.isEmpty else {
             throw FinalCutCaptureError.changedProject
         }
     }

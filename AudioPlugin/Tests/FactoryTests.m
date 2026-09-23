@@ -13,6 +13,8 @@
 - (void)sendPreviewCommand:(NSDictionary *)command;
 - (void)pollStatus;
 - (void)saveSettings:(id)sender;
+- (void)restoreSavedSettings:(id)sender;
+- (void)verifyExistingResult:(id)sender;
 - (void)jumpToCut:(id)sender;
 - (void)retryVerification:(id)sender;
 - (BOOL)restoreSettingsData:(NSData *)data;
@@ -140,6 +142,8 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 
     run(@"settings validation, document notification and exact Float32 precision", ^(Fixture *f) {
         require(!f.apply.enabled && !f.factory.openedURL && !f.preview.enabled, @"Opening view performs no action");
+        require([[f.factory valueForKey:@"reviewToolbar"] isHidden] && [[f.factory valueForKey:@"cancelButton"] isHidden],
+            @"Opening view hides actions that need an active analysis");
         StateObserver *observer = [StateObserver new];
         [f.unit addObserver:observer forKeyPath:@"allParameterValues" options:0 context:NULL];
         f.fields[0].stringValue = @"-20 trailing";
@@ -157,6 +161,9 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f.unit.analysisParameterTree parameterWithAddress:2].value = 0.1f;
         [f.factory refreshSettings];
         require([f.factory commitSettings] && [f.unit.analysisParameterTree parameterWithAddress:2].value == 0.1f, @"Minimum boundary survives formatting");
+        NSNumberFormatter *display = [NSNumberFormatter new];
+        display.numberStyle = NSNumberFormatterDecimalStyle;
+        require([f.fields[1].stringValue isEqual:[display stringFromNumber:@0.1]], @"Common decimals do not expose Float32 noise");
         f.fields[1].stringValue = @"0.0999";
         require(![f.factory commitSettings], @"Below-minimum value rejected");
     });
@@ -274,6 +281,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 
     run(@"selection waits for exact acknowledgments", ^(Fixture *f) {
         [f review];
+        require(![[f.factory valueForKey:@"reviewToolbar"] isHidden], @"Cut controls appear with review results");
         NSTableView *table = [f.factory valueForKey:@"resultsView"];
         NSButton *cut = (NSButton *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[0] row:0];
         require(cut.enabled && cut.state == NSControlStateValueOn, @"Eligible cuts have checkboxes");
@@ -374,8 +382,24 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         status.stringValue = [@"Long recovery notice. " stringByPaddingToLength:1200 withString:@"More information. " startingAtIndex:0];
         [f.factory.view layoutSubtreeIfNeeded];
         require(NSContainsRect(f.factory.view.bounds, [f.apply convertRect:f.apply.bounds toView:f.factory.view]), @"Apply stays visible with a long notice");
-        NSButton *verify = [f.factory valueForKey:@"verifyButton"];
-        require(NSContainsRect(f.factory.view.bounds, [verify convertRect:verify.bounds toView:f.factory.view]), @"Saved-result verification stays inside the single window");
+        NSButton *more = [f.factory valueForKey:@"moreButton"];
+        require(NSContainsRect(f.factory.view.bounds, [more convertRect:more.bounds toView:f.factory.view]), @"More actions stay inside the single window");
+        require([more.identifier isEqual:[@"cutdown.review.reconnect." stringByAppendingString:[f.factory valueForKey:@"viewID"]]] &&
+            !more.hidden && [more isKindOfClass:NSButton.class], @"Reconnection keeps an always-visible native button anchor");
+        NSMenu *menu = [f.factory valueForKey:@"moreMenu"];
+        require(menu.numberOfItems == 3 && menu.itemArray[0].action == @selector(restoreSavedSettings:) &&
+            menu.itemArray[2].action == @selector(verifyExistingResult:), @"Recovery actions remain available in More");
+        [menu update];
+        require(menu.itemArray[0].enabled && menu.itemArray[2].enabled, @"Recovery menu is available while idle");
+        connection(f.factory).operationBusy = YES; [menu update];
+        require(!menu.itemArray[0].enabled && !menu.itemArray[2].enabled, @"Recovery menu cannot interrupt an active operation");
+        response(f.factory, 2, @"analyzing", @{@"canCancel":@YES, @"progress":@0.5, @"message":status.stringValue});
+        [f.factory.view layoutSubtreeIfNeeded];
+        require(f.factory.view.frame.size.width <= 520 && f.factory.view.frame.size.height <= 560,
+            @"Progress and long notices fit the requested single-window size");
+        NSView *toolbar = [f.factory valueForKey:@"reviewToolbar"];
+        require(NSMinY([toolbar convertRect:toolbar.bounds toView:f.factory.view]) >= NSMaxY([f.apply convertRect:f.apply.bounds toView:f.factory.view]) + 8,
+            @"Review controls do not overlap the fixed Apply footer");
     });
 
     NSArray *states = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:@"AudioPlugin/Tests/review-states.json"] options:0 error:nil];
