@@ -63,7 +63,8 @@ final class FinalCutProjectCaptureTests: XCTestCase {
         for _ in ["Noise Gate", "Limiter", "Third-party Audio Unit", "Cutdown"] {
             XCTAssertFalse(FinalCutWindowPolicy.blocksPreview(role: "AXWindow", subrole: "AXDialog", modal: false, containsCutdownReview: false))
         }
-        XCTAssertTrue(FinalCutWindowPolicy.blocksPreview(role: "AXWindow", subrole: "AXDialog", modal: true, containsCutdownReview: true))
+        XCTAssertFalse(FinalCutWindowPolicy.blocksPreview(role: "AXWindow", subrole: "AXDialog", modal: true, containsCutdownReview: true))
+        XCTAssertTrue(FinalCutWindowPolicy.blocksPreview(role: "AXWindow", subrole: "AXDialog", modal: true, containsCutdownReview: false))
         XCTAssertTrue(FinalCutWindowPolicy.blocksPreview(role: "AXSheet", subrole: nil, modal: false, containsCutdownReview: true))
         XCTAssertTrue(FinalCutWindowPolicy.blocksPreview(role: "AXWindow", subrole: "AXDialog", modal: nil, containsCutdownReview: false))
         XCTAssertFalse(FinalCutWindowPolicy.blocksPreview(role: "AXWindow", subrole: "AXDialog", modal: nil, containsCutdownReview: true))
@@ -118,8 +119,10 @@ final class FinalCutProjectCaptureTests: XCTestCase {
             node(role: "AXCheckBox", description: "later effect check box"),
             node(role: "AXButton", description: "Show effect editor")
         ]
+        XCTAssertEqual(FinalCutReviewInspector.controllerCount(in: controls), 1)
         XCTAssertEqual(FinalCutReviewInspector.editorIndex(in: controls), 6)
         XCTAssertNil(FinalCutReviewInspector.editorIndex(in: Array(controls.prefix(3))))
+        XCTAssertEqual(FinalCutReviewInspector.controllerCount(in: controls + Array(controls[3...6])), 2)
         XCTAssertNil(FinalCutReviewInspector.editorIndex(in: controls + Array(controls[3...6])))
     }
 
@@ -137,8 +140,8 @@ final class FinalCutProjectCaptureTests: XCTestCase {
     func testCutdownReviewPanelDoesNotBlockButRealDialogsDo() {
         XCTAssertFalse(FinalCutWindowPolicy.isBlockingDialog(subrole: "AXDialog", modal: false, containsCutdownReview: true))
         XCTAssertFalse(FinalCutWindowPolicy.isBlockingDialog(subrole: "AXDialog", modal: nil, containsCutdownReview: true))
-        XCTAssertTrue(FinalCutWindowPolicy.isBlockingDialog(subrole: "AXDialog", modal: true, containsCutdownReview: true))
-        XCTAssertTrue(FinalCutWindowPolicy.isBlockingDialog(subrole: "AXDialog", modal: false, containsCutdownReview: false))
+        XCTAssertFalse(FinalCutWindowPolicy.isBlockingDialog(subrole: "AXDialog", modal: true, containsCutdownReview: true))
+        XCTAssertFalse(FinalCutWindowPolicy.isBlockingDialog(subrole: "AXDialog", modal: false, containsCutdownReview: false))
         XCTAssertTrue(FinalCutWindowPolicy.isBlockingDialog(subrole: "AXDialog", modal: nil, containsCutdownReview: false))
         XCTAssertTrue(FinalCutWindowPolicy.isBlockingDialog(subrole: "AXStandardWindow", modal: true, containsCutdownReview: false))
         XCTAssertFalse(FinalCutWindowPolicy.isBlockingDialog(subrole: "AXStandardWindow", modal: false, containsCutdownReview: false))

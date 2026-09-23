@@ -79,7 +79,6 @@ struct PreviewSamplePacer {
     private var visibility = PreviewVisibility()
     private weak var removedEffectSession: FinalCutAXSession?
     private var lastGeometry: PreviewGeometry?
-    private var lastOrderedWindowOrder: [Int]?
     private var readTimes: [Double] = []
     private var paintTimes: [Double] = []
     private var diagnosticEnabled = false
@@ -126,14 +125,13 @@ struct PreviewSamplePacer {
         gate.reset(); observer?.stop(); observer = nil
         timer?.invalidate(); timer = nil; reader = nil; session = nil
         pacer.reset()
-        panel?.orderOut(nil); lastGeometry = nil; lastOrderedWindowOrder = nil; visibility.reset()
+        panel?.orderOut(nil); lastGeometry = nil; visibility.reset()
     }
     private func wake() { pacer.wake(at: Date()) }
 
     private func tick() {
+        maintainPresentation()
         let now = Date()
-        // A slow/unresponsive host must not leave an old rectangle over edits.
-        if visibility.expired(at: now), panel?.isVisible == true { panel?.orderOut(nil) }
         guard let reader, pacer.isDue(at: now), let token = gate.begin() else { return }
         pacer.didStartRead(at: now)
         reader.sample { [weak self] result, duration in
@@ -151,10 +149,12 @@ struct PreviewSamplePacer {
                         self.hide()
                         self.record("Dismissed: Cutdown effect removed")
                     } else if case FinalCutPreviewError.transient = error {
-                        if self.visibility.expired(at: Date()) { self.panel?.orderOut(nil) }
+                        self.visibility.transientFailure()
                     } else {
-                        self.panel?.orderOut(nil)
-                        self.record("Hidden: " + error.localizedDescription)
+                        if self.visibility.confirmedUnavailable(error.localizedDescription, at: Date()) {
+                            self.panel?.orderOut(nil)
+                            self.record("Hidden: " + error.localizedDescription)
+                        }
                     }
                 }
                 self.finishDiagnosticsIfNeeded()
@@ -162,10 +162,28 @@ struct PreviewSamplePacer {
         }
     }
 
+    /// Final Cut can raise its project without an AX notification. Correct
+    /// panel order on the display timer rather than waiting for a geometry
+    /// read, which can be busy validating the Inspector during a scrub.
+    private func maintainPresentation() {
+        guard let window = panel, window.isVisible, let geometry = lastGeometry,
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                  kCGNullWindowID) as? [[String: Any]] else { return }
+        let order = windows.compactMap { $0[kCGWindowNumber as String] as? Int }
+        if order.contains(geometry.projectWindowNumber),
+           PreviewVisibility.needsOrdering(visible: true, overlay: window.windowNumber,
+               project: geometry.projectWindowNumber, windowOrder: order) {
+            window.order(.above, relativeTo: geometry.projectWindowNumber)
+        }
+        // Ordering or resizing can replace AppKit's backing layer after the
+        // last geometry paint. The drawing checks attachment before returning.
+        drawing.updateLayer()
+    }
+
     private func present(_ geometry: PreviewGeometry) {
         let changed = geometry.frame != lastGeometry?.frame || geometry.visibleFrame != lastGeometry?.visibleFrame
         if changed { pacer.wake(at: Date()) }
-        visibility.verified(at: Date())
+        visibility.verified()
         let window = panel ?? makePanel()
         let visible = geometry.visibleFrame
         let targetFrame = CGRect(x: visible.minX, y: CGDisplayBounds(CGMainDisplayID()).height - visible.maxY,
@@ -181,12 +199,7 @@ struct PreviewSamplePacer {
         if PreviewVisibility.needsOrdering(visible: window.isVisible, overlay: window.windowNumber,
             project: geometry.projectWindowNumber, windowOrder: geometry.windowOrder) {
             guard geometry.projectWindowNumber > 0 else { window.orderOut(nil); return }
-            // A window snapshot is reused across geometry reads. Order once
-            // for that snapshot instead of repeatedly raising the same panel.
-            if !window.isVisible || lastOrderedWindowOrder != geometry.windowOrder {
-                window.order(.above, relativeTo: geometry.projectWindowNumber)
-                lastOrderedWindowOrder = geometry.windowOrder
-            }
+            window.order(.above, relativeTo: geometry.projectWindowNumber)
         }
         lastGeometry = geometry
         if diagnosticEnabled { record("Visible: clip=\(geometry.frame), panel=\(window.frame), vector boundaries=\(drawing.boundaries.count)") }

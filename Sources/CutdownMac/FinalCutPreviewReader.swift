@@ -27,7 +27,7 @@ final class FinalCutPreviewReader: @unchecked Sendable {
     private var projectControl: AXUIElement?
     private var scrollAncestors: [AXUIElement] = []
     private var regularApplications: [pid_t: Bool] = [:]
-    private var validationDate = Date.distantPast
+    private var identityLease = PreviewIdentityLease()
     private var effectDate = Date.distantPast
     private var effectLifetime = PreviewEffectLifetime()
     private struct WindowSnapshot {
@@ -48,6 +48,11 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         var scrollPosition: Double?
         var effectsHeading = false
         var effectsExpanded = false
+    }
+    private enum EffectInspectionResult {
+        case notSelected
+        case incomplete
+        case complete(PreviewEffectInspection)
     }
     private var effectInspectionProgress: EffectInspectionProgress?
     private var nextDeadline = Date.distantFuture
@@ -70,16 +75,17 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             let start = Date()
             self.nextDeadline = start.addingTimeInterval(0.25)
             let result = Result { try self.read() }
-            // Scrolling the clip offscreen is expected. Keep its verified AX
-            // handles instead of rescanning the entire timeline each sample.
-            if case .failure(let error) = result, case FinalCutPreviewError.transient = error {
-                self.validationDate = .distantPast
-            }
+            // A temporary geometry/window read must not force an expensive
+            // identity scan on every following sample. The scheduled identity
+            // validation still runs once its normal interval has elapsed.
             completion(result, Date().timeIntervalSince(start))
         }
     }
 
-    func invalidate() { queue.async { self.validationDate = .distantPast; self.windowDate = .distantPast } }
+    func invalidate() { queue.async {
+        self.identityLease.invalidate()
+        self.windowDate = .distantPast
+    } }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         guard Date() < nextDeadline else { return nil }
@@ -143,7 +149,7 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         }
         guard !ancestors.isEmpty else { throw FinalCutPreviewError.transient("Timeline scroll viewport is unavailable") }
         self.timeline = timeline; self.clip = clip; projectControl = project; scrollAncestors = ancestors
-        validationDate = Date()
+        identityLease.verified(at: Date())
         regularApplications.removeAll(keepingCapacity: true)
     }
 
@@ -152,15 +158,15 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         for window in windows {
             guard (attribute(window, "AXSheets") as? [AXUIElement] ?? []).isEmpty,
                   !children(window).contains(where: { string($0, kAXRoleAttribute) == kAXSheetRole }) else {
-                throw FinalCutPreviewError.unavailable("Final Cut has an open sheet")
+                throw FinalCutPreviewError.transient("Final Cut has an open sheet")
             }
             if CFEqual(window, mainWindow) { continue }
             let role = string(window, kAXRoleAttribute), subrole = string(window, kAXSubroleAttribute)
             let modal = (attribute(window, kAXModalAttribute) as? NSNumber)?.boolValue
             if role == kAXSheetRole || modal == true || subrole == kAXDialogSubrole {
-                let review = modal == nil && isCutdownReviewWindow(window)
+                let review = modal == false ? false : isCutdownReviewWindow(window)
                 if FinalCutWindowPolicy.blocksPreview(role: role, subrole: subrole, modal: modal, containsCutdownReview: review) {
-                    throw FinalCutPreviewError.unavailable("Final Cut has an open modal dialog")
+                    throw FinalCutPreviewError.transient("Final Cut has an open modal dialog")
                 }
             }
         }
@@ -169,7 +175,22 @@ final class FinalCutPreviewReader: @unchecked Sendable {
     private func read() throws -> PreviewGeometry {
         dispatchPrecondition(condition: .onQueue(queue))
         if effectLifetime.removed { throw FinalCutPreviewError.effectRemoved }
-        if timeline == nil || clip == nil || Date().timeIntervalSince(validationDate) >= 1.0 { try validate() }
+        let now = Date()
+        if timeline == nil || clip == nil {
+            try validate()
+        } else if identityLease.beginRevalidation(at: now) {
+            do {
+                try validate()
+            } catch FinalCutPreviewError.transient {
+                // Skimming can rebuild the timeline AX tree while the old
+                // verified clip and viewport handles still supply geometry.
+                // Keep using those handles for a bounded interval; retrying
+                // the full scan on every sample causes visible gaps.
+            }
+        }
+        guard identityLease.usable(at: Date()) else {
+            throw FinalCutPreviewError.transient("Analyzed clip identity is unavailable")
+        }
         guard let timeline, let clip, let projectControl,
               let title = string(projectControl, kAXTitleAttribute) else { throw FinalCutPreviewError.transient("Project is unavailable") }
         guard title == projectName else { throw FinalCutPreviewError.unavailable("Project changed") }
@@ -190,17 +211,21 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         // Clip and viewport positions are read on every sample, independently
         // of AX notifications. Window enumeration and Inspector traversal are
         // safety checks, not part of the high-frequency tracking path.
+        var refreshedWindowSnapshot = false
         if windowSnapshot == nil || Date().timeIntervalSince(windowDate) >= 0.75 {
             try validateDialogs()
             windowSnapshot = try readWindowSnapshot()
             windowDate = Date()
+            refreshedWindowSnapshot = true
         }
         guard let windowSnapshot else { throw FinalCutPreviewError.transient("Visible Final Cut window could not be verified") }
         // WindowServer composites the overlay immediately above the project.
         // Rectangles are not opacity masks: transparent host/utility surfaces
         // often cover the entire display, despite containing no visible pixels.
         var geometry = PreviewGeometry(frame: frame, visibleFrame: visibleFrame, occlusions: [],
-            projectWindowNumber: windowSnapshot.projectNumber, windowOrder: windowSnapshot.order)
+            projectWindowNumber: windowSnapshot.projectNumber,
+            windowOrder: refreshedWindowSnapshot ? windowSnapshot.order :
+                (currentWindowOrder(projectNumber: windowSnapshot.projectNumber) ?? windowSnapshot.order))
         if Date().timeIntervalSince(effectDate) >= (effectInspectionProgress == nil ? 1.0 : 0.1) {
             // Bound each Inspector slice so it cannot monopolize tracking.
             // Partial snapshots resume on later samples and remain unknown,
@@ -208,8 +233,17 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             nextDeadline = Date().addingTimeInterval(effectInspectionProgress == nil ? 0.35 : 0.1)
             let inspection = inspectEffect(timeline: timeline, clip: clip)
             effectDate = Date()
-            if let inspection, effectLifetime.observe(inspection, at: effectDate) {
-                throw FinalCutPreviewError.effectRemoved
+            switch inspection {
+            case .notSelected:
+                // Selecting or scrubbing another clip ends any pending
+                // absence evidence from the analyzed clip's Inspector.
+                _ = effectLifetime.observe(nil, at: effectDate)
+            case .incomplete:
+                break
+            case .complete(let snapshot):
+                if effectLifetime.observe(snapshot, at: effectDate) {
+                    throw FinalCutPreviewError.effectRemoved
+                }
             }
         }
         if diagnostics {
@@ -235,7 +269,7 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         }
         guard let projectNumber = FinalCutPreviewSurface.projectWindowNumber(in: surfaces,
             projectPID: pid, projectFrame: projectWindowFrame), projectNumber > 0 else {
-            throw FinalCutPreviewError.unavailable("Final Cut project window is minimized, offscreen, or on another Space")
+            throw FinalCutPreviewError.transient("Final Cut project window could not be matched")
         }
         let details = diagnostics ? windows.prefix(40).map { info in
             "owner=\(info[kCGWindowOwnerName as String] ?? "unknown") pid=\(info[kCGWindowOwnerPID as String] ?? 0) layer=\(info[kCGWindowLayer as String] ?? 0) alpha=\(info[kCGWindowAlpha as String] ?? 1) bounds=\(info[kCGWindowBounds as String] ?? [:])"
@@ -244,7 +278,18 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             order: windows.compactMap { $0[kCGWindowNumber as String] as? Int }, diagnosticSurfaces: details)
     }
 
-    private func inspectEffect(timeline: AXUIElement, clip: AXUIElement) -> PreviewEffectInspection? {
+    /// Final Cut can put its project back in front when the mouse enters the
+    /// timeline, without changing clip geometry or AX notifications. A cheap
+    /// WindowServer order read on each sample avoids waiting for the slower
+    /// dialog/project-window safety refresh before restoring the overlay.
+    private func currentWindowOrder(projectNumber: Int) -> [Int]? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let order = windows.compactMap { $0[kCGWindowNumber as String] as? Int }
+        return order.contains(projectNumber) ? order : nil
+    }
+
+    private func inspectEffect(timeline: AXUIElement, clip: AXUIElement) -> EffectInspectionResult {
         func selectedTarget() -> Bool {
             // Final Cut versions differ in whether the layout area provides
             // SelectedChildren or only Selected on its layout items.
@@ -264,20 +309,20 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             }
             return selected.count == 1 && CFEqual(selected[0], clip)
         }
+        guard selectedTarget() else { effectInspectionProgress = nil; return .notSelected }
         if effectInspectionProgress == nil {
-            guard selectedTarget() else { return nil }
-            guard let inspector = Self.search(mainWindow, role: kAXScrollAreaRole, description: "inspector", containersOnly: true) else { return nil }
-            guard let viewport = rect(inspector) else { return nil }
-            guard let controls = attribute(inspector, kAXChildrenAttribute) as? [AXUIElement], controls.count <= 300 else { return nil }
+            guard let inspector = Self.search(mainWindow, role: kAXScrollAreaRole, description: "inspector", containersOnly: true) else { return .incomplete }
+            guard let viewport = rect(inspector) else { return .incomplete }
+            guard let controls = attribute(inspector, kAXChildrenAttribute) as? [AXUIElement], controls.count <= 300 else { return .incomplete }
             effectInspectionProgress = EffectInspectionProgress(inspector: inspector, viewport: viewport, controls: controls)
         }
-        guard var progress = effectInspectionProgress else { return nil }
+        guard var progress = effectInspectionProgress else { return .incomplete }
         while progress.index < progress.controls.count {
             let control = progress.controls[progress.index]
-            guard Date() < nextDeadline else { effectInspectionProgress = progress; return nil }
+            guard Date() < nextDeadline else { effectInspectionProgress = progress; return .incomplete }
             guard let role = string(control, kAXRoleAttribute) else {
                 effectInspectionProgress = Date() >= nextDeadline ? progress : nil
-                return nil
+                return .incomplete
             }
             var candidate = progress
             var key: String?
@@ -287,14 +332,14 @@ final class FinalCutPreviewReader: @unchecked Sendable {
                 if description.lowercased() == "cutdown audio check box" {
                     guard candidate.cutdown == nil, let frame = rect(control) else {
                         effectInspectionProgress = Date() >= nextDeadline ? progress : nil
-                        return nil
+                        return .incomplete
                     }
                     candidate.cutdown = frame
                 } else if description == "toggle Effects" {
                     guard PreviewEffectInspection.effectsExpanded(value: string(control, kAXValueAttribute),
                         title: string(control, kAXTitleAttribute)) else {
                         effectInspectionProgress = Date() >= nextDeadline ? progress : nil
-                        return nil
+                        return .incomplete
                     }
                     candidate.effectsExpanded = true
                     key = "Effects"
@@ -307,14 +352,14 @@ final class FinalCutPreviewReader: @unchecked Sendable {
                 guard let value = attribute(control, kAXValueAttribute) as? NSNumber,
                       let enabled = attribute(control, kAXEnabledAttribute) as? NSNumber else {
                     effectInspectionProgress = Date() >= nextDeadline ? progress : nil
-                    return nil
+                    return .incomplete
                 }
                 candidate.scrollPosition = PreviewEffectInspection.scrollPosition(value: value.doubleValue, enabled: enabled.boolValue)
             }
             if let key {
                 guard let frame = rect(control) else {
                     effectInspectionProgress = Date() >= nextDeadline ? progress : nil
-                    return nil
+                    return .incomplete
                 }
                 if candidate.anchors.updateValue(frame, forKey: key) != nil { candidate.duplicateAnchors.insert(key) }
             }
@@ -322,19 +367,21 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             progress = candidate
         }
         for key in progress.duplicateAnchors { progress.anchors.removeValue(forKey: key) }
-        guard !progress.effectsHeading || progress.effectsExpanded else { effectInspectionProgress = nil; return nil }
+        guard !progress.effectsHeading || progress.effectsExpanded else { effectInspectionProgress = nil; return .incomplete }
         // The Inspector may have rebuilt or the selection may have changed
         // during reads. Accept only a complete, stable list on this occurrence.
-        guard Date() < nextDeadline, selectedTarget(),
+        guard Date() < nextDeadline else { effectInspectionProgress = progress; return .incomplete }
+        guard selectedTarget() else { effectInspectionProgress = nil; return .notSelected }
+        guard
               let after = attribute(progress.inspector, kAXChildrenAttribute) as? [AXUIElement],
               progress.controls.count == after.count,
               zip(progress.controls, after).allSatisfy({ CFEqual($0, $1) }) else {
             effectInspectionProgress = Date() >= nextDeadline ? progress : nil
-            return nil
+            return .incomplete
         }
         effectInspectionProgress = nil
-        return .init(viewport: progress.viewport, cutdown: progress.cutdown,
-                     anchors: progress.anchors, scrollPosition: progress.scrollPosition)
+        return .complete(.init(viewport: progress.viewport, cutdown: progress.cutdown,
+                     anchors: progress.anchors, scrollPosition: progress.scrollPosition))
     }
     private func rect(_ element: AXUIElement) -> CGRect? {
             guard let p = attribute(element, kAXPositionAttribute),
@@ -375,13 +422,10 @@ final class FinalCutPreviewReader: @unchecked Sendable {
     }
 
     private func isCutdownReviewWindow(_ window: AXUIElement) -> Bool {
-        guard string(window, kAXRoleAttribute) != kAXSheetRole,
-              string(window, kAXSubroleAttribute) == kAXDialogSubrole,
-              (attribute(window, kAXModalAttribute) as? NSNumber)?.boolValue != true else { return false }
-        return (find(in: window, role: kAXTableRole, identifier: "cutdown.review.cuts", maxDepth: 16, maxNodes: 250) != nil
-            || find(in: window, role: kAXTextAreaRole, identifier: "cutdown.review.results", maxDepth: 16, maxNodes: 250) != nil)
-            && (find(in: window, role: kAXButtonRole, title: "Analyze", maxDepth: 16, maxNodes: 250) != nil
-                || find(in: window, role: kAXButtonRole, title: "Analyze Again", maxDepth: 16, maxNodes: 250) != nil)
+        guard string(window, kAXRoleAttribute) != kAXSheetRole else { return false }
+        return (find(in: window, identifier: "cutdown.review.cuts", maxDepth: 16, maxNodes: 250) != nil
+            || find(in: window, identifier: "cutdown.review.results", maxDepth: 16, maxNodes: 250) != nil)
+            && find(in: window, identifier: "cutdown.status", maxDepth: 16, maxNodes: 250) != nil
     }
 
 }

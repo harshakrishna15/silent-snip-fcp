@@ -345,6 +345,30 @@ import XCTest
         XCTAssertTrue(try XCTUnwrap(responses.last).canApply)
     }
 
+    func testJumpKeepsPreviewVisibleUntilNavigationFinishes() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest()
+        var response: ReviewResponse?
+        var preview: ReviewPlan?
+        var finishJump: CheckedContinuation<Void, Never>?
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            highlightOperation: { _, _, _ in await withCheckedContinuation { finishJump = $0 } },
+            emit: { response = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop(); finishJump?.resume() }
+        coordinator.onReviewChange = { _, plan in preview = plan }
+        coordinator.start(request)
+        try await waitUntil { response?.state == "review" }
+        XCTAssertNotNil(preview)
+        let cut = try XCTUnwrap(response?.cuts.first)
+        coordinator.handle(.init(request: request.id, command: .highlight, cutID: cut.id))
+        XCTAssertEqual(response?.state, "navigating")
+        XCTAssertNotNil(preview, "Moving the playhead must not blink the cut lines.")
+        try await waitUntil { finishJump != nil }
+        finishJump?.resume(); finishJump = nil
+        try await waitUntil { response?.state == "review" }
+        XCTAssertNotNil(preview)
+    }
+
     func testSourceAndIsolatedMusicReviewsCanApply() async throws {
         for isolated in [false, true] {
             let fixture = try makeFixture(role: "music", isolated: isolated)
@@ -399,7 +423,7 @@ import XCTest
         XCTAssertFalse(try XCTUnwrap(responses.last).canApply)
     }
 
-    func testPreviewVisibilityIsIndependentOfCutsAndSurvivesStatusPolling() async throws {
+    func testLegacyPreviewHideCommandCannotDismissValidGuidelines() async throws {
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let request = try makeRequest()
@@ -417,12 +441,10 @@ import XCTest
         XCTAssertNotNil(preview)
         coordinator.handle(.init(request: request.id, command: .preview, included: false))
         coordinator.handle(.init(request: request.id, command: .status))
-        XCTAssertNil(preview)
-        XCTAssertEqual(responses.last?.previewVisible, false)
+        XCTAssertNotNil(preview)
+        XCTAssertEqual(responses.last?.previewVisible, true)
         XCTAssertEqual(responses.last?.cuts, cuts)
         XCTAssertEqual(responses.last?.canApply, true)
-        coordinator.handle(.init(request: request.id, command: .preview, included: true))
-        XCTAssertNotNil(preview)
         coordinator.handle(.init(request: request.id, command: .apply))
         XCTAssertNil(preview)
         try await waitUntil { responses.last?.state == "completed" }

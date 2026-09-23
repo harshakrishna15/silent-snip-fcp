@@ -7,14 +7,23 @@ enum FinalCutWindowPolicy {
     /// Effect editors are nonmodal dialogs. WindowServer already keeps their
     /// visible content above the preview; opening one must not hide all lines.
     static func blocksPreview(role: String?, subrole: String?, modal: Bool?, containsCutdownReview: Bool) -> Bool {
-        if role == kAXSheetRole || modal == true { return true }
+        if role == kAXSheetRole { return true }
+        if containsCutdownReview { return false }
         if modal == false { return false }
         return isBlockingDialog(role: role, subrole: subrole, modal: modal, containsCutdownReview: containsCutdownReview)
     }
 
     static func isBlockingDialog(role: String? = nil, subrole: String?, modal: Bool?, containsCutdownReview: Bool) -> Bool {
-        if role == kAXSheetRole || modal == true { return true }
-        return subrole == kAXDialogSubrole && !containsCutdownReview
+        if role == kAXSheetRole { return true }
+        // Audio Unit editors are nonmodal even when Final Cut labels them
+        // AXDialog. Their child controls can temporarily be unavailable to AX.
+        if modal == false { return false }
+        // Final Cut can mark an Audio Unit editor as modal even though its
+        // verified Cutdown Controls content is safe to leave open during a
+        // review. Only an exact Cutdown window receives this exemption.
+        if containsCutdownReview { return false }
+        if modal == true { return true }
+        return subrole == kAXDialogSubrole
     }
 }
 
@@ -98,6 +107,12 @@ struct FinalCutPreviewSurface {
 }
 
 enum FinalCutReviewInspector {
+    static func controllerCount(in controls: [AccessibilityNode]) -> Int {
+        controls.filter {
+            $0.role == kAXCheckBoxRole && $0.description?.lowercased() == "cutdown audio check box"
+        }.count
+    }
+
     /// Audio effects are flat siblings in Final Cut's Inspector. Bind the editor
     /// to its own exact checkbox and label, stopping before another effect.
     static func editorIndex(in controls: [AccessibilityNode]) -> Int? {

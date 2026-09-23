@@ -367,7 +367,7 @@ public enum AudioControllerSettingsError: LocalizedError, Equatable {
         case .missingController:
             return "The selected audio-only clip does not carry Cutdown Audio. Select the clip with this effect, or apply Cutdown Audio to it, then Analyze Again."
         case .ambiguousController:
-            return "This clip has multiple Cutdown Audio effects. Keep one controller and Analyze Again."
+            return "Multiple Cutdown Audio effects on this clip. Remove the extra one in the Audio Inspector, then Analyze Again."
         case .disabledController:
             return "The selected Cutdown Audio effect is disabled. Enable it and Analyze Again."
         case .unsupportedControllerLocation:

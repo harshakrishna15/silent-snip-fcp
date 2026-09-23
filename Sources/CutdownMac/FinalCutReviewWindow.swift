@@ -4,16 +4,22 @@ import CutdownCore
 import Foundation
 
 extension FinalCutAXSession {
+    func hasMultipleCutdownEffectsInInspector() -> Bool {
+        guard let inspector = Self.search(mainWindow, role: kAXScrollAreaRole,
+                                          description: "inspector", containersOnly: true) else { return false }
+        let controls = children(inspector).prefix(300).map {
+            AccessibilityNode(role: string($0, kAXRoleAttribute), identifier: nil,
+                title: nil, description: string($0, kAXDescriptionAttribute), value: nil,
+                selected: nil, enabled: nil, children: [])
+        }
+        return FinalCutReviewInspector.controllerCount(in: controls) > 1
+    }
+
     func isCutdownReviewWindow(_ window: AXUIElement) -> Bool {
-        guard string(window, kAXRoleAttribute) != kAXSheetRole,
-              string(window, kAXSubroleAttribute) == kAXDialogSubrole,
-              (attribute(window, kAXModalAttribute) as? NSNumber)?.boolValue != true else { return false }
-        return (find(in: window, role: kAXStaticTextRole, identifier: "cutdown.status", maxDepth: 16, maxNodes: 250) != nil
-            || find(in: window, role: kAXTableRole, identifier: "cutdown.review.cuts", maxDepth: 16, maxNodes: 250) != nil
-            || find(in: window, role: kAXTextAreaRole, identifier: "cutdown.review.results", maxDepth: 16, maxNodes: 250) != nil)
-            && (find(in: window, role: kAXButtonRole, identifier: "cutdown.analyze", maxDepth: 16, maxNodes: 250) != nil
-                || find(in: window, role: kAXButtonRole, title: "Analyze", maxDepth: 16, maxNodes: 250) != nil
-                || find(in: window, role: kAXButtonRole, title: "Analyze Again", maxDepth: 16, maxNodes: 250) != nil)
+        guard string(window, kAXRoleAttribute) != kAXSheetRole else { return false }
+        return find(in: window, identifier: "cutdown.status", maxDepth: 16, maxNodes: 250) != nil
+            && (find(in: window, identifier: "cutdown.review.cuts", maxDepth: 16, maxNodes: 250) != nil
+                || find(in: window, identifier: "cutdown.review.results", maxDepth: 16, maxNodes: 250) != nil)
     }
 
     func cutdownReviewWindows() -> [AXUIElement] {

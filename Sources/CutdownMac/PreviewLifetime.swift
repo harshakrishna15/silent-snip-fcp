@@ -1,21 +1,48 @@
 import Foundation
 import CoreGraphics
 
-/// A failed accessibility read is not a project change. Keep the last verified
-/// drawing briefly while the host rebuilds its accessibility tree after a click.
+/// A failed accessibility read is not evidence that the analyzed clip moved.
+/// Keep the last verified drawing through host rebuilds and require sustained,
+/// matching evidence before hiding for a different project or scroll viewport.
 struct PreviewVisibility {
-    private var lastGood: Date?
-    mutating func verified(at now: Date) { lastGood = now }
-    mutating func reset() { lastGood = nil }
-    func expired(at now: Date) -> Bool {
-        guard let lastGood else { return true }
-        return now.timeIntervalSince(lastGood) > 1.5
+    private var unavailable: (reason: String, since: Date)?
+    mutating func verified() { unavailable = nil }
+    mutating func transientFailure() { unavailable = nil }
+    mutating func reset() { unavailable = nil }
+    mutating func confirmedUnavailable(_ reason: String, at now: Date) -> Bool {
+        guard let pending = unavailable, pending.reason == reason else {
+            unavailable = (reason, now)
+            return false
+        }
+        return now.timeIntervalSince(pending.since) >= 2.5
     }
-    static func needsOrdering(visible: Bool, overlay: Int, project: Int, windowOrder: [Int]) -> Bool {
-        guard visible, let overlayIndex = windowOrder.firstIndex(of: overlay),
-              let projectIndex = windowOrder.firstIndex(of: project) else { return true }
+    static func needsOrdering(visible: Bool, overlay: Int, project: Int,
+                              windowOrder: [Int]) -> Bool {
+        guard visible else { return true }
+        guard let projectIndex = windowOrder.firstIndex(of: project) else { return false }
+        // A fully covered panel can disappear from WindowServer's on-screen
+        // list. Keep raising it while the verified project remains present.
+        guard let overlayIndex = windowOrder.firstIndex(of: overlay) else { return true }
         return overlayIndex > projectIndex
     }
+}
+
+/// A hover can briefly invalidate Final Cut's timeline accessibility tree.
+/// Keep a verified clip handle during that rebuild, but bound its lifetime and
+/// space out full identity scans so one failed read cannot cause a retry loop.
+struct PreviewIdentityLease {
+    private var verifiedAt = Date.distantPast
+    private var attemptedAt = Date.distantPast
+
+    mutating func verified(at now: Date) { verifiedAt = now }
+    mutating func invalidate() { verifiedAt = .distantPast; attemptedAt = .distantPast }
+    mutating func beginRevalidation(at now: Date) -> Bool {
+        guard now.timeIntervalSince(verifiedAt) >= 1.0,
+              now.timeIntervalSince(attemptedAt) >= 1.0 else { return false }
+        attemptedAt = now
+        return true
+    }
+    func usable(at now: Date) -> Bool { now.timeIntervalSince(verifiedAt) < 5.0 }
 }
 
 struct PreviewEffectInspection {
@@ -55,13 +82,19 @@ struct PreviewEffectInspection {
 struct PreviewEffectLifetime {
     private var witness: (before: String, after: String?, viewport: CGRect, scroll: Double?)?
     private var missingSince: Date?
+    private var missingObservations = 0
+    private var sawCutdown = false
     private(set) var removed = false
 
     mutating func observe(_ inspection: PreviewEffectInspection?, at now: Date) -> Bool {
         if removed { return true }
-        guard let inspection else { missingSince = nil; witness = nil; return false }
+        guard let inspection else {
+            missingSince = nil; missingObservations = 0; witness = nil
+            return false
+        }
         if let cutdown = inspection.cutdown {
-            missingSince = nil
+            sawCutdown = true
+            missingSince = nil; missingObservations = 0
             witness = nil
             if inspection.visible(cutdown) {
                 let visible = inspection.anchors.filter { inspection.visible($0.value) }
@@ -83,8 +116,18 @@ struct PreviewEffectLifetime {
                 boundedAbsence = true
             }
         }
-        guard boundedAbsence else { missingSince = nil; witness = nil; return false }
-        if let missingSince, now.timeIntervalSince(missingSince) >= 0.35 { removed = true }
+        // A complete-looking Inspector can temporarily omit a plugin row as
+        // Final Cut rebuilds it. Require several stable reads, and give the
+        // first appearance extra time before inferring an early deletion.
+        guard boundedAbsence else {
+            missingSince = nil; missingObservations = 0; witness = nil
+            return false
+        }
+        missingObservations += 1
+        let requiredDuration = sawCutdown ? 2.5 : 6.0
+        let requiredObservations = sawCutdown ? 3 : 5
+        if let missingSince, now.timeIntervalSince(missingSince) >= requiredDuration,
+           missingObservations >= requiredObservations { removed = true }
         else if missingSince == nil { missingSince = now }
         return removed
     }

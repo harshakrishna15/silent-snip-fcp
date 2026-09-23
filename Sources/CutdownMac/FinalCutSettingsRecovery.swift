@@ -79,7 +79,7 @@ extension FinalCutAXSession {
             throw FinalCutCaptureError.unavailable("The imported controller could not save its settings. Install the matching Cutdown Audio build before retrying verification.")
         }
         try await waitUntil(timeout: 3, context: "the controller settings to save") {
-            guard let label = self.find(in: window, role: kAXStaticTextRole, identifier: "cutdown.status", maxDepth: 16) else { return false }
+            guard let label = self.find(in: window, identifier: "cutdown.status", maxDepth: 16) else { return false }
             return self.string(label, kAXValueAttribute) == "Settings saved."
         }
         try assertController()

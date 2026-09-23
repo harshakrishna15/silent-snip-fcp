@@ -10,7 +10,7 @@ static NSString *responseName(NSString *request) {
 }
 static NSTextField *label(NSString *text, BOOL bold) {
     NSTextField *field = [NSTextField wrappingLabelWithString:text];
-    field.font = bold ? [NSFont boldSystemFontOfSize:11] : [NSFont systemFontOfSize:11];
+    field.font = bold ? [NSFont boldSystemFontOfSize:12] : [NSFont systemFontOfSize:12];
     return field;
 }
 static void compactControl(NSControl *control) {
@@ -54,16 +54,19 @@ static BOOL booleanValue(id value) {
 @property(nonatomic) NSArray<NSTextField *> *fields;
 @property(nonatomic) NSButton *analyzeButton;
 @property(nonatomic) NSButton *applyButton;
-@property(nonatomic) NSButton *previewButton;
-@property(nonatomic) NSButton *jumpButton;
+@property(nonatomic) NSButton *saveButton;
 @property(nonatomic) NSButton *retryButton;
 @property(nonatomic) NSButton *cancelButton;
 @property(nonatomic) NSString *viewID;
 @property(nonatomic) NSDate *verificationPending;
 @property(nonatomic) NSMenuItem *verifyItem;
+@property(nonatomic) NSMenuItem *analyzeAgainItem;
+@property(nonatomic) NSMenuItem *jumpItem;
+@property(nonatomic) NSMenuItem *selectAllItem;
+@property(nonatomic) NSMenuItem *deselectAllItem;
+@property(nonatomic) NSMenuItem *reviewActionsSeparator;
 @property(nonatomic) NSButton *moreButton;
 @property(nonatomic) NSMenu *moreMenu;
-@property(nonatomic) NSStackView *reviewToolbar;
 @property(nonatomic) NSTextField *emptyLabel;
 @property(nonatomic) BOOL canHighlight;
 @property(nonatomic) NSPopUpButton *outputMode;
@@ -71,9 +74,8 @@ static BOOL booleanValue(id value) {
 @property(nonatomic) NSTextField *summaryLabel;
 @property(nonatomic) NSTableView *resultsView;
 @property(nonatomic) NSArray<NSDictionary *> *cutRows;
-@property(nonatomic) NSButton *selectAllButton;
-@property(nonatomic) NSButton *deselectAllButton;
 @property(nonatomic) BOOL canChangeSelection;
+@property(nonatomic) BOOL retryAvailable;
 @property(nonatomic) NSArray<NSNumber *> *submittedSettings;
 @property(nonatomic) NSTimer *pollTimer;
 @property(nonatomic) BOOL canApply;
@@ -93,17 +95,17 @@ static BOOL booleanValue(id value) {
 - (nullable AUAudioUnit *)createAudioUnitWithComponentDescription:(AudioComponentDescription)description
                                                           error:(NSError **)error {
     self.audioUnit = [[CutdownAudioUnit alloc] initWithComponentDescription:description options:0 error:error];
-    if (self.isViewLoaded) [self refreshSettings];
+    if (self.isViewLoaded) { [self refreshSettings]; [self updatePrimaryAction]; }
     return self.audioUnit;
 }
 
 - (void)loadView {
-    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 560)];
+    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 500)];
     self.preferredContentSize = self.view.frame.size;
     NSStackView *content = [NSStackView stackViewWithViews:@[]];
     content.orientation = NSUserInterfaceLayoutOrientationVertical;
     content.alignment = NSLayoutAttributeLeading;
-    content.spacing = 8;
+    content.spacing = 9;
     content.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:content];
     [NSLayoutConstraint activateConstraints:@[
@@ -113,15 +115,34 @@ static BOOL booleanValue(id value) {
         [content.bottomAnchor constraintLessThanOrEqualToAnchor:self.view.bottomAnchor constant:-16]
     ]];
     NSTextField *title = label(@"Cutdown Audio", YES);
-    title.font = [NSFont boldSystemFontOfSize:16];
-    self.moreButton = [NSButton buttonWithTitle:@"More…" target:self action:@selector(showMoreActions:)];
+    title.font = [NSFont boldSystemFontOfSize:17];
+    title.toolTip = @"Analyze an audio clip, review the proposed cuts, then apply them.";
+    self.moreButton = [NSButton buttonWithTitle:@"" target:self action:@selector(showMoreActions:)];
     self.moreMenu = [NSMenu new];
     compactControl(self.moreButton);
+    self.moreButton.image = [NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:@"More actions"];
+    self.moreButton.imagePosition = NSImageOnly;
+    self.moreButton.bezelStyle = NSBezelStyleRounded;
+    [self.moreButton.widthAnchor constraintEqualToConstant:28].active = YES;
     self.moreButton.accessibilityLabel = @"More actions";
+    self.moreButton.toolTip = @"Review and recovery actions.";
+    self.analyzeAgainItem = [[NSMenuItem alloc] initWithTitle:@"Analyze Again" action:@selector(analyze:) keyEquivalent:@""];
+    self.analyzeAgainItem.target = self;
+    [self.moreMenu addItem:self.analyzeAgainItem];
+    self.jumpItem = [[NSMenuItem alloc] initWithTitle:@"Go to Selected Cut" action:@selector(jumpToCut:) keyEquivalent:@""];
+    self.jumpItem.target = self;
+    [self.moreMenu addItem:self.jumpItem];
+    self.selectAllItem = [[NSMenuItem alloc] initWithTitle:@"Select All Cuts" action:@selector(selectCuts:) keyEquivalent:@""];
+    self.selectAllItem.tag = 1; self.selectAllItem.target = self;
+    [self.moreMenu addItem:self.selectAllItem];
+    self.deselectAllItem = [[NSMenuItem alloc] initWithTitle:@"Select No Cuts" action:@selector(selectCuts:) keyEquivalent:@""];
+    self.deselectAllItem.target = self;
+    [self.moreMenu addItem:self.deselectAllItem];
+    self.reviewActionsSeparator = NSMenuItem.separatorItem;
+    [self.moreMenu addItem:self.reviewActionsSeparator];
     NSMenuItem *restore = [[NSMenuItem alloc] initWithTitle:@"Restore Saved Settings…" action:@selector(restoreSavedSettings:) keyEquivalent:@""];
     restore.target = self;
     [self.moreMenu addItem:restore];
-    [self.moreMenu addItem:NSMenuItem.separatorItem];
     self.verifyItem = [[NSMenuItem alloc] initWithTitle:@"Verify Existing Result…" action:@selector(verifyExistingResult:) keyEquivalent:@""];
     self.verifyItem.target = self;
     [self.moreMenu addItem:self.verifyItem];
@@ -129,33 +150,67 @@ static BOOL booleanValue(id value) {
     [content addArrangedSubview:header];
     [header.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
 
-    NSButton *save = [NSButton buttonWithTitle:@"Save Settings" target:self action:@selector(saveSettings:)];
-    compactControl(save); save.identifier = @"cutdown.saveSettings";
-    save.bezelStyle = NSBezelStyleInline;
+    self.statusLabel = label(@"Select an audio clip, then Analyze.", NO);
+    self.statusLabel.identifier = @"cutdown.status";
+    self.statusLabel.textColor = NSColor.secondaryLabelColor;
+    self.statusLabel.maximumNumberOfLines = 3;
+    self.statusLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    self.statusLabel.toolTip = self.statusLabel.stringValue;
+    [content addArrangedSubview:self.statusLabel];
+    [self.statusLabel.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
+
+    self.saveButton = [NSButton buttonWithTitle:@"" target:self action:@selector(saveSettings:)];
+    compactControl(self.saveButton); self.saveButton.identifier = @"cutdown.saveSettings";
+    self.saveButton.image = [NSImage imageWithSystemSymbolName:@"square.and.arrow.down" accessibilityDescription:@"Save Settings"];
+    self.saveButton.imagePosition = NSImageOnly;
+    self.saveButton.bezelStyle = NSBezelStyleRounded;
+    self.saveButton.accessibilityLabel = @"Save Settings";
+    [self.saveButton.widthAnchor constraintEqualToConstant:28].active = YES;
     // The always-visible More button supplies the helper's native ownership
     // anchor, even while Cancel is hidden. Save keeps its recovery identifier.
     self.viewID = NSUUID.UUID.UUIDString;
     self.moreButton.identifier = [@"cutdown.review.reconnect." stringByAppendingString:self.viewID];
-    NSStackView *settingsHeader = horizontalRow(@[label(@"1. Detection", YES), flexibleSpace(), save]);
+    self.saveButton.toolTip = @"Save the detection values to the selected clip without starting analysis.";
+    NSTextField *detectionLabel = label(@"Detection", YES);
+    detectionLabel.toolTip = @"Adjust how Cutdown finds quiet passages. Analyze to preview the result.";
+    NSStackView *settingsHeader = horizontalRow(@[detectionLabel, flexibleSpace(), self.saveButton]);
     [content addArrangedSubview:settingsHeader];
     [settingsHeader.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
     NSArray *names = @[@"Silence Threshold", @"Minimum Silence", @"Before Speech", @"After Speech"];
+    NSArray *explanations = @[
+        @"Audio below this level in every channel may count as silence. Move toward 0 dBFS to include louder quiet passages.",
+        @"The removable quiet portion must be at least this long after padding and frame rounding.",
+        @"Keep this much quiet audio immediately before speech resumes.",
+        @"Keep this much quiet audio immediately after speech ends."
+    ];
     NSMutableArray *fields = [NSMutableArray array];
+    NSMutableArray<NSStackView *> *settingRows = [NSMutableArray array];
     for (NSUInteger i=0; i<4; i++) {
         NSTextField *name = label(names[i], NO);
-        [name.widthAnchor constraintEqualToConstant:144].active = YES;
+        name.toolTip = explanations[i];
+        [name.widthAnchor constraintEqualToConstant:112].active = YES;
         NSTextField *field = [NSTextField textFieldWithString:@""];
         compactControl(field);
         field.tag = i;
         field.delegate = self;
         field.alignment = NSTextAlignmentRight;
         field.accessibilityLabel = names[i];
+        field.toolTip = explanations[i];
         field.identifier = [NSString stringWithFormat:@"cutdown.setting.%lu", (unsigned long)i];
-        [field.widthAnchor constraintEqualToConstant:80].active = YES;
+        [field.widthAnchor constraintEqualToConstant:62].active = YES;
         [fields addObject:field];
-        NSStackView *row = horizontalRow(@[name, field, label(i==0 ? @"dBFS" : @"sec", NO)]);
-        row.spacing = 8;
-        [content addArrangedSubview:row];
+        NSTextField *unit = label(i==0 ? @"dBFS" : @"sec", NO);
+        unit.textColor = NSColor.secondaryLabelColor;
+        unit.toolTip = explanations[i];
+        [unit.widthAnchor constraintEqualToConstant:30].active = YES;
+        NSStackView *row = horizontalRow(@[name, field, unit]);
+        row.spacing = 5;
+        [settingRows addObject:row];
+    }
+    for (NSUInteger i=0; i<2; i++) {
+        NSStackView *pair = horizontalRow(@[settingRows[i*2], flexibleSpace(), settingRows[i*2+1]]);
+        [content addArrangedSubview:pair];
+        [pair.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
     }
     self.fields = fields;
     self.outputMode = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -163,26 +218,14 @@ static BOOL booleanValue(id value) {
     [self.outputMode addItemsWithTitles:@[@"Remove Silence", @"Replace with 1-Second Gaps"]];
     self.outputMode.identifier = @"cutdown.output";
     self.outputMode.accessibilityLabel = @"Output";
+    self.outputMode.toolTip = @"Remove selected pauses, or replace each with a one-second gap.";
     self.outputMode.target = self; self.outputMode.action = @selector(outputChanged:);
     NSTextField *outputLabel = label(@"Output", NO);
-    [outputLabel.widthAnchor constraintEqualToConstant:144].active = YES;
+    outputLabel.toolTip = self.outputMode.toolTip;
+    [outputLabel.widthAnchor constraintEqualToConstant:112].active = YES;
     NSStackView *outputRow = horizontalRow(@[outputLabel, self.outputMode]);
     outputRow.spacing = 8;
     [content addArrangedSubview:outputRow];
-    self.analyzeButton = [NSButton buttonWithTitle:@"Analyze" target:self action:@selector(analyze:)];
-    self.analyzeButton.bezelStyle = NSBezelStyleRounded;
-    compactControl(self.analyzeButton);
-    self.analyzeButton.identifier = @"cutdown.analyze";
-    self.statusLabel = label(@"Select the audio clip in the timeline, then click Analyze.", NO);
-    self.statusLabel.identifier = @"cutdown.status";
-    self.statusLabel.textColor = NSColor.secondaryLabelColor;
-    self.statusLabel.maximumNumberOfLines = 4;
-    self.statusLabel.lineBreakMode = NSLineBreakByWordWrapping;
-    NSStackView *analysisRow = horizontalRow(@[self.statusLabel, flexibleSpace(), self.analyzeButton]);
-    [content addArrangedSubview:analysisRow];
-    [analysisRow.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
-    [self.statusLabel.widthAnchor constraintLessThanOrEqualToConstant:360].active = YES;
-    [self.analyzeButton setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.progressBar = [[NSProgressIndicator alloc] init];
     self.progressBar.style = NSProgressIndicatorStyleBar;
     self.progressBar.controlSize = NSControlSizeSmall;
@@ -198,9 +241,11 @@ static BOOL booleanValue(id value) {
     divider.boxType = NSBoxSeparator;
     [content addArrangedSubview:divider];
     [divider.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
-    [content addArrangedSubview:label(@"2. Review", YES)];
+    [content addArrangedSubview:label(@"Review", YES)];
     self.summaryLabel = label(@"Review detected silence before applying cuts.", NO);
-    self.summaryLabel.maximumNumberOfLines = 3;
+    self.summaryLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    self.summaryLabel.maximumNumberOfLines = 2;
+    self.summaryLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     [content addArrangedSubview:self.summaryLabel];
     [self.summaryLabel.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
     NSScrollView *scroll = [[NSScrollView alloc] init];
@@ -209,13 +254,24 @@ static BOOL booleanValue(id value) {
     scroll.borderType = NSBezelBorder;
     self.resultsView = [[NSTableView alloc] initWithFrame:NSMakeRect(0, 0, 464, 88)];
     self.resultsView.accessibilityIdentifier = @"cutdown.review.cuts";
-    self.resultsView.headerView = nil;
-    self.resultsView.rowHeight = 22;
+    self.resultsView.target = self;
+    self.resultsView.doubleAction = @selector(jumpToCut:);
+    self.resultsView.toolTip = @"Double-click a cut to go to it in the timeline.";
+    self.resultsView.headerView = [NSTableHeaderView new];
+    self.resultsView.rowHeight = 24;
+    self.resultsView.usesAlternatingRowBackgroundColors = YES;
     self.resultsView.dataSource = self; self.resultsView.delegate = self;
     self.resultsView.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
-    NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"cut"];
-    column.width = 464;
-    [self.resultsView addTableColumn:column];
+    NSArray<NSString *> *columnIDs = @[@"start", @"end", @"duration", @"availability"];
+    NSArray<NSString *> *columnTitles = @[@"Include · Start", @"End", @"Duration", @"Note"];
+    CGFloat widths[] = {154, 92, 75, 143};
+    for (NSUInteger i=0; i<columnIDs.count; i++) {
+        NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:columnIDs[i]];
+        column.title = columnTitles[i];
+        column.width = widths[i];
+        column.minWidth = i == 3 ? 100 : widths[i];
+        [self.resultsView addTableColumn:column];
+    }
     scroll.documentView = self.resultsView;
     NSView *reviewArea = [NSView new];
     [reviewArea setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
@@ -228,7 +284,7 @@ static BOOL booleanValue(id value) {
     [content addArrangedSubview:reviewArea];
     [NSLayoutConstraint activateConstraints:@[
         [reviewArea.widthAnchor constraintEqualToAnchor:content.widthAnchor],
-        [reviewArea.heightAnchor constraintGreaterThanOrEqualToConstant:88],
+        [reviewArea.heightAnchor constraintGreaterThanOrEqualToConstant:112],
         [scroll.leadingAnchor constraintEqualToAnchor:reviewArea.leadingAnchor],
         [scroll.trailingAnchor constraintEqualToAnchor:reviewArea.trailingAnchor],
         [scroll.topAnchor constraintEqualToAnchor:reviewArea.topAnchor],
@@ -236,43 +292,26 @@ static BOOL booleanValue(id value) {
         [self.emptyLabel.centerXAnchor constraintEqualToAnchor:reviewArea.centerXAnchor],
         [self.emptyLabel.centerYAnchor constraintEqualToAnchor:reviewArea.centerYAnchor]
     ]];
-    self.selectAllButton = [NSButton buttonWithTitle:@"All" target:self action:@selector(selectCuts:)];
-    self.deselectAllButton = [NSButton buttonWithTitle:@"None" target:self action:@selector(selectCuts:)];
-    compactControl(self.selectAllButton); compactControl(self.deselectAllButton);
-    self.selectAllButton.accessibilityLabel = @"Select All Cuts";
-    self.deselectAllButton.accessibilityLabel = @"Select No Cuts";
-    self.selectAllButton.bezelStyle = NSBezelStyleInline;
-    self.deselectAllButton.bezelStyle = NSBezelStyleInline;
-    self.selectAllButton.enabled = NO; self.deselectAllButton.enabled = NO;
-
     self.applyButton = [NSButton buttonWithTitle:@"Apply Cuts" target:self action:@selector(apply:)];
     self.applyButton.bezelStyle = NSBezelStyleRounded;
-    compactControl(self.applyButton);
+    self.applyButton.controlSize = NSControlSizeRegular;
+    self.applyButton.font = [NSFont systemFontOfSize:12];
     self.applyButton.identifier = @"cutdown.apply";
     self.applyButton.toolTip = @"Available only after a valid analysis. This is a separate action from Analyze.";
     self.applyButton.enabled = NO;
-    self.previewButton = [NSButton checkboxWithTitle:@"Show Preview" target:self action:@selector(togglePreview:)];
-    compactControl(self.previewButton);
-    self.previewButton.identifier = @"cutdown.preview";
-    self.previewButton.toolTip = @"Show or hide the timeline cut lines without discarding your analysis. Closing this window leaves the preview on.";
-    self.previewButton.enabled = NO;
-    self.jumpButton = [NSButton buttonWithTitle:@"Go to Cut" target:self action:@selector(jumpToCut:)];
-    self.jumpButton.accessibilityLabel = @"Go to Selected Cut";
-    self.jumpButton.toolTip = @"Select a review row, then go to its start in the timeline.";
-    compactControl(self.jumpButton);
-    self.jumpButton.enabled = NO;
-    self.reviewToolbar = horizontalRow(@[label(@"Include:", NO), self.selectAllButton, self.deselectAllButton,
-        flexibleSpace(), self.previewButton, self.jumpButton]);
-    self.reviewToolbar.hidden = YES;
-    [content addArrangedSubview:self.reviewToolbar];
-    [self.reviewToolbar.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
-
+    self.analyzeButton = [NSButton buttonWithTitle:@"Analyze" target:self action:@selector(analyze:)];
+    self.analyzeButton.bezelStyle = NSBezelStyleRounded;
+    self.analyzeButton.controlSize = NSControlSizeRegular;
+    self.analyzeButton.font = [NSFont systemFontOfSize:12];
+    self.analyzeButton.identifier = @"cutdown.analyze";
+    [self.analyzeButton setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.retryButton = [NSButton buttonWithTitle:@"Retry Verification" target:self action:@selector(retryVerification:)];
-    compactControl(self.retryButton);
+    self.retryButton.controlSize = NSControlSizeRegular;
+    self.retryButton.font = [NSFont systemFontOfSize:12];
     self.retryButton.enabled = NO; self.retryButton.hidden = YES;
     self.cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
     compactControl(self.cancelButton); self.cancelButton.enabled = NO; self.cancelButton.hidden = YES;
-    NSStackView *footer = horizontalRow(@[self.cancelButton, flexibleSpace(), self.retryButton, self.applyButton]);
+    NSStackView *footer = horizontalRow(@[self.cancelButton, flexibleSpace(), self.retryButton, self.analyzeButton, self.applyButton]);
     footer.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:footer];
     [NSLayoutConstraint activateConstraints:@[
@@ -285,14 +324,52 @@ static BOOL booleanValue(id value) {
         name:[@"local.cutdown.review.connected.v1." stringByAppendingString:self.viewID]
         object:nil suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
     [self refreshSettings];
+    [self updatePrimaryAction];
 }
 
+- (void)updatePrimaryAction {
+    BOOL reviewing = [self.connection.state isEqual:CutdownReviewStateReview] && !self.settingsDirty && !self.connection.applying;
+    BOOL hasEligibleCut = NO;
+    for (NSDictionary *cut in self.cutRows) if ([cut[@"eligible"] boolValue]) { hasEligibleCut = YES; break; }
+    BOOL showApply = self.connection.applying || (reviewing && hasEligibleCut);
+    BOOL busy = self.connection.operationBusy || self.connection.awaitingResponse || self.connection.pendingRetry != nil || self.verificationPending != nil;
+    BOOL showRetry = self.retryAvailable && !self.connection.pendingRetry && !busy;
+    self.saveButton.enabled = self.audioUnit != nil && !busy && !self.connection.applying;
+    self.analyzeButton.title = reviewing ? @"Analyze Again" : @"Analyze";
+    self.analyzeButton.hidden = showApply || showRetry || busy;
+    self.applyButton.hidden = !showApply;
+    self.retryButton.hidden = !showRetry;
+    self.analyzeButton.bezelColor = self.analyzeButton.hidden ? nil : NSColor.controlAccentColor;
+    self.applyButton.bezelColor = self.applyButton.enabled ? NSColor.controlAccentColor : nil;
+}
+
+- (void)setStatusMessage:(NSString *)message {
+    self.statusLabel.stringValue = message ?: @"";
+    self.statusLabel.toolTip = message;
+}
+
+- (void)updateMoreMenuVisibility {
+    BOOL reviewHasCuts = [self.connection.state isEqual:CutdownReviewStateReview] && !self.settingsDirty && self.cutRows.count > 0;
+    BOOL hasEligibleCut = NO;
+    for (NSDictionary *cut in self.cutRows) if ([cut[@"eligible"] boolValue]) { hasEligibleCut = YES; break; }
+    self.analyzeAgainItem.hidden = !reviewHasCuts || !hasEligibleCut;
+    self.jumpItem.hidden = !reviewHasCuts;
+    self.selectAllItem.hidden = !reviewHasCuts || !hasEligibleCut;
+    self.deselectAllItem.hidden = !reviewHasCuts || !hasEligibleCut;
+    self.reviewActionsSeparator.hidden = !reviewHasCuts;
+}
 - (void)showMoreActions:(NSButton *)sender {
+    [self updateMoreMenuVisibility];
     [self.moreMenu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSMaxY(sender.bounds) + 4) inView:sender];
 }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
-    return self.audioUnit != nil && !self.connection.operationBusy && !self.connection.applying &&
-        !self.connection.awaitingResponse && !self.verificationPending;
+    BOOL idle = self.audioUnit != nil && !self.connection.operationBusy && !self.connection.applying &&
+        !self.connection.awaitingResponse && !self.connection.pendingRetry && !self.verificationPending;
+    if (item == self.analyzeAgainItem) return idle && [self.connection.state isEqual:CutdownReviewStateReview] && !self.settingsDirty;
+    if (item == self.jumpItem) return idle && self.canHighlight && self.resultsView.selectedRow >= 0;
+    if (item == self.selectAllItem || item == self.deselectAllItem)
+        return idle && self.canChangeSelection && !self.connection.pendingSelection;
+    return idle;
 }
 
 - (void)refreshSettings {
@@ -321,8 +398,8 @@ static BOOL booleanValue(id value) {
 - (void)controlTextDidChange:(NSNotification *)notification {
     self.settingsDirty = YES;
     self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
-    self.selectAllButton.enabled = NO; self.deselectAllButton.enabled = NO;
     self.canApply = NO; self.applyButton.enabled = NO;
+    [self updatePrimaryAction];
     self.summaryLabel.stringValue = @"Settings changed. Analyze updates the preview and reuses audio when unchanged.";
 }
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
@@ -344,7 +421,7 @@ static BOOL booleanValue(id value) {
         // rounds back to the exact minimum (e.g. 0.1f) must not fail a Double comparison.
         float stored = (float)value;
         if (!parsed || !text.length || range.length != text.length || !parameter || !isfinite(value) || !isfinite(stored) || stored < parameter.minValue || stored > parameter.maxValue) {
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"Enter a valid %@ between %g and %g.", parameter.displayName ?: @"setting", parameter.minValue, parameter.maxValue];
+            [self setStatusMessage:[NSString stringWithFormat:@"Enter a valid %@ between %g and %g.", parameter.displayName ?: @"setting", parameter.minValue, parameter.maxValue]];
             return nil;
         }
         [values addObject:@(stored)];
@@ -358,16 +435,18 @@ static BOOL booleanValue(id value) {
 }
 
 - (void)saveSettings:(id)sender {
-    if (self.connection.applying || self.connection.operationBusy || ![self commitSettings]) return;
+    if (self.connection.applying || self.connection.operationBusy || self.connection.awaitingResponse ||
+        self.connection.pendingRetry || self.verificationPending || ![self commitSettings]) return;
     self.settingsDirty = YES; self.canApply = NO; self.applyButton.enabled = NO;
+    [self updatePrimaryAction];
     self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
-    self.selectAllButton.enabled = NO; self.deselectAllButton.enabled = NO;
     [self refreshSettings];
-    self.statusLabel.stringValue = @"Settings saved.";
+    [self setStatusMessage:@"Settings saved."];
 }
 
 - (BOOL)restoreSettingsData:(NSData *)data {
-    if (self.connection.applying || self.connection.operationBusy || data.length > 16384) return NO;
+    if (self.connection.applying || self.connection.operationBusy || self.connection.awaitingResponse ||
+        self.connection.pendingRetry || self.verificationPending || data.length > 16384) return NO;
     id decoded = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![decoded isKindOfClass:NSDictionary.class]) return NO;
     NSArray *keys = @[@"thresholdDBFS", @"minimumSilenceDuration", @"beforeSpeechPadding", @"afterSpeechPadding"];
@@ -379,10 +458,10 @@ static BOOL booleanValue(id value) {
     }
     if (![self.audioUnit setAnalysisSettings:values error:nil]) return NO;
     self.settingsDirty = YES; self.canApply = NO; self.applyButton.enabled = NO;
+    [self updatePrimaryAction];
     self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
-    self.selectAllButton.enabled = NO; self.deselectAllButton.enabled = NO;
     [self refreshSettings];
-    self.statusLabel.stringValue = @"Saved detection settings restored. Analyze again before applying cuts.";
+    [self setStatusMessage:@"Saved detection settings restored. Analyze again before applying cuts."];
     return YES;
 }
 - (void)restoreSavedSettings:(id)sender {
@@ -395,15 +474,15 @@ static BOOL booleanValue(id value) {
         if (result != NSModalResponseOK) return;
         NSNumber *size = nil; [panel.URL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
         NSData *data = size && size.unsignedLongLongValue <= 16384 ? [NSData dataWithContentsOfURL:panel.URL] : nil;
-        if (!data || ![self restoreSettingsData:data]) self.statusLabel.stringValue = @"That file does not contain four valid Cutdown detection settings.";
+        if (!data || ![self restoreSettingsData:data]) [self setStatusMessage:@"That file does not contain four valid Cutdown detection settings."];
     }];
 }
 
 - (void)outputChanged:(id)sender {
     self.settingsDirty = YES;
     self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
-    self.selectAllButton.enabled = NO; self.deselectAllButton.enabled = NO;
     self.canApply = NO; self.applyButton.enabled = NO;
+    [self updatePrimaryAction];
     self.summaryLabel.stringValue = @"Output changed. Analyze again before applying.";
 }
 
@@ -411,10 +490,11 @@ static BOOL booleanValue(id value) {
 - (BOOL)openAnalysisURL:(NSURL *)URL { return [NSWorkspace.sharedWorkspace openURL:URL]; }
 
 - (void)analyze:(id)sender {
-    if (self.verificationPending || self.connection.applying || self.connection.operationBusy || self.connection.awaitingResponse || ![self commitSettings]) return;
+    if (self.verificationPending || self.connection.applying || self.connection.operationBusy || self.connection.awaitingResponse ||
+        self.connection.pendingRetry || ![self commitSettings]) return;
     NSError *error = nil;
     CutdownAudioAnalysisRequest *request = [self.audioUnit analysisRequestWithError:&error];
-    if (!request) { self.statusLabel.stringValue = error.localizedDescription; return; }
+    if (!request) { [self setStatusMessage:error.localizedDescription]; return; }
     if (self.connection.requestID) {
         [self sendCommand:@"cancel"];
         [NSDistributedNotificationCenter.defaultCenter removeObserver:self name:responseName(self.connection.requestID) object:nil];
@@ -425,14 +505,17 @@ static BOOL booleanValue(id value) {
         if ([item.name isEqual:@"request"]) self.connection.requestID = item.value;
     self.connection.revision = nil; self.connection.lastResponseObject = nil; self.submittedSettings = [self readFields];
     self.canApply = NO; self.applyButton.enabled = NO; self.settingsDirty = NO;
+    self.retryAvailable = NO;
+    [self updatePrimaryAction];
     self.cutRows = @[]; [self.resultsView reloadData];
-    self.reviewToolbar.hidden = YES; self.emptyLabel.hidden = NO;
+    self.emptyLabel.hidden = NO;
     self.emptyLabel.stringValue = @"Detected cuts will appear here after analysis.";
     self.connection.pendingSelection = nil; self.connection.pendingRetry = nil; self.connection.pendingPreview = nil; self.canChangeSelection = NO;
     self.summaryLabel.stringValue = @"Waiting for analysis. No cuts have been applied.";
-    self.statusLabel.stringValue = @"Connecting to Cutdown…";
+    [self setStatusMessage:@"Connecting to Cutdown…"];
     self.connection.awaitingResponse = YES; self.connection.lastResponse = NSDate.date;
     self.analyzeButton.enabled = NO;
+    [self updatePrimaryAction];
     self.outputMode.enabled = NO;
     for (NSTextField *field in self.fields) field.enabled = NO;
     self.operationStarted = NSDate.date;
@@ -444,8 +527,9 @@ static BOOL booleanValue(id value) {
     if (![self openAnalysisURL:launch.URL]) {
         self.connection.awaitingResponse = NO;
         self.analyzeButton.enabled = YES; self.outputMode.enabled = YES;
+        [self updatePrimaryAction];
         for (NSTextField *field in self.fields) field.enabled = YES;
-        self.statusLabel.stringValue = @"Cutdown could not open its background helper. Check the local installation, then Analyze again.";
+        [self setStatusMessage:@"Cutdown could not open its background helper. Check the local installation, then Analyze again."];
         return;
     }
     [self.audioUnit rememberSettingsForRequest:request error:nil];
@@ -469,7 +553,8 @@ static BOOL booleanValue(id value) {
         if (self.verificationPending) {
             if (-self.verificationPending.timeIntervalSinceNow > 15) {
                 self.verificationPending = nil;
-                self.statusLabel.stringValue = @"Verification could not be connected. Check the existing result before retrying; no new import was requested.";
+                [self setStatusMessage:@"Verification could not be connected. Check the existing result before retrying; no new import was requested."];
+                [self updatePrimaryAction];
             }
             return;
         }
@@ -491,19 +576,20 @@ static BOOL booleanValue(id value) {
         BOOL uncertainApply = self.connection.applying;
         self.connection.applying = NO; self.connection.operationBusy = NO; self.connection.awaitingResponse = NO;
         self.settingsDirty = YES; self.canApply = NO; self.applyButton.enabled = NO;
+        self.retryAvailable = NO;
+        [self updatePrimaryAction];
         self.connection.pendingSelection = nil; self.canChangeSelection = NO;
         self.connection.pendingRetry = nil; self.connection.pendingPreview = nil;
         self.connection.pendingApply = nil; self.applyButton.identifier = @"cutdown.apply";
-        self.previewButton.enabled = NO; self.jumpButton.enabled = NO; self.cancelButton.enabled = NO;
+        self.cancelButton.enabled = NO;
         self.cancelButton.hidden = YES;
         self.progressBar.hidden = YES; self.progressLabel.hidden = YES;
-        self.selectAllButton.enabled = NO; self.deselectAllButton.enabled = NO;
         self.analyzeButton.enabled = YES; self.outputMode.enabled = YES;
         for (NSTextField *field in self.fields) field.enabled = YES;
         [self.resultsView reloadData];
-        self.statusLabel.stringValue = uncertainApply
+        [self setStatusMessage:uncertainApply
             ? @"Apply could not be confirmed. Check your project before analyzing again; replacement may already have completed."
-            : @"The helper is not responding. Analyze again to reconnect.";
+            : @"The helper is not responding. Analyze again to reconnect."];
         // Continue read-only status polls. A delayed final failure must replace
         // this provisional timeout; no Apply command is retried after timeout.
     }
@@ -521,7 +607,8 @@ static BOOL booleanValue(id value) {
     NSDictionary *value = decoded;
     if (self.verificationPending && [value[@"version"] isEqual:@1] && [value[@"view"] isEqual:self.viewID] &&
         [value[@"error"] isKindOfClass:NSString.class]) {
-        self.verificationPending = nil; self.statusLabel.stringValue = value[@"error"]; return;
+        self.verificationPending = nil; [self setStatusMessage:value[@"error"]];
+        [self updatePrimaryAction]; return;
     }
     if (![value[@"version"] isEqual:@1] || booleanValue(value[@"version"]) || ![value[@"view"] isEqual:self.viewID] ||
         ![value[@"request"] isKindOfClass:NSString.class] || ![[NSUUID alloc] initWithUUIDString:value[@"request"]] ||
@@ -538,6 +625,7 @@ static BOOL booleanValue(id value) {
     }
     self.verificationPending = nil;
     self.connection = [CutdownReviewConnection new];
+    self.retryAvailable = NO;
     self.applyButton.identifier = @"cutdown.apply";
     self.connection.requestID = value[@"request"];
     self.connection.lastResponse = NSDate.date; self.connection.awaitingResponse = YES;
@@ -545,6 +633,7 @@ static BOOL booleanValue(id value) {
     self.submittedSettings = [self readFields];
     [self.outputMode selectItemAtIndex:[value[@"output"] isEqual:@"gaps"] ? 1 : 0];
     self.analyzeButton.enabled = NO; self.outputMode.enabled = NO;
+    [self updatePrimaryAction];
     for (NSTextField *field in self.fields) field.enabled = NO;
     self.operationStarted = NSDate.date;
     [NSDistributedNotificationCenter.defaultCenter addObserver:self selector:@selector(receive:)
@@ -559,27 +648,31 @@ static BOOL booleanValue(id value) {
     [panel beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse result) {
         if (result != NSModalResponseOK || !panel.URL) return;
         if (![panel.URL.lastPathComponent isEqual:@"Cutdown.fcpxml"]) {
-            self.statusLabel.stringValue = @"Choose the Cutdown.fcpxml file in the saved result folder."; return;
+            [self setStatusMessage:@"Choose the Cutdown.fcpxml file in the saved result folder."]; return;
         }
         if (self.connection.requestID)
             [NSDistributedNotificationCenter.defaultCenter removeObserver:self name:responseName(self.connection.requestID) object:nil];
         self.connection = [CutdownReviewConnection new]; self.settingsDirty = NO;
+        self.retryAvailable = NO;
         self.applyButton.identifier = @"cutdown.apply";
         self.canApply = NO; self.applyButton.enabled = NO; self.cancelButton.enabled = NO;
-        self.canChangeSelection = NO; self.selectAllButton.enabled = NO; self.deselectAllButton.enabled = NO;
-        self.previewButton.enabled = NO; self.jumpButton.enabled = NO; self.retryButton.enabled = NO;
+        [self updatePrimaryAction];
+        self.canChangeSelection = NO;
+        self.retryButton.enabled = NO;
         self.cutRows = @[]; [self.resultsView reloadData];
-        self.reviewToolbar.hidden = YES; self.emptyLabel.hidden = NO;
+        self.emptyLabel.hidden = NO;
         self.emptyLabel.stringValue = @"Detected cuts will appear here after analysis.";
         self.cancelButton.hidden = YES;
         NSURLComponents *url = [NSURLComponents componentsWithString:@"cutdown://verify"];
         url.queryItems = @[[NSURLQueryItem queryItemWithName:@"view" value:self.viewID],
             [NSURLQueryItem queryItemWithName:@"result" value:panel.URL.absoluteString]];
         self.verificationPending = NSDate.date;
-        self.statusLabel.stringValue = @"Connecting to the saved result…";
+        [self updatePrimaryAction];
+        [self setStatusMessage:@"Connecting to the saved result…"];
         if (![self openAnalysisURL:url.URL]) {
             self.verificationPending = nil;
-            self.statusLabel.stringValue = @"Cutdown could not open its background helper.";
+            [self setStatusMessage:@"Cutdown could not open its background helper."];
+            [self updatePrimaryAction];
         }
         [self startPolling];
     }];
@@ -593,14 +686,26 @@ static BOOL booleanValue(id value) {
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.cutRows.count; }
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
     NSDictionary *cut = self.cutRows[row];
-    NSString *title = [NSString stringWithFormat:@"%@ → %@   %@%@", cut[@"start"], cut[@"end"], cut[@"duration"],
-        [cut[@"eligible"] boolValue] ? @"" : @" (unavailable)"];
-    NSButton *button = [NSButton checkboxWithTitle:title target:self action:@selector(includeCut:)];
-    compactControl(button); button.tag = row;
-    button.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
-    button.enabled = self.canChangeSelection && !self.connection.pendingSelection && !self.connection.applying && [cut[@"eligible"] boolValue];
-    button.toolTip = [cut[@"reason"] isKindOfClass:NSString.class] ? cut[@"reason"] : title;
-    return button;
+    NSString *identifier = column.identifier;
+    if ([identifier isEqualToString:@"start"]) {
+        NSButton *button = [NSButton checkboxWithTitle:cut[@"start"] ?: @"" target:self action:@selector(includeCut:)];
+        compactControl(button); button.tag = row;
+        button.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+        button.enabled = self.canChangeSelection && !self.connection.pendingSelection && !self.connection.applying && [cut[@"eligible"] boolValue];
+        button.toolTip = [cut[@"reason"] isKindOfClass:NSString.class] ? cut[@"reason"] : @"Include this proposed cut";
+        return button;
+    }
+    NSString *text = @"";
+    if ([identifier isEqualToString:@"end"]) text = cut[@"end"] ?: @"";
+    else if ([identifier isEqualToString:@"duration"]) text = cut[@"duration"] ?: @"";
+    else if (![cut[@"eligible"] boolValue]) text = [cut[@"reason"] isKindOfClass:NSString.class] ? cut[@"reason"] : @"Unavailable";
+    NSTextField *value = label(text, NO);
+    value.font = [NSFont systemFontOfSize:11];
+    value.textColor = [identifier isEqualToString:@"availability"] ? NSColor.secondaryLabelColor : NSColor.labelColor;
+    value.maximumNumberOfLines = 1;
+    value.lineBreakMode = NSLineBreakByTruncatingTail;
+    value.toolTip = text;
+    return value;
 }
 - (void)requestSelection:(NSDictionary *)fields {
     if (!self.canChangeSelection || self.connection.pendingSelection || self.connection.applying || !self.connection.revision) return;
@@ -609,6 +714,7 @@ static BOOL booleanValue(id value) {
     command[@"expectedRevision"] = self.connection.revision;
     self.connection.pendingSelection = command; self.connection.selectionRevision = self.connection.revision;
     self.canApply = NO; self.applyButton.enabled = NO;
+    [self updatePrimaryAction];
     [self.resultsView reloadData];
     [self sendPreviewCommand:command];
 }
@@ -619,8 +725,8 @@ static BOOL booleanValue(id value) {
     [self requestSelection:@{@"command":@"include", @"cutID":cut[@"id"],
         @"included":sender.state == NSControlStateValueOn ? @YES : @NO}];
 }
-- (void)selectCuts:(NSButton *)sender {
-    [self requestSelection:@{@"command":sender == self.selectAllButton ? @"selectAll" : @"deselectAll"}];
+- (void)selectCuts:(NSMenuItem *)sender {
+    [self requestSelection:@{@"command":sender == self.selectAllItem ? @"selectAll" : @"deselectAll"}];
 }
 
 - (void)sendCommand:(NSString *)command {
@@ -634,23 +740,18 @@ static BOOL booleanValue(id value) {
     if (!value) return;
     self.cancelButton.enabled = [value[@"canCancel"] isEqual:@YES];
     self.cancelButton.hidden = !self.cancelButton.enabled;
-    self.statusLabel.stringValue = value[@"message"];
-    self.statusLabel.toolTip = value[@"message"];
+    [self setStatusMessage:value[@"message"]];
     NSUInteger included = 0;
     for (NSDictionary *row in value[@"cuts"]) if ([row[@"eligible"] boolValue] && [row[@"included"] boolValue]) included++;
     self.canHighlight = [value[@"state"] isEqual:CutdownReviewStateReview] && [value[@"canHighlight"] isEqual:@YES];
-    self.jumpButton.enabled = self.canHighlight;
     BOOL canRetry = [value[@"canRetryVerification"] isEqual:@YES] && CutdownReviewStateCanRetry(value[@"state"]);
+    self.retryAvailable = canRetry;
     self.retryButton.enabled = canRetry && !self.connection.pendingRetry;
-    self.retryButton.hidden = !canRetry;
     self.cutRows = value[@"cuts"];
-    self.reviewToolbar.hidden = self.cutRows.count == 0;
     self.emptyLabel.hidden = self.cutRows.count > 0;
     self.emptyLabel.stringValue = [value[@"state"] isEqual:CutdownReviewStateReview]
         ? @"No silence found with these settings." : @"Detected cuts will appear here after analysis.";
     self.canChangeSelection = !self.settingsDirty && [value[@"state"] isEqual:CutdownReviewStateReview] && [value[@"canChangeSelection"] isEqual:@YES];
-    self.selectAllButton.enabled = self.canChangeSelection && !self.connection.pendingSelection;
-    self.deselectAllButton.enabled = self.canChangeSelection && !self.connection.pendingSelection;
     [self.resultsView reloadData];
     if (self.connection.applying && [value[@"state"] isEqual:CutdownReviewStateApplying]) self.connection.applyAcknowledged = YES;
     if (self.connection.applyAcknowledged || (self.connection.applying && CutdownReviewStateIsTerminal(value[@"state"]))) {
@@ -659,13 +760,15 @@ static BOOL booleanValue(id value) {
     }
     if ([value[@"summary"] isKindOfClass:NSString.class]) self.summaryLabel.stringValue = value[@"summary"];
     else if ([value[@"state"] isEqual:CutdownReviewStateUnavailable]) self.summaryLabel.stringValue = @"Analysis is unavailable in this build. No cuts have been applied.";
-    else if ([value[@"state"] isEqual:CutdownReviewStateFailed] || [value[@"state"] isEqual:CutdownReviewStateCancelled])
-        self.summaryLabel.stringValue = @"The operation stopped. No cut preview is available; see the status above.";
+    else if ([value[@"state"] isEqual:CutdownReviewStateFailed])
+        self.summaryLabel.stringValue = [value[@"message"] isKindOfClass:NSString.class] && [value[@"message"] length] > 0
+            ? value[@"message"] : @"Analysis stopped. No cut preview is available.";
+    else if ([value[@"state"] isEqual:CutdownReviewStateCancelled])
+        self.summaryLabel.stringValue = @"Analysis cancelled. No cut preview is available.";
+    self.summaryLabel.toolTip = self.summaryLabel.stringValue;
     BOOL busy = CutdownReviewStateIsBusy(value[@"state"]);
     self.connection.operationBusy = busy;
     self.outputMode.enabled = !busy;
-    self.previewButton.enabled = !busy && !self.connection.pendingPreview && [value[@"state"] isEqual:CutdownReviewStateReview] && booleanValue(value[@"previewVisible"]);
-    self.previewButton.state = [value[@"previewVisible"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
     self.progressBar.hidden = !busy;
     self.progressLabel.hidden = !busy;
     id fraction = value[@"progress"];
@@ -684,6 +787,7 @@ static BOOL booleanValue(id value) {
         // A consumed plan cannot be enabled by a duplicate/stale response.
         self.settingsDirty = YES;
     }
+    [self updatePrimaryAction];
 }
 - (void)jumpToCut:(id)sender {
     NSInteger row = self.resultsView.selectedRow;
@@ -694,21 +798,11 @@ static BOOL booleanValue(id value) {
     if (!self.connection.requestID || !self.retryButton.enabled || self.connection.operationBusy || self.connection.applying) return;
     self.retryButton.enabled = NO;
     self.connection.pendingRetry = @{@"version":@1, @"request":self.connection.requestID, @"command":@"retryVerification", @"expectedRevision":self.connection.revision};
+    [self updatePrimaryAction];
     self.connection.timedOut = NO;
     self.connection.lastResponse = NSDate.date;
     [self startPolling];
     [self sendPreviewCommand:self.connection.pendingRetry];
-}
-- (void)togglePreview:(id)sender {
-    if (!self.connection.requestID || !self.connection.revision || self.connection.operationBusy || self.connection.applying || self.connection.pendingPreview) return;
-    NSDictionary *command = @{@"version":@1, @"request":self.connection.requestID, @"command":@"preview",
-        @"included":self.previewButton.state == NSControlStateValueOn ? @YES : @NO,
-        @"expectedRevision":self.connection.revision};
-    self.connection.pendingPreview = command; self.connection.previewRevision = self.connection.revision;
-    // Keep showing the acknowledged helper state while delivery is pending.
-    self.previewButton.state = self.previewButton.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
-    self.previewButton.enabled = NO;
-    [self sendPreviewCommand:command];
 }
 - (void)sendPreviewCommand:(NSDictionary *)command {
     NSData *data = [NSJSONSerialization dataWithJSONObject:command options:0 error:nil];
@@ -721,10 +815,9 @@ static BOOL booleanValue(id value) {
     self.operationStarted = NSDate.date;
     if (!self.canApply || !self.connection.revision || self.connection.applying || ![[self readFields] isEqual:self.submittedSettings]) return;
     self.canApply = NO; self.applyButton.enabled = NO; self.connection.applying = YES;
+    [self updatePrimaryAction];
     self.connection.applyAcknowledged = NO; self.connection.lastResponse = NSDate.date;
     self.canChangeSelection = NO; [self.resultsView reloadData];
-    self.selectAllButton.enabled = NO; self.deselectAllButton.enabled = NO;
-    self.previewButton.enabled = NO;
     self.outputMode.enabled = NO;
     self.connection.applyRevision = self.connection.revision;
     NSString *gesture = NSUUID.UUID.UUIDString;
@@ -734,7 +827,7 @@ static BOOL booleanValue(id value) {
         @"view":self.viewID, @"applyGesture":gesture};
     self.analyzeButton.enabled = NO;
     for (NSTextField *field in self.fields) field.enabled = NO;
-    self.statusLabel.stringValue = @"Requesting Apply Cuts…";
+    [self setStatusMessage:@"Requesting Apply Cuts…"];
     [self sendPreviewCommand:self.connection.pendingApply];
 }
 - (void)dealloc {

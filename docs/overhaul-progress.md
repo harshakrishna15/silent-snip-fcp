@@ -4,6 +4,174 @@ This record tracks export reliability, isolated clip rendering, verified imports
 
 Earlier entries describe the original development environment. Their installed/staged app state and logs under `build/` are not part of a Git checkout. The project currently provides local ad hoc builds; no release installer or updater is included.
 
+## September 23 live preview validation
+
+After the final helper rebuild, the user restored its macOS Device Control and
+Data Access permission and live-tested Cutdown in Final Cut. The user reports
+that the dotted guidelines now stay visible as expected while interacting with
+the timeline. The final source passed 68 focused Swift tests and all 18 Audio
+Unit Controls harness scenarios; local build products and signatures passed
+the registration check. This user validation resolves the reported preview
+flicker. Automatic timeline cuts remain unverified.
+
+## September 23 click flicker follow-up
+
+A later live Analyze in `Cutdown Preview Scrub 0923` completed and produced
+two selected cuts (3.167 seconds total). Cutdown's separate transparent panel
+contained four rendered boundary lines. A temporary WindowServer probe placed
+that panel above the verified Final Cut project window and confirmed that its
+retained vector layers remained attached while selecting the other clip.
+Final Cut's Controls window sometimes sat directly over all four line positions;
+its layer was above the panel, so a window-only capture could show an empty
+panel where Controls covered it. The probe and a forced repaint experiment were
+removed after capture. These checks do not yet prove the on-screen lines never
+flicker during clicking or hover skimming. Later ad hoc helper rebuilds again
+lost macOS Device Control and Data Access approval; the diagnostic evidence is
+retained under `~/Library/Application Support/Cutdown/Integration`.
+
+A later live retry found an intermittent false dialog blocker during Analyze.
+Final Cut's nonmodal Cutdown Controls sometimes appears as `AXDialog` while its
+child accessibility controls are temporarily unreadable. A gated diagnostic
+captured `modal=false` and missing review/status IDs during the failure.
+Capture and preview validation now treat an explicitly nonmodal window as
+nonblocking even when its children disappear. After rebuilding and relaunching
+the helper, repeated Analyze attempts reached the macOS Device Control and
+Data Access permission message instead of the false dialog error.
+
+The effect-removal path was also too eager: two complete-looking Inspector
+reads without a Cutdown row, only 0.35 seconds apart, could permanently
+dismiss a valid preview. After observing the Cutdown row, removal now requires
+at least three bounded absence reads over 2.5 seconds. If the row was never
+observed, the reader waits for five bounded absence reads over six seconds;
+this still detects deletion immediately after analysis. Short Inspector
+rebuilds retain the lines. All 68 focused Swift tests pass. A live
+line-persistence check remains blocked
+by the local helper's macOS Device Control and Data Access permission.
+
+Clicking around Final Cut exposed two remaining preview dismissal paths. The
+helper could classify Cutdown's own Controls window as a modal dialog, and the
+preview hid after 2.5 seconds of temporary Accessibility read failures or
+immediately when a window snapshot could not be matched. Controls is now
+identified by its Cutdown accessibility IDs even when Final Cut reports it as
+modal. Temporary reads, open sheets/dialogs, and unmatched WindowServer
+snapshots retain the last verified drawing. A different project or analyzed
+clip outside the timeline viewport must remain verified for 2.5 seconds before
+the overlay hides. Confirmed Cutdown effect removal still dismisses it, as
+does Apply through the existing review lifecycle.
+
+WindowServer can omit an overlay fully covered by Final Cut's raised project
+window. Each geometry sample now orders the overlay back above the verified
+project while it remains absent, even if the returned window list is unchanged.
+
+A further coordinator audit found that clicking a proposed cut to move the
+playhead briefly changed the job to `navigating` and published a nil preview.
+The analyzed review remains valid during that operation, so navigation now
+retains its lines. A regression test holds the navigation operation open and
+checks that the preview remains present throughout. All 66 focused coordinator,
+preview, and Final Cut window tests pass after this change.
+
+The review window's Show Preview checkbox was another path that could hide a
+valid analysis, contrary to the requested persistent guidelines. The compact
+window no longer offers that toggle, and the helper ignores a hide command
+from an older Audio Unit window. The 66 focused Swift tests and all 18 Controls
+harness scenarios pass. Both apps were rebuilt and registered. The updated
+Controls window was verified on the reimported disposable two-clip project in
+the workspace integration library; its source WAVs are linked in place. A new
+Analyze attempt still stops at macOS Device Control and Data Access permission,
+so line persistence during live clicking remains unverified.
+
+The window-order correction now also runs on the preview's 30 Hz display
+timer, independently of the slower Final Cut Accessibility geometry read. It
+can restore an overlay that Final Cut covers between geometry samples and
+reattach drawing layers replaced by AppKit during ordering. A local
+WindowServer timing sample averaged about 0.9 ms per listing. All 66 focused
+Swift tests pass after this change; the helper was rebuilt and installed again.
+
+All 37 focused Mac tests pass, covering modal Controls recognition, temporary
+read gaps, and sustained unavailability. The Release helper was installed,
+relaunched, and its bundle signature verified. In the disposable `Cutdown Preview Scrub 0923`
+project inside the required integration library, the rebuilt helper got past
+the prior "open Final Cut dialog" error. Analysis then stopped at macOS Device
+Control and Data Access permission for this local build, so this run could not
+produce a new review overlay or verify click behavior visually. Automatic
+timeline cuts remain unverified.
+
+## September 23 hover skimming preview follow-up
+
+Moving the pointer off and back onto an analyzed clip can rebuild Final Cut's
+timeline accessibility tree without changing the selected clip. The preview
+reader previously treated every temporary read failure as a reason to restart
+the full clip-identity scan. When that scan failed during a hover transition,
+it retried on each sample and could briefly hide the dotted lines. The reader
+now retains a verified clip handle for at most five seconds during transient
+identity failures and spaces full scans at least one second apart. It still
+checks the project title and target geometry on each successful sample.
+
+Final Cut can also reorder its project window on pointer entry without an
+accessibility notification. The reader now samples the current WindowServer
+order on each geometry read, while keeping the slower dialog and project-window
+safety check on its prior interval. The 16 focused preview tests pass,
+including a hover read-gap regression. The Release helper was rebuilt,
+installed, relaunched, and its bundle signatures checked. Live hover-only
+skimming remains unverified because this run did not establish that the
+rebuilt helper has Device Control and Data Access permission, and the UI
+automation cannot send a mouse move without a click. This code change does
+not establish automatic timeline cuts.
+
+## September 23 preview stability while scrubbing
+
+The preview could stay behind Final Cut after scrubbing raised the project
+window. Its ordering check saw the panel behind, but skipped correcting the
+same window-order snapshot twice. It now raises the panel whenever a verified
+snapshot places it behind the project, while still avoiding repeated raises
+when a new panel is simply missing from a cached snapshot. Transient
+Accessibility gaps retain the last verified drawing for up to 2.5 seconds;
+confirmed project changes, offscreen clips, modal dialogs, and effect removal
+still dismiss it immediately. An Inspector scan now clears pending removal
+evidence when selection moves to another clip.
+
+The 15 focused preview tests pass. The updated helper was built and installed.
+A live two-clip check was attempted only inside the workspace
+`Cutdown Integration.fcpbundle`, with source WAVs referenced in place. Final
+Cut quit during XML import, but the disposable project appeared after it
+reopened. The project and Cutdown Controls opened; Analyze then stopped at
+macOS Device Control and Data Access permission for the rebuilt helper.
+The on-screen scrub behavior therefore remains unverified in this run. The
+previous timeline was restored; no Apply or automatic timeline cuts were tested.
+
+## September 23 Analyze feedback for duplicate effects
+
+Three recent Analyze attempts on an existing project in the integration library
+reached project capture, then stopped after about four seconds. The exported
+clip contains two direct Cutdown Audio effects, so the helper correctly refused
+to choose one. No measurement or timeline edit ran. The user can remove the
+extra instance in Final Cut’s Audio Inspector and Analyze again.
+
+The failure was easy to miss when Final Cut displaced Controls for export:
+reopening an effect editor is deliberately ambiguous with two instances, and
+the helper discarded the resulting reopen guidance. The helper now checks for
+visible duplicates before Share, preserves guidance when restoration fails,
+and writes failures that occur during initial capture to the job directory.
+Controls shows a specific failure reason in Review as well as the status line.
+XML validation remains the authoritative duplicate check when the Inspector
+does not expose both effects. Automatic Apply and timeline cuts were not tested
+in this investigation.
+
+## September 23 Controls window verification
+
+The compact Controls window was checked in Final Cut using the disposable ten-second
+`Cutdown Audio Only Basic` project in the workspace `Cutdown Integration.fcpbundle`.
+The rebuilt Audio Unit opens, exposes the detection tooltips, shows the simplified
+More menu, and saves settings from its icon button. A live Analyze retry exposed
+an Accessibility mismatch that made the helper mistake Controls for an unrelated
+Final Cut dialog. Matching the window by its stable Cutdown accessibility IDs
+fixes that regression: Analyze now passes the dialog check. Long status messages
+wrap within the window, including the full permission recovery instructions.
+
+Analysis still stops at macOS Device Control and Data Access permission for the
+rebuilt helper. No cut review, automatic Apply, or timeline cuts were verified in
+this run. The existing permission was not changed.
+
 ## September 23 first-import navigation repair
 
 An observed Analyze attempt on the integration library stopped immediately after

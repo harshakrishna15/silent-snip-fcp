@@ -34,7 +34,6 @@ public struct ReviewAnalysisResult: Sendable {
         var publication: ReviewPublication?
         var cancelled = false
         var applyStarted = false
-        var previewVisible = true
         init(_ request: AnalyzeRequest) { self.request = request }
     }
 
@@ -186,8 +185,9 @@ public struct ReviewAnalysisResult: Sendable {
         do {
             switch command.command {
             case .preview:
-                guard let visible = command.included else { return }
-                job.previewVisible = visible
+                // Older Audio Unit windows can still send this command while
+                // Final Cut is running. A valid review always keeps its lines.
+                guard command.included != nil else { return }
             case .include:
                 guard let id = command.cutID, let included = command.included else { return }
                 try result.analyzed.review.setIncluded(included, cutID: id)
@@ -379,7 +379,8 @@ public struct ReviewAnalysisResult: Sendable {
         // channel. Local observers do not depend on the plugin transport.
         defer {
             if active == nil || active == job.request.id {
-                onReviewChange?(job.request.id, active == job.request.id && (job.state == .review || job.state == .analyzing) && job.previewVisible ? job.result?.analyzed.review : nil)
+                let retainsPreview = job.state == .review || job.state == .analyzing || job.state == .navigating
+                onReviewChange?(job.request.id, active == job.request.id && retainsPreview ? job.result?.analyzed.review : nil)
             }
         }
         job.revision += 1
@@ -446,7 +447,7 @@ public struct ReviewAnalysisResult: Sendable {
         return ReviewResponse(request: job.request.id, revision: job.revision, state: job.state.rawValue,
             message: job.message, progress: 1, summary: summary, cuts: cuts,
             canApply: ready && applyOperation != nil && Self.applyUnavailableReason(result) == nil,
-            canChangeSelection: ready, canCancel: true, canHighlight: ready && highlightOperation != nil, previewVisible: job.previewVisible)
+            canChangeSelection: ready, canCancel: true, canHighlight: ready && highlightOperation != nil, previewVisible: true)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {

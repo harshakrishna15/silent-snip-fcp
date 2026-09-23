@@ -44,6 +44,12 @@ import Foundation
         if let selectionBeforeFocus, selectionBeforeFocus != selected {
             throw FinalCutCaptureError.invalidSelection("The selected timeline clip changed while restoring timeline focus.")
         }
+        // The Inspector can expose an obvious duplicate before Share displaces
+        // the AU window. XML validation remains authoritative if it is hidden.
+        if controllerEffectUIDs.contains(AudioControllerSettings.effectUID),
+           session.hasMultipleCutdownEffectsInInspector() {
+            throw AudioControllerSettingsError.ambiguousController
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         progress("Exporting the active project XML…")
         let destination = directory.appendingPathComponent("Project-\(UUID()).fcpxmld")

@@ -212,7 +212,7 @@ import Foundation
             roots.append(window)
             // The AU review window remains nonblocking. Its actual child sheets
             // are still discovered below; no real sheet inherits this exemption.
-            let review = isCutdownReviewWindow(window)
+            let review = modal == false ? false : isCutdownReviewWindow(window)
             if FinalCutWindowPolicy.isBlockingDialog(role: role, subrole: subrole, modal: modal, containsCutdownReview: review) {
                 blockers.append(window)
             }

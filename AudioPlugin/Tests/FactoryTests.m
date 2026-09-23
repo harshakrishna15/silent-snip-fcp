@@ -16,6 +16,8 @@
 - (void)restoreSavedSettings:(id)sender;
 - (void)verifyExistingResult:(id)sender;
 - (void)jumpToCut:(id)sender;
+- (void)selectCuts:(id)sender;
+- (void)updateMoreMenuVisibility;
 - (void)retryVerification:(id)sender;
 - (BOOL)restoreSettingsData:(NSData *)data;
 @end
@@ -67,6 +69,11 @@ static void response(TestFactory *factory, NSInteger revision, NSString *state, 
 static NSUInteger commandCount(TestFactory *factory, NSString *command) {
     return [[factory.commands filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF == %@", command]] count];
 }
+static BOOL containsViewIdentifier(NSView *view, NSString *identifier) {
+    if ([view.identifier isEqual:identifier]) return YES;
+    for (NSView *child in view.subviews) if (containsViewIdentifier(child, identifier)) return YES;
+    return NO;
+}
 
 /// Each scenario owns a fresh processor, private settings store, view and job.
 @interface Fixture : NSObject
@@ -76,7 +83,6 @@ static NSUInteger commandCount(TestFactory *factory, NSString *command) {
 @property(nonatomic) NSArray<NSTextField *> *fields;
 @property(nonatomic) NSButton *analyze;
 @property(nonatomic) NSButton *apply;
-@property(nonatomic) NSButton *preview;
 - (void)review;
 - (void)finish;
 @end
@@ -98,7 +104,6 @@ static NSUInteger commandCount(TestFactory *factory, NSString *command) {
         self.fields = [self.factory valueForKey:@"fields"];
         self.analyze = [self.factory valueForKey:@"analyzeButton"];
         self.apply = [self.factory valueForKey:@"applyButton"];
-        self.preview = [self.factory valueForKey:@"previewButton"];
     }
     return self;
 }
@@ -141,8 +146,8 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     });
 
     run(@"settings validation, document notification and exact Float32 precision", ^(Fixture *f) {
-        require(!f.apply.enabled && !f.factory.openedURL && !f.preview.enabled, @"Opening view performs no action");
-        require([[f.factory valueForKey:@"reviewToolbar"] isHidden] && [[f.factory valueForKey:@"cancelButton"] isHidden],
+        require(!f.apply.enabled && !f.factory.openedURL, @"Opening view performs no action");
+        require(!containsViewIdentifier(f.factory.view, @"cutdown.preview") && [[f.factory valueForKey:@"cancelButton"] isHidden],
             @"Opening view hides actions that need an active analysis");
         StateObserver *observer = [StateObserver new];
         [f.unit addObserver:observer forKeyPath:@"allParameterValues" options:0 context:NULL];
@@ -178,9 +183,14 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         NSURL *launch = f.factory.openedURL; NSUInteger commands = f.factory.commands.count;
         [f.analyze performClick:nil]; [f.factory analyze:nil]; [f.factory refreshSettings];
         require([f.factory.openedURL isEqual:launch] && f.factory.commands.count == commands && !f.analyze.enabled, @"Pending Analyze cannot be replaced by clicks or view refresh");
+        NSButton *save = [f.factory valueForKey:@"saveButton"];
+        f.fields[0].stringValue = @"-30"; [f.factory saveSettings:nil];
+        require(!save.enabled && [f.unit.analysisParameterTree parameterWithAddress:1].value == -26,
+            @"Save cannot change controller settings while Analyze is connecting");
+        f.fields[0].stringValue = @"-26";
         require(commandCount(f.factory, @"apply") == 0, @"Analyze never applies");
         connection(f.factory).lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16]; [f.factory pollStatus];
-        require(f.analyze.enabled && !connection(f.factory).awaitingResponse, @"Connection timeout releases Analyze");
+        require(f.analyze.enabled && save.enabled && !connection(f.factory).awaitingResponse, @"Connection timeout releases controls");
         [f.factory analyze:nil]; require(!f.analyze.enabled, @"Can retry after timeout");
         response(f.factory, 1, @"unavailable", nil); require(!f.apply.enabled, @"Unavailable cannot authorize Apply");
     });
@@ -201,20 +211,10 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f.factory removeObserver:observer forKeyPath:@"cutRows"];
     });
 
-    run(@"lost preview delivery retries until matching acknowledgment", ^(Fixture *f) {
-        [f review]; [f.preview performClick:nil];
-        NSDictionary *hide = f.factory.previewCommand;
-        require([hide[@"included"] isEqual:@NO] && CFGetTypeID((__bridge CFTypeRef)hide[@"included"]) == CFBooleanGetTypeID(), @"Preview uses a JSON boolean");
-        require([hide[@"expectedRevision"] isEqual:@1], @"Preview names the review revision");
-        deliver(f.factory, connection(f.factory).lastResponseObject); [f.factory pollStatus];
-        require([f.factory.previewCommand isEqual:hide] && !f.preview.enabled && f.preview.state == NSControlStateValueOn && f.apply.enabled, @"Pending hide retries and shows confirmed state without blocking Apply");
-        response(f.factory, 2, @"review", nil);
-        require(connection(f.factory).pendingPreview != nil && !f.preview.enabled, @"Unrelated revision is not an acknowledgment");
-        response(f.factory, 3, @"review", @{@"previewVisible":@NO});
-        require(!connection(f.factory).pendingPreview && f.preview.enabled && f.preview.state == NSControlStateValueOff, @"Matching hide acknowledged");
-        [f.preview performClick:nil]; require([f.factory.previewCommand[@"included"] isEqual:@YES], @"Show uses true");
-        response(f.factory, 4, @"review", nil);
-        require(f.preview.enabled && f.preview.state == NSControlStateValueOn, @"Show acknowledged");
+    run(@"review has no hide-preview control", ^(Fixture *f) {
+        [f review];
+        require(!containsViewIdentifier(f.factory.view, @"cutdown.preview") && f.apply.enabled,
+            @"Valid guidelines cannot be hidden from Controls");
     });
 
     run(@"Apply replay, retransmission, acknowledgment and uncertain timeout", ^(Fixture *f) {
@@ -224,8 +224,8 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         NSDictionary *apply = f.factory.previewCommand;
         require([apply[@"expectedRevision"] isEqual:@1] && [apply[@"view"] isKindOfClass:NSString.class] &&
             [apply[@"applyGesture"] isKindOfClass:NSString.class] &&
-            [f.apply.identifier isEqual:[@"cutdown.apply.requested." stringByAppendingString:apply[@"applyGesture"]]],
-            @"Apply carries a fresh gesture exposed by its disabled button");
+            [f.apply.identifier isEqual:[@"cutdown.apply.requested." stringByAppendingString:apply[@"applyGesture"]]] && !f.apply.hidden,
+            @"Apply carries a fresh gesture exposed by its visible disabled button");
         NSDate *before = [NSDate dateWithTimeIntervalSinceNow:-5]; connection(f.factory).lastResponse = before;
         deliver(f.factory, review); [f.apply performClick:nil];
         require([connection(f.factory).lastResponse isEqual:before] && !connection(f.factory).applyAcknowledged && commandCount(f.factory, @"apply") == 1, @"Old review neither acknowledges nor postpones Apply timeout");
@@ -245,9 +245,9 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f review];
         response(f.factory, 2, @"analyzing", @{@"canApply":@NO, @"canChangeSelection":@NO, @"message":@"Preview ready. Finishing cleanup…"});
         require([(NSArray *)[f.factory valueForKey:@"cutRows"] count] > 0, @"Early preview keeps its cut rows");
-        require(!f.apply.enabled && !f.analyze.enabled && !f.preview.enabled, @"Cleanup owns the operation while preview is displayed");
+        require(!f.apply.enabled && !f.analyze.enabled, @"Cleanup owns the operation while preview is displayed");
         response(f.factory, 3, @"review", nil);
-        require(f.apply.enabled && f.analyze.enabled && f.preview.enabled, @"Completed cleanup enables the normal review");
+        require(f.apply.enabled && f.analyze.enabled, @"Completed cleanup enables the normal review");
     });
 
     run(@"returning Controls gets a fresh reply deadline", ^(Fixture *f) {
@@ -261,8 +261,9 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f.factory pollStatus];
         require([[(NSTextField *)[f.factory valueForKey:@"statusLabel"] stringValue] isEqual:@"Rendered project verification failed."],
             @"Terminal error is never overwritten by an idle heartbeat timeout");
-        require(!f.preview.enabled && !f.apply.enabled && ![[(NSTextField *)[f.factory valueForKey:@"summaryLabel"] stringValue] containsString:@"Waiting"],
-            @"Failed analysis explains absent preview");
+        require(!f.apply.enabled &&
+            [[(NSTextField *)[f.factory valueForKey:@"summaryLabel"] stringValue] isEqual:@"Rendered project verification failed."],
+            @"Failed analysis displays its reason in the Review section");
     });
 
     run(@"a delayed failure replaces timeout while expired Apply remains consumed", ^(Fixture *f) {
@@ -293,7 +294,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 
     run(@"selection waits for exact acknowledgments", ^(Fixture *f) {
         [f review];
-        require(![[f.factory valueForKey:@"reviewToolbar"] isHidden], @"Cut controls appear with review results");
+        require(!containsViewIdentifier(f.factory.view, @"cutdown.preview"), @"Review has no hide-preview control");
         NSTableView *table = [f.factory valueForKey:@"resultsView"];
         NSButton *cut = (NSButton *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[0] row:0];
         require(cut.enabled && cut.state == NSControlStateValueOn, @"Eligible cuts have checkboxes");
@@ -305,9 +306,32 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require(connection(f.factory).pendingSelection != nil && !f.apply.enabled, @"Equal and unrelated revisions cannot acknowledge selection");
         response(f.factory, 3, @"review", @{@"canApply":@NO, @"cuts":@[@{@"id":@"cut-1", @"start":@"1s", @"end":@"2s", @"duration":@"1s", @"eligible":@YES, @"included":@NO}]});
         require(!connection(f.factory).pendingSelection && !f.apply.enabled, @"Deselection acknowledged");
-        [(NSButton *)[f.factory valueForKey:@"selectAllButton"] performClick:nil];
+        [f.factory selectCuts:[f.factory valueForKey:@"selectAllItem"]];
         require([f.factory.previewCommand[@"command"] isEqual:@"selectAll"], @"Select All uses helper rules");
         response(f.factory, 4, @"review", nil); require(f.apply.enabled, @"Select All acknowledged");
+    });
+
+    run(@"review presents scannable cuts and the current primary action", ^(Fixture *f) {
+        require([f.analyze.title isEqual:@"Analyze"] && !f.analyze.hidden && f.apply.hidden,
+            @"Analyze is the only initial footer action");
+        [f review];
+        NSTableView *table = [f.factory valueForKey:@"resultsView"];
+        require(table.tableColumns.count == 4 && table.headerView != nil &&
+            f.analyze.hidden && !f.apply.hidden, @"Review has labeled columns and one visible primary action");
+        require(!containsViewIdentifier(f.factory.view, @"cutdown.preview"), @"Guidelines stay on during review");
+        [f.factory updateMoreMenuVisibility];
+        NSMenu *more = [f.factory valueForKey:@"moreMenu"];
+        [more update];
+        require(!more.itemArray[0].hidden && !more.itemArray[2].hidden && more.itemArray[2].enabled,
+            @"Reanalysis and bulk selection are available in More");
+        NSTextField *end = (NSTextField *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[1] row:0];
+        NSTextField *duration = (NSTextField *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[2] row:0];
+        require([end.stringValue isEqual:@"2s"] && [duration.stringValue isEqual:@"1s"], @"End and duration are separate values");
+        response(f.factory, 2, @"review", @{@"cuts":@[@{@"id":@"cut-1", @"start":@"1s", @"end":@"2s", @"duration":@"1s",
+            @"eligible":@NO, @"included":@NO, @"reason":@"Protected by a transition"}]});
+        NSTextField *note = (NSTextField *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[3] row:0];
+        require([note.stringValue isEqual:@"Protected by a transition"] && !f.apply.enabled &&
+            !f.analyze.hidden && f.apply.hidden, @"Unavailable reason stays in the review row");
     });
 
     run(@"navigation and lost verification retry delivery", ^(Fixture *f) {
@@ -317,6 +341,8 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require([f.factory.previewCommand[@"command"] isEqual:@"highlight"] && [f.factory.previewCommand[@"cutID"] isEqual:@"cut-1"] &&
             [f.factory.previewCommand[@"expectedRevision"] isEqual:@2], @"Navigation sends selected identity and revision");
         response(f.factory, 3, @"failed", @{@"canRetryVerification":@YES});
+        require(![(NSButton *)[f.factory valueForKey:@"retryButton"] isHidden] && f.analyze.hidden && f.apply.hidden,
+            @"Retry is the sole primary action after a retryable failure");
         [f.factory retryVerification:nil]; [f.factory retryVerification:nil];
         require(commandCount(f.factory, @"retryVerification") == 1, @"Retry rejects duplicate clicks");
         NSDictionary *retry = f.factory.previewCommand;
@@ -353,7 +379,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
             [(NSPopUpButton *)[f.factory valueForKey:@"outputMode"] indexOfSelectedItem] == 1, @"Submitted settings and output restored");
         require([f.unit.analysisParameterTree parameterWithAddress:1].value == -26, @"Reconnection does not rewrite host document state");
         response(f.factory, 9, @"review", @{@"canCancel":@YES});
-        require(f.apply.enabled && f.preview.enabled, @"Retained review becomes actionable in Controls");
+        require(f.apply.enabled, @"Retained review becomes actionable in Controls");
         [f.factory viewDidDisappear]; [f.factory viewDidAppear];
         require(f.fields[0].doubleValue == -41.25, @"Reappearing does not overwrite submitted review settings with host defaults");
         [f.factory reconnect:[NSNotification notificationWithName:@"test" object:json(packet)]];
@@ -395,25 +421,28 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require([f.unit.analysisParameterTree parameterWithAddress:1].value == -29, @"Invalid automated save preserves values");
         status.stringValue = [@"Long recovery notice. " stringByPaddingToLength:1200 withString:@"More information. " startingAtIndex:0];
         [f.factory.view layoutSubtreeIfNeeded];
-        require(NSContainsRect(f.factory.view.bounds, [f.apply convertRect:f.apply.bounds toView:f.factory.view]), @"Apply stays visible with a long notice");
+        require(f.apply.hidden && NSContainsRect(f.factory.view.bounds, [f.analyze convertRect:f.analyze.bounds toView:f.factory.view]),
+            @"The relevant footer action stays visible with a long notice");
         NSButton *more = [f.factory valueForKey:@"moreButton"];
         require(NSContainsRect(f.factory.view.bounds, [more convertRect:more.bounds toView:f.factory.view]), @"More actions stay inside the single window");
         require([more.identifier isEqual:[@"cutdown.review.reconnect." stringByAppendingString:[f.factory valueForKey:@"viewID"]]] &&
             !more.hidden && [more isKindOfClass:NSButton.class], @"Reconnection keeps an always-visible native button anchor");
         NSMenu *menu = [f.factory valueForKey:@"moreMenu"];
-        require(menu.numberOfItems == 3 && menu.itemArray[0].action == @selector(restoreSavedSettings:) &&
-            menu.itemArray[2].action == @selector(verifyExistingResult:), @"Recovery actions remain available in More");
+        [f.factory updateMoreMenuVisibility];
+        require(menu.numberOfItems == 7 && menu.itemArray[5].action == @selector(restoreSavedSettings:) &&
+            menu.itemArray[6].action == @selector(verifyExistingResult:) && menu.itemArray[0].hidden,
+            @"Recovery actions remain available while review actions are hidden");
         [menu update];
-        require(menu.itemArray[0].enabled && menu.itemArray[2].enabled, @"Recovery menu is available while idle");
+        require(menu.itemArray[5].enabled && menu.itemArray[6].enabled, @"Recovery menu is available while idle");
         connection(f.factory).operationBusy = YES; [menu update];
-        require(!menu.itemArray[0].enabled && !menu.itemArray[2].enabled, @"Recovery menu cannot interrupt an active operation");
+        require(!menu.itemArray[5].enabled && !menu.itemArray[6].enabled, @"Recovery menu cannot interrupt an active operation");
         response(f.factory, 2, @"analyzing", @{@"canCancel":@YES, @"progress":@0.5, @"message":status.stringValue});
         [f.factory.view layoutSubtreeIfNeeded];
-        require(f.factory.view.frame.size.width <= 520 && f.factory.view.frame.size.height <= 560,
+        require(f.factory.view.frame.size.width <= 520 && f.factory.view.frame.size.height <= 500,
             @"Progress and long notices fit the requested single-window size");
-        NSView *toolbar = [f.factory valueForKey:@"reviewToolbar"];
-        require(NSMinY([toolbar convertRect:toolbar.bounds toView:f.factory.view]) >= NSMaxY([f.apply convertRect:f.apply.bounds toView:f.factory.view]) + 8,
-            @"Review controls do not overlap the fixed Apply footer");
+        NSView *results = [f.factory valueForKey:@"resultsView"];
+        require(NSMinY([results convertRect:results.bounds toView:f.factory.view]) >= NSMaxY([f.analyze convertRect:f.analyze.bounds toView:f.factory.view]) + 8,
+            @"Review results do not overlap the fixed Apply footer");
     });
 
     NSArray *states = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:@"AudioPlugin/Tests/review-states.json"] options:0 error:nil];

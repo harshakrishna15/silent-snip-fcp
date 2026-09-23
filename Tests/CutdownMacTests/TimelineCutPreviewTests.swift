@@ -21,19 +21,39 @@ final class TimelineCutPreviewTests: XCTestCase {
             "Polling must continue even when Final Cut sends no notifications.")
     }
 
-    func testClickTimeReadGapsKeepPreviewButUnresponsiveHostExpires() {
+    func testClickTimeReadGapsNeverExpireVerifiedPreview() {
         let now = Date(timeIntervalSince1970: 100)
         var visibility = PreviewVisibility()
-        XCTAssertTrue(visibility.expired(at: now))
-        visibility.verified(at: now)
-        for delay in [0.03, 0.15, 0.5, 1.0] {
-            XCTAssertFalse(visibility.expired(at: now.addingTimeInterval(delay)))
-        }
-        XCTAssertTrue(visibility.expired(at: now.addingTimeInterval(1.6)))
-        visibility.verified(at: now.addingTimeInterval(2))
-        XCTAssertFalse(visibility.expired(at: now.addingTimeInterval(2.1)))
+        visibility.verified()
+        visibility.transientFailure()
+        XCTAssertFalse(visibility.confirmedUnavailable("Clip outside viewport", at: now))
+        XCTAssertFalse(visibility.confirmedUnavailable("Clip outside viewport", at: now.addingTimeInterval(2.4)))
+        visibility.transientFailure()
+        XCTAssertFalse(visibility.confirmedUnavailable("Clip outside viewport", at: now.addingTimeInterval(10)))
+        XCTAssertTrue(visibility.confirmedUnavailable("Clip outside viewport", at: now.addingTimeInterval(12.6)))
+        visibility.verified()
+        XCTAssertFalse(visibility.confirmedUnavailable("Project changed", at: now.addingTimeInterval(13)))
         visibility.reset()
-        XCTAssertTrue(visibility.expired(at: now.addingTimeInterval(2.1)))
+        XCTAssertFalse(visibility.confirmedUnavailable("Project changed", at: now.addingTimeInterval(20)))
+    }
+
+    func testHoverReadFailureKeepsVerifiedClipWithoutRepeatedIdentityScans() {
+        let start = Date(timeIntervalSince1970: 100)
+        var lease = PreviewIdentityLease()
+        XCTAssertFalse(lease.usable(at: start))
+        lease.verified(at: start)
+        XCTAssertFalse(lease.beginRevalidation(at: start.addingTimeInterval(0.8)))
+        XCTAssertTrue(lease.beginRevalidation(at: start.addingTimeInterval(1.0)))
+        // The attempted AX scan failed during a hover transition. Keep the
+        // old verified clip while short geometry reads continue.
+        XCTAssertTrue(lease.usable(at: start.addingTimeInterval(1.2)))
+        XCTAssertFalse(lease.beginRevalidation(at: start.addingTimeInterval(1.2)))
+        XCTAssertTrue(lease.beginRevalidation(at: start.addingTimeInterval(2.0)))
+        lease.verified(at: start.addingTimeInterval(2.1))
+        XCTAssertTrue(lease.usable(at: start.addingTimeInterval(6.9)))
+        XCTAssertFalse(lease.usable(at: start.addingTimeInterval(7.2)))
+        lease.invalidate()
+        XCTAssertFalse(lease.usable(at: start.addingTimeInterval(2.2)))
     }
 
     func testClicksAndOtherWindowsDoNotReorderAlreadyVisiblePreview() {
@@ -42,6 +62,12 @@ final class TimelineCutPreviewTests: XCTestCase {
         }
         XCTAssertTrue(PreviewVisibility.needsOrdering(visible: true, overlay: 20, project: 10, windowOrder: [4, 10, 20]))
         XCTAssertTrue(PreviewVisibility.needsOrdering(visible: false, overlay: 20, project: 10, windowOrder: [20, 10]))
+        // A covered overlay can vanish from the on-screen list; repeated
+        // identical lists must not suppress attempts to bring it back.
+        XCTAssertTrue(PreviewVisibility.needsOrdering(visible: true, overlay: 20, project: 10,
+            windowOrder: [4, 10]))
+        XCTAssertFalse(PreviewVisibility.needsOrdering(visible: true, overlay: 20, project: 10,
+            windowOrder: [4, 20]))
     }
 
     private func inspection(cutdown: Bool = false, complete: Bool = true, scroll: Double = 1) -> PreviewEffectInspection {
@@ -56,9 +82,32 @@ final class TimelineCutPreviewTests: XCTestCase {
         let now = Date()
         XCTAssertFalse(lifetime.observe(inspection(cutdown: true), at: now))
         XCTAssertFalse(lifetime.observe(inspection(), at: now.addingTimeInterval(0.4)))
-        XCTAssertTrue(lifetime.observe(inspection(), at: now.addingTimeInterval(0.8)))
-        XCTAssertTrue(lifetime.observe(inspection(cutdown: true), at: now.addingTimeInterval(1.2)))
-        XCTAssertTrue(lifetime.observe(nil, at: now.addingTimeInterval(2)))
+        XCTAssertFalse(lifetime.observe(inspection(), at: now.addingTimeInterval(0.8)))
+        XCTAssertFalse(lifetime.observe(inspection(), at: now.addingTimeInterval(2.8)))
+        XCTAssertTrue(lifetime.observe(inspection(), at: now.addingTimeInterval(3.0)))
+        XCTAssertTrue(lifetime.observe(inspection(cutdown: true), at: now.addingTimeInterval(3.2)))
+        XCTAssertTrue(lifetime.observe(nil, at: now.addingTimeInterval(4)))
+    }
+
+    func testMissingCutdownRowBeforeFirstVerifiedAppearanceCannotDismissPreview() {
+        var lifetime = PreviewEffectLifetime()
+        let now = Date()
+        for offset in [0.0, 1.0, 3.0, 6.0] {
+            XCTAssertFalse(lifetime.observe(inspection(), at: now.addingTimeInterval(offset)))
+        }
+        XCTAssertFalse(lifetime.observe(inspection(cutdown: true), at: now.addingTimeInterval(7)))
+        XCTAssertFalse(lifetime.observe(inspection(), at: now.addingTimeInterval(8)))
+        XCTAssertFalse(lifetime.observe(inspection(), at: now.addingTimeInterval(8.4)))
+        XCTAssertFalse(lifetime.observe(inspection(cutdown: true), at: now.addingTimeInterval(8.5)))
+    }
+
+    func testDeletionBeforeFirstVerifiedInspectorAppearanceEventuallyDismissesPreview() {
+        var lifetime = PreviewEffectLifetime()
+        let now = Date()
+        for offset in [0.0, 1.0, 3.0, 5.0] {
+            XCTAssertFalse(lifetime.observe(inspection(), at: now.addingTimeInterval(offset)))
+        }
+        XCTAssertTrue(lifetime.observe(inspection(), at: now.addingTimeInterval(6.1)))
     }
 
     func testIncompleteHiddenOrScrolledInspectorIsNotEffectRemoval() {
@@ -94,7 +143,8 @@ final class TimelineCutPreviewTests: XCTestCase {
         let deleted = PreviewEffectInspection(viewport: visible.viewport, cutdown: nil, anchors: anchors, scrollPosition: 0.5)
         XCTAssertFalse(lifetime.observe(visible, at: now))
         XCTAssertFalse(lifetime.observe(deleted, at: now.addingTimeInterval(0.4)))
-        XCTAssertTrue(lifetime.observe(deleted, at: now.addingTimeInterval(0.8)))
+        XCTAssertFalse(lifetime.observe(deleted, at: now.addingTimeInterval(0.8)))
+        XCTAssertTrue(lifetime.observe(deleted, at: now.addingTimeInterval(3.0)))
         var scrolled = PreviewEffectLifetime()
         XCTAssertFalse(scrolled.observe(visible, at: now))
         let partial = PreviewEffectInspection(viewport: visible.viewport, cutdown: nil, anchors: anchors, scrollPosition: 0.8)
@@ -105,10 +155,12 @@ final class TimelineCutPreviewTests: XCTestCase {
     func testDeletingLastEffectAlsoRemovesEffectsHeading() {
         var lifetime = PreviewEffectLifetime()
         let now = Date()
+        XCTAssertFalse(lifetime.observe(inspection(cutdown: true), at: now))
         let empty = PreviewEffectInspection(viewport: inspection().viewport, cutdown: nil,
             anchors: ["Pan": CGRect(x: 10, y: 30, width: 100, height: 20)], scrollPosition: 1)
-        XCTAssertFalse(lifetime.observe(empty, at: now))
-        XCTAssertTrue(lifetime.observe(empty, at: now.addingTimeInterval(0.4)))
+        XCTAssertFalse(lifetime.observe(empty, at: now.addingTimeInterval(0.1)))
+        XCTAssertFalse(lifetime.observe(empty, at: now.addingTimeInterval(0.4)))
+        XCTAssertTrue(lifetime.observe(empty, at: now.addingTimeInterval(2.7)))
     }
 
     func testLastEffectCanBeRemovedWithoutAnInspectorFooterOrScrollBar() {
@@ -124,7 +176,8 @@ final class TimelineCutPreviewTests: XCTestCase {
                 anchors: heading, scrollPosition: scroll)
             XCTAssertFalse(lifetime.observe(present, at: now))
             XCTAssertFalse(lifetime.observe(deleted, at: now.addingTimeInterval(0.1)))
-            XCTAssertTrue(lifetime.observe(deleted, at: now.addingTimeInterval(0.5)))
+            XCTAssertFalse(lifetime.observe(deleted, at: now.addingTimeInterval(0.5)))
+            XCTAssertTrue(lifetime.observe(deleted, at: now.addingTimeInterval(2.7)))
         }
     }
 
@@ -148,7 +201,8 @@ final class TimelineCutPreviewTests: XCTestCase {
         var lifetime = PreviewEffectLifetime()
         XCTAssertFalse(lifetime.observe(present, at: now))
         XCTAssertFalse(lifetime.observe(deleted, at: now.addingTimeInterval(0.1)))
-        XCTAssertTrue(lifetime.observe(deleted, at: now.addingTimeInterval(0.5)))
+        XCTAssertFalse(lifetime.observe(deleted, at: now.addingTimeInterval(0.5)))
+        XCTAssertTrue(lifetime.observe(deleted, at: now.addingTimeInterval(2.7)))
 
         var scrolled = PreviewEffectLifetime()
         XCTAssertFalse(scrolled.observe(present, at: now))
