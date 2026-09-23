@@ -181,8 +181,7 @@ import XCTest
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let request = try makeRequest()
-        var window = AnalysisReviewWindowState()
-        window.begin(request.id)
+        var local: ReviewResponse?
         var transportFailed = true
         var remote: [ReviewResponse] = []
         var applies = 0
@@ -194,23 +193,23 @@ import XCTest
                 let response = publication.response
                 if transportFailed { throw FixtureError.exportFailed }
                 remote.append(response)
-            }, receiveLocal: { _ = window.accept($0) }, record: { _, _, _ in })
+            }, receiveLocal: { local = $0 }, record: { _, _, _ in })
         defer { coordinator.stop() }
         coordinator.start(request)
-        try await waitUntil { window.response?.state == "review" }
-        XCTAssertTrue(try XCTUnwrap(window.response).canApply)
-        let cut = try XCTUnwrap(window.response?.cuts.first)
+        try await waitUntil { local?.state == "review" }
+        XCTAssertTrue(try XCTUnwrap(local).canApply)
+        let cut = try XCTUnwrap(local?.cuts.first)
         coordinator.handle(.init(request: request.id, command: .include, cutID: cut.id, included: false))
-        XCTAssertFalse(try XCTUnwrap(window.response?.cuts.first).included)
+        XCTAssertFalse(try XCTUnwrap(local?.cuts.first).included)
         transportFailed = false
         coordinator.handle(.init(request: request.id, command: .status))
-        XCTAssertEqual(remote.last, window.response, "Status retries the latest selection without restarting analysis")
+        XCTAssertEqual(remote.last, local, "Status retries the latest selection without restarting analysis")
         transportFailed = true
         coordinator.handle(.init(request: request.id, command: .apply))
         coordinator.handle(.init(request: request.id, command: .apply))
-        try await waitUntil { window.response?.state == "completed" }
+        try await waitUntil { local?.state == "completed" }
         XCTAssertEqual(applies, 1)
-        XCTAssertFalse(try XCTUnwrap(window.response).canApply)
+        XCTAssertFalse(try XCTUnwrap(local).canApply)
     }
 
     func testLocalReviewStillRejectsAnOversizedPayload() async throws {
@@ -435,8 +434,6 @@ import XCTest
         XCTAssertTrue(responses.contains { $0.message == "Exporting Dialogue…" && $0.progress == 0.4 })
         let review = try XCTUnwrap(responses.last)
         XCTAssertEqual(review.request, request.id)
-        XCTAssertEqual(review.targetName, "Review Fixture — Voice")
-        XCTAssertEqual(review.roles, ["dialogue"])
         XCTAssertEqual(review.cuts.count, 2)
         XCTAssertEqual(review.cuts[0].start, "01:00:01:03")
         XCTAssertEqual(review.cuts[0].end, "01:00:01:27")
@@ -537,50 +534,6 @@ import XCTest
         coordinator.handle(ReviewCommand(request: request.id, command: .status))
         XCTAssertEqual(responses.last?.state, "cancelled")
         XCTAssertTrue(try XCTUnwrap(responses.last).cuts.isEmpty)
-    }
-
-    func testLegacySettingsCommandCannotBypassFreshAudioValidation() async throws {
-        let fixture = try makeFixture()
-        defer { fixture.remove() }
-        let request = try makeRequest()
-        var calls = 0
-        var responses: [ReviewResponse] = []
-        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
-            calls += 1
-            return fixture.result
-        }, emit: { responses.append($0.response) }, record: { _, _, _ in })
-        defer { coordinator.stop() }
-        coordinator.start(request)
-        try await waitUntil { responses.last?.state == "review" }
-        // A remote settings command cannot recalculate from an unchecked old render.
-        try FileManager.default.removeItem(at: fixture.artifact)
-        let firstID = try XCTUnwrap(responses.last?.cuts.first?.id)
-
-        coordinator.handle(ReviewCommand(request: request.id, command: .include, cutID: firstID, included: false))
-        XCTAssertEqual(responses.last?.cuts.map(\.included), [false, true])
-        XCTAssertEqual(responses.last?.summary, "1 selected · 0.800 s removed · 5.000 s → 4.200 s")
-
-        coordinator.handle(ReviewCommand(request: request.id, command: .settings,
-            settings: ReviewWireSettings(threshold: -30, minimum: 0.5, before: 0.1, after: 0.1)))
-        XCTAssertEqual(responses.last?.cuts.first?.id, firstID)
-        XCTAssertEqual(responses.last?.cuts.map(\.included), [false, true])
-
-        coordinator.handle(ReviewCommand(request: request.id, command: .settings,
-            settings: ReviewWireSettings(threshold: -30, minimum: 0.5, before: 0.2, after: 0.2)))
-        XCTAssertEqual(responses.last?.cuts.first?.id, firstID)
-        XCTAssertEqual(responses.last?.cuts.map(\.included), [false, true])
-        XCTAssertTrue(try XCTUnwrap(responses.last).message.contains("Use Analyze"))
-
-        coordinator.handle(ReviewCommand(request: request.id, command: .deselectAll))
-        XCTAssertTrue(try XCTUnwrap(responses.last).cuts.allSatisfy { !$0.included })
-        let savedCuts = responses.last?.cuts
-        coordinator.handle(ReviewCommand(request: request.id, command: .settings,
-            settings: ReviewWireSettings(threshold: .nan, minimum: 0.5, before: 0.1, after: 0.1)))
-        XCTAssertEqual(responses.last?.cuts, savedCuts, "An invalid command must preserve valid cached choices.")
-        XCTAssertTrue(try XCTUnwrap(responses.last).message.contains("Use Analyze"))
-        coordinator.handle(ReviewCommand(request: request.id, command: .selectAll))
-        XCTAssertTrue(try XCTUnwrap(responses.last).cuts.allSatisfy(\.included))
-        XCTAssertEqual(calls, 1)
     }
 
     func testNewAnalysisReplacesOldReviewAndIgnoresItsCommands() async throws {

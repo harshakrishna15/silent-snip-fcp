@@ -7,15 +7,13 @@ public struct IntegrationReport: Codable, Sendable {
     public let settings: AnalysisSettings?
     public let state: String
     public let message: String
-    public let accessibility: AccessibilityNode?
 
-    public init(request: AnalyzeRequest? = nil, state: String, message: String, accessibility: AccessibilityNode? = nil) {
+    public init(request: AnalyzeRequest? = nil, state: String, message: String) {
         self.date = Date()
         self.requestID = request?.id
         self.settings = request?.settings
         self.state = state
         self.message = message
-        self.accessibility = accessibility
     }
 
     public static var reportURL: URL {

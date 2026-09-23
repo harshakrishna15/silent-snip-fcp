@@ -29,7 +29,6 @@ NS_ASSUME_NONNULL_BEGIN
                                       error:(NSError **)error;
 // Constructs a request from this instance's actual AUParameter values. Does not
 // launch another application. Dispatch requires a separately authorized action.
-- (nullable NSURL *)analysisRequestURLWithError:(NSError **)error;
 - (nullable CutdownAudioAnalysisRequest *)analysisRequestWithError:(NSError **)error;
 // Call only after the user explicitly submits this request successfully.
 - (BOOL)rememberSettingsForRequest:(CutdownAudioAnalysisRequest *)request error:(NSError **)error;

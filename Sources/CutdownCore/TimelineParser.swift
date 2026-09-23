@@ -131,14 +131,13 @@ private struct TimelineBuilder {
         guard frameDuration > .zero else { throw TimelineError.invalidSequence("frame duration must be positive") }
         var clips: [TimelineClip] = []
         var markers: [TimelineMarker] = []
-        var markerIdentities: [ObjectIdentifier: TimelineMarkerIdentity] = [:]
         var warnings: [String] = []
         // FCPXML offsets on the root spine are in project timecode coordinates.
         // Example: tcStart=3600s, offset=3630s means 30s into the exported dialogue file.
         for (index, node) in spine.children.enumerated() where Self.storyElements.contains(node.name) {
             try walk(node, path: "spine/\(index)", parentID: nil, parentTimelineStart: .zero,
                      parentLocalStart: tcStart, primary: true, parentEnabled: true,
-                     resources: resources, clips: &clips, markers: &markers, markerIdentities: &markerIdentities, warnings: &warnings)
+                     resources: resources, clips: &clips, markers: &markers, warnings: &warnings)
         }
         let duration: RationalTime
         if sequence.attributes["duration"] != nil { duration = try time(sequence, "duration") }
@@ -153,13 +152,13 @@ private struct TimelineBuilder {
             projectUID: project.attributes["uid"], projectTimecodeStart: tcStart,
             projectRange: TimeRange(start: .zero, end: duration), frameDuration: frameDuration,
             clips: clips, markers: markers, dialogueRoles: roles,
-            fingerprint: hash(try canonical(sequence, resources: resources, markerIdentities: markerIdentities)), warnings: warnings)
+            fingerprint: hash(try canonical(sequence, resources: resources)), warnings: warnings)
     }
 
     private func walk(_ node: TimelineXMLNode, path: String, parentID: String?, parentTimelineStart: RationalTime,
                       parentLocalStart: RationalTime, primary: Bool, parentEnabled: Bool,
                       resources: [String: TimelineXMLNode], clips: inout [TimelineClip], markers: inout [TimelineMarker],
-                      markerIdentities: inout [ObjectIdentifier: TimelineMarkerIdentity], warnings: inout [String]) throws {
+                      warnings: inout [String]) throws {
         let sourceStart = try time(node, "start")
         let timelineStart = try parentTimelineStart.adding(time(node, "offset")).subtracting(parentLocalStart)
         let resource = node.attributes["ref"].flatMap { resources[$0] }
@@ -235,14 +234,11 @@ private struct TimelineBuilder {
             // Markers are point annotations; their duration is optional in FCPXML.
             let markerDuration = try time(marker, "duration")
             guard markerDuration >= .zero else { throw TimelineError.invalidTime("negative marker duration") }
-            let semantics = try canonical(marker, resources: resources)
             let value = TimelineMarker(id: "\(path)/marker\(index)", parentClipID: path,
                 timelinePosition: try timelineStart.adding(sourcePosition).subtracting(sourceStart),
                 sourcePosition: sourcePosition, kind: marker.name, value: marker.attributes["value"] ?? "",
-                note: marker.attributes["note"], duration: markerDuration, completed: marker.attributes["completed"],
-                semanticFingerprint: hash(semantics), canonicalSemantics: semantics)
+                note: marker.attributes["note"], duration: markerDuration, completed: marker.attributes["completed"])
             markers.append(value)
-            markerIdentities[ObjectIdentifier(marker)] = value.identity
         }
         // A retime invalidates a simple affine child mapping; protect the parent as unresolved.
         if retimed || speedConformed {
@@ -259,13 +255,13 @@ private struct TimelineBuilder {
                     try walk(item, path: "\(path)/spine\(index)/\(childIndex)", parentID: path,
                              parentTimelineStart: spineStart, parentLocalStart: .zero, primary: false,
                              parentEnabled: enabled, resources: resources, clips: &clips, markers: &markers,
-                             markerIdentities: &markerIdentities, warnings: &warnings)
+                             warnings: &warnings)
                 }
             } else if Self.storyElements.contains(child.name) {
                 try walk(child, path: "\(path)/\(index)", parentID: path,
                          parentTimelineStart: timelineStart, parentLocalStart: sourceStart, primary: false,
                          parentEnabled: enabled, resources: resources, clips: &clips, markers: &markers,
-                         markerIdentities: &markerIdentities, warnings: &warnings)
+                         warnings: &warnings)
             }
         }
     }
@@ -299,13 +295,12 @@ private struct TimelineBuilder {
     /// Sort attribute keys and replace resource IDs with content hashes so harmless XML
     /// formatting, export dates, and resource renumbering cannot invalidate a review.
     private func canonical(_ node: TimelineXMLNode, resources: [String: TimelineXMLNode], visiting: Set<String> = [],
-                           markerIdentities: [ObjectIdentifier: TimelineMarkerIdentity] = [:], depth: Int = 0, omitFades: Bool = false) throws -> String {
+                           depth: Int = 0, omitFades: Bool = false) throws -> String {
         guard depth < 256, canonicalCache.remainingNodes > 0 else {
             throw TimelineError.invalidXML("resource graph is too deeply nested or complex")
         }
         canonicalCache.remainingNodes -= 1
         if node.name == "bookmark" || (omitFades && ["fadeIn", "fadeOut"].contains(node.name)) { return "" }
-        if let identity = markerIdentities[ObjectIdentifier(node)], exclusions.ownedMarkers.contains(identity) { return "" }
         let effectUID = node.attributes["ref"].flatMap { resources[$0]?.attributes["uid"] }
         let controller = node.name == "filter-audio"
             && effectUID.map { exclusions.controllerEffectUIDs.contains($0) } == true
@@ -348,7 +343,7 @@ private struct TimelineBuilder {
         for child in node.children {
             if controller && child.name == "param" { continue }
             if controllerAudioState && child.name == "data" && child.attributes["key"] == "effectState" { continue }
-            let result = try canonical(child, resources: resources, visiting: visiting, markerIdentities: markerIdentities, depth: depth + 1, omitFades: omitFades)
+            let result = try canonical(child, resources: resources, visiting: visiting, depth: depth + 1, omitFades: omitFades)
             if !result.isEmpty { parts.append(result) }
         }
         return parts.map { "\($0.utf8.count):\($0)" }.joined()

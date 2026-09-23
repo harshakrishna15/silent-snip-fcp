@@ -82,17 +82,6 @@ public struct TimelineProtectedRange: Codable, Hashable, Sendable {
     }
 }
 
-/// A marker is owned only when both its instance path and every semantic field match.
-/// Display names are deliberately insufficient: users may create the same name.
-public struct TimelineMarkerIdentity: Codable, Hashable, Sendable {
-    public let path: String
-    public let semanticFingerprint: String
-    public init(path: String, semanticFingerprint: String) {
-        self.path = path
-        self.semanticFingerprint = semanticFingerprint
-    }
-}
-
 public struct TimelineMarker: Codable, Hashable, Sendable, Identifiable {
     public let id: String
     public let parentClipID: String
@@ -103,22 +92,15 @@ public struct TimelineMarker: Codable, Hashable, Sendable, Identifiable {
     public let note: String?
     public let duration: RationalTime
     public let completed: String?
-    public let semanticFingerprint: String
-    public let canonicalSemantics: String
-    public var identity: TimelineMarkerIdentity {
-        TimelineMarkerIdentity(path: id, semanticFingerprint: semanticFingerprint)
-    }
 }
 
 public struct TimelineFingerprintExclusions: Sendable {
-    public let ownedMarkers: Set<TimelineMarkerIdentity>
     /// Exact Audio Unit effect resource UIDs proven to belong to Cutdown.
     /// No name matching or inferred Audio Unit identifier is permitted.
     /// The verified local Cutdown AU also excludes its nonrendering effectState
     /// archive when explicitly present in this allowlist; other data is preserved.
     public let controllerEffectUIDs: Set<String>
-    public init(ownedMarkers: Set<TimelineMarkerIdentity> = [], controllerEffectUIDs: Set<String> = []) {
-        self.ownedMarkers = ownedMarkers
+    public init(controllerEffectUIDs: Set<String> = []) {
         self.controllerEffectUIDs = controllerEffectUIDs
     }
 }

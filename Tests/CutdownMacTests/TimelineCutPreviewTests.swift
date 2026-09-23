@@ -26,11 +26,11 @@ final class TimelineCutPreviewTests: XCTestCase {
         XCTAssertTrue(PreviewVisibility.needsOrdering(visible: false, overlay: 20, project: 10, windowOrder: [20, 10]))
     }
 
-    private func inspection(cutdown: Bool = false, complete: Bool = true, scroll: Double = 0) -> PreviewEffectInspection {
+    private func inspection(cutdown: Bool = false, complete: Bool = true, scroll: Double = 1) -> PreviewEffectInspection {
         .init(viewport: CGRect(x: 0, y: 0, width: 300, height: 500),
             cutdown: cutdown ? CGRect(x: 20, y: 100, width: 20, height: 20) : nil,
-            anchors: complete ? ["Effects": CGRect(x: 10, y: 30, width: 30, height: 20),
-                "Audio Configuration": CGRect(x: 10, y: 300, width: 100, height: 20)] : [:], scrollPosition: scroll)
+            anchors: complete ? ["Effects": CGRect(x: 10, y: 30, width: 30, height: 20)] : [:],
+            scrollPosition: scroll)
     }
 
     func testDeletingEffectDismissesPreviewAndUndoCannotReviveIt() {
@@ -49,6 +49,8 @@ final class TimelineCutPreviewTests: XCTestCase {
         XCTAssertFalse(PreviewEffectInspection.effectsExpanded(value: "1", title: "Show"))
         XCTAssertTrue(PreviewEffectInspection.effectsExpanded(value: "on", title: nil))
         XCTAssertTrue(PreviewEffectInspection.effectsExpanded(value: nil, title: "Hide"))
+        XCTAssertNil(PreviewEffectInspection.scrollPosition(value: 0, enabled: false))
+        XCTAssertEqual(PreviewEffectInspection.scrollPosition(value: 0, enabled: true), 0)
         var lifetime = PreviewEffectLifetime()
         let now = Date()
         XCTAssertFalse(lifetime.observe(inspection(cutdown: true), at: now))
@@ -59,8 +61,7 @@ final class TimelineCutPreviewTests: XCTestCase {
         XCTAssertFalse(lifetime.observe(inspection(complete: false, scroll: 1), at: now.addingTimeInterval(2)))
         XCTAssertFalse(lifetime.observe(inspection(complete: false, scroll: 1), at: now.addingTimeInterval(3)))
         let offscreen = PreviewEffectInspection(viewport: inspection().viewport, cutdown: nil,
-            anchors: ["Effects": CGRect(x: 10, y: -600, width: 30, height: 20),
-                      "Audio Configuration": CGRect(x: 10, y: 900, width: 100, height: 20)], scrollPosition: 0.5)
+            anchors: ["Effects": CGRect(x: 10, y: -600, width: 30, height: 20)], scrollPosition: 0.5)
         XCTAssertFalse(lifetime.observe(offscreen, at: now.addingTimeInterval(4)))
         XCTAssertFalse(lifetime.observe(offscreen, at: now.addingTimeInterval(5)))
     }
@@ -87,10 +88,56 @@ final class TimelineCutPreviewTests: XCTestCase {
         var lifetime = PreviewEffectLifetime()
         let now = Date()
         let empty = PreviewEffectInspection(viewport: inspection().viewport, cutdown: nil,
-            anchors: ["Audio Enhancements": CGRect(x: 10, y: 30, width: 100, height: 20),
-                      "Audio Configuration": CGRect(x: 10, y: 300, width: 100, height: 20)], scrollPosition: 0)
+            anchors: ["Pan": CGRect(x: 10, y: 30, width: 100, height: 20)], scrollPosition: 1)
         XCTAssertFalse(lifetime.observe(empty, at: now))
         XCTAssertTrue(lifetime.observe(empty, at: now.addingTimeInterval(0.4)))
+    }
+
+    func testLastEffectCanBeRemovedWithoutAnInspectorFooterOrScrollBar() {
+        let now = Date()
+        let viewport = inspection().viewport
+        let heading = ["Effects": CGRect(x: 10, y: 30, width: 100, height: 20)]
+        for scroll in [nil, 1.0] as [Double?] {
+            var lifetime = PreviewEffectLifetime()
+            let present = PreviewEffectInspection(viewport: viewport,
+                cutdown: CGRect(x: 20, y: 100, width: 20, height: 20),
+                anchors: heading, scrollPosition: scroll)
+            let deleted = PreviewEffectInspection(viewport: viewport, cutdown: nil,
+                anchors: heading, scrollPosition: scroll)
+            XCTAssertFalse(lifetime.observe(present, at: now))
+            XCTAssertFalse(lifetime.observe(deleted, at: now.addingTimeInterval(0.1)))
+            XCTAssertTrue(lifetime.observe(deleted, at: now.addingTimeInterval(0.5)))
+        }
+    }
+
+    func testPartialEffectsSectionCannotProveRemovalWithoutNeighborWitnesses() {
+        var lifetime = PreviewEffectLifetime()
+        let now = Date()
+        let partial = inspection(scroll: 0.5)
+        XCTAssertFalse(lifetime.observe(partial, at: now))
+        XCTAssertFalse(lifetime.observe(partial, at: now.addingTimeInterval(1)))
+    }
+
+    func testDeletingLastEffectInLongStackUsesPrecedingEffectAtScrollEnd() {
+        let now = Date()
+        let viewport = inspection().viewport
+        let anchors = ["limiter check box": CGRect(x: 10, y: 100, width: 120, height: 20)]
+        let present = PreviewEffectInspection(viewport: viewport,
+            cutdown: CGRect(x: 10, y: 300, width: 120, height: 20),
+            anchors: anchors, scrollPosition: 1)
+        let deleted = PreviewEffectInspection(viewport: viewport, cutdown: nil,
+            anchors: anchors, scrollPosition: 1)
+        var lifetime = PreviewEffectLifetime()
+        XCTAssertFalse(lifetime.observe(present, at: now))
+        XCTAssertFalse(lifetime.observe(deleted, at: now.addingTimeInterval(0.1)))
+        XCTAssertTrue(lifetime.observe(deleted, at: now.addingTimeInterval(0.5)))
+
+        var scrolled = PreviewEffectLifetime()
+        XCTAssertFalse(scrolled.observe(present, at: now))
+        let moved = PreviewEffectInspection(viewport: viewport, cutdown: nil,
+            anchors: anchors, scrollPosition: 0.5)
+        XCTAssertFalse(scrolled.observe(moved, at: now.addingTimeInterval(0.5)))
+        XCTAssertFalse(scrolled.observe(moved, at: now.addingTimeInterval(1)))
     }
 
     @MainActor func testBoundaryLayersSurviveBackingLayerReplacement() throws {

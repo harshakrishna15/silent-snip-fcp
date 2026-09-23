@@ -8,7 +8,7 @@
 namespace {
 static_assert(std::atomic<float>::is_always_lock_free, "Audio parameter storage must be lock free");
 constexpr float defaults[] = {-40.f, .5f, .1f, .1f};
-constexpr float minimums[] = {-80.f, .1f, 0.f, 0.f};
+constexpr float minimums[] = {-80.f, .0001f, 0.f, 0.f};
 constexpr float maximums[] = {0.f, 10.f, 2.f, 2.f};
 struct RenderStorage {
     std::array<std::atomic<float>, 4> values;
@@ -240,9 +240,6 @@ BOOL validSettings(id settings) {
         }
         return noErr;
     };
-}
-- (NSURL *)analysisRequestURLWithError:(NSError **)error {
-    return [self analysisRequestWithError:error].URL;
 }
 - (CutdownAudioAnalysisRequest *)analysisRequestWithError:(NSError **)error {
     NSArray *keys = @[@"threshold",@"minimum",@"before",@"after"];

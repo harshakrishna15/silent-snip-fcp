@@ -8,9 +8,11 @@ extension FinalCutAXSession {
         guard string(window, kAXRoleAttribute) != kAXSheetRole,
               string(window, kAXSubroleAttribute) == kAXDialogSubrole,
               (attribute(window, kAXModalAttribute) as? NSNumber)?.boolValue != true else { return false }
-        return (find(in: window, role: kAXTableRole, identifier: "cutdown.review.cuts", maxDepth: 16, maxNodes: 250) != nil
+        return (find(in: window, role: kAXStaticTextRole, identifier: "cutdown.status", maxDepth: 16, maxNodes: 250) != nil
+            || find(in: window, role: kAXTableRole, identifier: "cutdown.review.cuts", maxDepth: 16, maxNodes: 250) != nil
             || find(in: window, role: kAXTextAreaRole, identifier: "cutdown.review.results", maxDepth: 16, maxNodes: 250) != nil)
-            && (find(in: window, role: kAXButtonRole, title: "Analyze", maxDepth: 16, maxNodes: 250) != nil
+            && (find(in: window, role: kAXButtonRole, identifier: "cutdown.analyze", maxDepth: 16, maxNodes: 250) != nil
+                || find(in: window, role: kAXButtonRole, title: "Analyze", maxDepth: 16, maxNodes: 250) != nil
                 || find(in: window, role: kAXButtonRole, title: "Analyze Again", maxDepth: 16, maxNodes: 250) != nil)
     }
 

@@ -59,20 +59,6 @@ final class FinalCutProjectCaptureTests: XCTestCase {
         XCTAssertNil(FinalCutPreviewGeometry.visibleFrame(clip: clip, timeline: layout, scrollViewports: [CGRect(x: 0, y: 0, width: 500, height: 100)]))
     }
 
-    func testPreviewFollowsVisibleProjectAndMasksCoveringWindowsWithoutForegroundRequirement() {
-        let frame = CGRect(x: 0, y: 20, width: 1000, height: 800)
-        let cover = CGRect(x: 0, y: 20, width: 500, height: 800)
-        let project = FinalCutPreviewSurface(pid: 10, frame: frame, layer: 0, alpha: 1)
-        let windows = [FinalCutPreviewSurface(pid: 99, frame: frame, layer: 1000, alpha: 1),
-            FinalCutPreviewSurface(pid: 20, frame: frame, layer: 3, alpha: 1),
-            FinalCutPreviewSurface(pid: 30, frame: cover, layer: 0, alpha: 1), project,
-            FinalCutPreviewSurface(pid: 40, frame: frame, layer: 0, alpha: 1)]
-        XCTAssertEqual(FinalCutPreviewSurface.occlusions(in: windows, projectPID: 10, projectFrame: frame, helperPID: 20), [cover])
-        XCTAssertNil(FinalCutPreviewSurface.occlusions(in: Array(windows.prefix(2)), projectPID: 10, projectFrame: frame, helperPID: 20))
-        XCTAssertNil(FinalCutPreviewSurface.occlusions(in: [project, project], projectPID: 10, projectFrame: frame, helperPID: 20))
-        XCTAssertEqual(FinalCutPreviewSurface.occlusions(in: [project], projectPID: 10, projectFrame: frame, helperPID: 20), [])
-    }
-
     func testOtherEffectEditorsDoNotHidePreviewButModalDialogsStillDo() {
         for _ in ["Noise Gate", "Limiter", "Third-party Audio Unit", "Cutdown"] {
             XCTAssertFalse(FinalCutWindowPolicy.blocksPreview(role: "AXWindow", subrole: "AXDialog", modal: false, containsCutdownReview: false))

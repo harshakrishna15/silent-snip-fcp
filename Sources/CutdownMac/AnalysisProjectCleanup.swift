@@ -8,11 +8,12 @@ enum AnalysisProjectCleanup {
         let prefix = "Cutdown Analysis "
         guard isolated.name.hasPrefix(prefix),
               UUID(uuidString: String(isolated.name.dropFirst(prefix.count))) != nil,
-              currentProject != isolated.name,
+              currentProject == isolated.sourceProject.projectName,
               try TimelineParser.parse(data: isolated.data).projectName == isolated.name,
               try ProjectRoundTripVerification.compare(expected: isolated.data, actual: delivered,
                   allowHostAssignedIdentity: true).verified else {
             throw FinalCutCaptureError.unavailable("Temporary project ownership could not be verified; it was left in place.")
         }
+        try isolated.destination.verifyDestination(delivered)
     }
 }

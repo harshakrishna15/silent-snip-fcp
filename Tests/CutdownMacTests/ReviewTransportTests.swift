@@ -77,18 +77,13 @@ final class ReviewTransportTests: XCTestCase {
             "{\"version\":2,\"request\":\"\(request)\",\"command\":\"apply\"}",
             "{\"version\":1,\"request\":\"\(request)\",\"command\":\"include\",\"cutID\":\"cut-1\"}",
             "{\"version\":1,\"request\":\"\(request)\",\"command\":\"highlight\",\"cutID\":\"\"}",
+            "{\"version\":1,\"request\":\"\(request)\",\"command\":\"settings\"}",
             "{\"version\":1,\"request\":\"bad-id\",\"command\":\"status\"}",
             String(repeating: "x", count: ReviewWire.maximumBytes + 1)
         ]
         for object in objects {
             XCTAssertThrowsError(try ReviewWire.decodeCommand(object))
         }
-    }
-
-    func testInvalidInspectorSettingsCannotTriggerRecalculation() throws {
-        let command = ReviewCommand(request: UUID(), command: .settings,
-            settings: ReviewWireSettings(threshold: -40, minimum: -0.5, before: 0.1, after: 0.1))
-        XCTAssertThrowsError(try ReviewWire.decodeCommand(ReviewWire.encode(command)))
     }
 
     func testResponsesDefaultToNoTimelineMutationCapabilities() throws {

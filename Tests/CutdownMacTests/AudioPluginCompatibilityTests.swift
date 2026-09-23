@@ -151,7 +151,7 @@ final class AudioPluginCompatibilityTests: XCTestCase {
         <fcpxml version="1.14"><resources><format id="f" frameDuration="1/30s"/>
         <asset id="a" start="3600s" duration="20s" hasAudio="1"><media-rep kind="original-media" src="\(directory.appendingPathComponent("Voice.wav").absoluteString)"/></asset>
         \(resources)<effect id="controller" uid="\(AudioControllerSettings.effectUID)"/></resources>
-        <library location="\(directory.appendingPathComponent("Fixture.fcpbundle").absoluteString)"><event name="Original"><project name="Plugins" uid="original">
+        <library location="\(directory.appendingPathComponent("Fixture.fcpbundle").absoluteString)"><event name="Original" uid="CE445773-F54F-433A-91B6-F367E99C20B4"><project name="Plugins" uid="original">
         <sequence format="f" duration="8s" tcStart="7200s"><spine><gap offset="7200s" start="0s" duration="3s"/>
         <asset-clip ref="a" name="Voice" offset="7203s" start="3602s" duration="5s" audioRole="music">
         \(component)\(connected)\(filters)</asset-clip></spine></sequence></project></event></library></fcpxml>

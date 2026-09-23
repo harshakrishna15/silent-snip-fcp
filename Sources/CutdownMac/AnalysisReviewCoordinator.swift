@@ -186,13 +186,6 @@ public struct ReviewAnalysisResult: Sendable {
                 try result.analyzed.review.setIncluded(included, cutID: id)
             case .selectAll: result.analyzed.review.selectAllEligible(true)
             case .deselectAll: result.analyzed.review.selectAllEligible(false)
-            case .settings:
-                // Controls submits Analyze again, which validates fresh host
-                // state before the cache can recalculate. Do not permit this
-                // older protocol command to bypass that validation.
-                job.message = "Use Analyze to validate current audio and update the preview with these settings."
-                publish(job)
-                return
             case .highlight:
                 guard let id = command.cutID else { return }
                 guard result.analyzed.review.cuts.contains(where: { $0.id == id }) else { throw ReviewError.unknownCut }
@@ -431,8 +424,7 @@ public struct ReviewAnalysisResult: Sendable {
             : "\(review.selectedCuts.count) gaps × \(Self.seconds(gap!)) · \(Self.seconds(duration)) → \(Self.seconds(after))"
         let ready = job.state == .review
         return ReviewResponse(request: job.request.id, revision: job.revision, state: job.state.rawValue,
-            message: job.message, progress: 1, targetName: "\(analysis.document.projectName) — \(review.target.name)",
-            roles: analysis.dialogueContext.sourceRange == nil ? analysis.document.dialogueRoles : ["Selected source audio"], summary: summary, cuts: cuts,
+            message: job.message, progress: 1, summary: summary, cuts: cuts,
             canApply: ready && applyOperation != nil && Self.applyUnavailableReason(result) == nil,
             canChangeSelection: ready, canCancel: true, canHighlight: ready && highlightOperation != nil, previewVisible: job.previewVisible)
     }

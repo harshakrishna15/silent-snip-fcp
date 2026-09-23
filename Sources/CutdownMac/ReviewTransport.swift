@@ -37,9 +37,6 @@ public enum ReviewWire {
             guard let id = command.cutID, !id.isEmpty, id.utf8.count <= 200 else {
                 throw ReviewTransportError.invalidPayload
             }
-        case .settings:
-            guard let settings = command.settings else { throw ReviewTransportError.invalidPayload }
-            _ = try settings.analysisSettings()
         default: break
         }
         return command
@@ -56,30 +53,25 @@ public struct ReviewWireSettings: Codable, Equatable, Sendable {
         self.threshold = threshold; self.minimum = minimum; self.before = before; self.after = after
     }
 
-    public func analysisSettings() throws -> AnalysisSettings {
-        try AnalysisSettings(thresholdDBFS: threshold, minimumSilenceDuration: minimum,
-                             beforeSpeechPadding: before, afterSpeechPadding: after, windowDuration: 0.01)
-    }
 }
 
 public struct ReviewCommand: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
-        case status, cancel, include, selectAll, deselectAll, highlight, apply, retryVerification, settings, preview
+        case status, cancel, include, selectAll, deselectAll, highlight, apply, retryVerification, preview
     }
     public let version: Int
     public let request: UUID
     public let command: Kind
     public let cutID: String?
     public let included: Bool?
-    public let settings: ReviewWireSettings?
     /// A remote retry is accepted only for the failed revision the user saw.
     /// Retransmission cannot start another attempt after that revision changes.
     public let expectedRevision: Int?
 
     public init(request: UUID, command: Kind, cutID: String? = nil, included: Bool? = nil,
-                settings: ReviewWireSettings? = nil, expectedRevision: Int? = nil) {
+                expectedRevision: Int? = nil) {
         version = ReviewWire.version; self.request = request; self.command = command
-        self.cutID = cutID; self.included = included; self.settings = settings
+        self.cutID = cutID; self.included = included
         self.expectedRevision = expectedRevision
     }
 }
@@ -107,8 +99,6 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     public let state: String
     public let message: String
     public let progress: Double?
-    public let targetName: String?
-    public let roles: [String]
     public let summary: String?
     public let cuts: [ReviewCutResponse]
     public let canApply: Bool
@@ -119,12 +109,12 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     public let canRetryVerification: Bool?
 
     public init(request: UUID, revision: Int, state: String, message: String,
-                progress: Double? = nil, targetName: String? = nil, roles: [String] = [],
+                progress: Double? = nil,
                 summary: String? = nil, cuts: [ReviewCutResponse] = [], canApply: Bool = false,
                 canChangeSelection: Bool = false, canCancel: Bool = false, canHighlight: Bool = false, previewVisible: Bool? = nil, canRetryVerification: Bool? = nil) {
         version = ReviewWire.version; self.request = request; self.revision = revision
         self.state = state; self.message = message; self.progress = progress
-        self.targetName = targetName; self.roles = roles; self.summary = summary; self.cuts = cuts
+        self.summary = summary; self.cuts = cuts
         self.canApply = canApply; self.canChangeSelection = canChangeSelection
         self.canCancel = canCancel; self.canHighlight = canHighlight
         self.previewVisible = previewVisible

@@ -9,8 +9,11 @@ struct IsolatedAudioProject {
     let name: String
     let originalTarget: TimelineClip
     let duration: RationalTime
+    let sourceProject: XMLReplacementTarget
+    let destination: XMLReplacementTarget
 
     static func make(projectData: Data, selection: TimelineSelection, id: UUID = UUID()) throws -> Self {
+        let sourceProject = try XMLReplacementTarget(projectData: projectData)
         let original = try TimelineParser.parse(data: projectData)
         let target = try original.selectedTarget(selection)
         let xml = try XMLDocument(data: projectData, options: [.nodeLoadExternalEntitiesNever])
@@ -57,10 +60,13 @@ struct IsolatedAudioProject {
         set(sequence, "tcStart", "0s")
         let name = "Cutdown Analysis " + id.uuidString
         set(project, "name", name); set(project, "uid", id.uuidString)
-        // A new event contains exactly one project, avoiding browser ambiguity.
-        let event = XMLElement(name: "event")
-        set(event, "name", "Cutdown Analysis"); set(event, "uid", UUID().uuidString)
-        project.detach(); event.addChild(project)
+        // Import a uniquely named temporary project into the source event.
+        // Keep the event's identity so Final Cut does not create another event.
+        guard let event = project.parent as? XMLElement else {
+            throw TimelineError.invalidXML("missing source event")
+        }
+        project.detach(); event.setChildren([project])
+        event.detach()
         library.setChildren([event])
         for options in root.elements(forName: "import-options") { options.detach() }
         let options = XMLElement(name: "import-options")
@@ -74,7 +80,16 @@ struct IsolatedAudioProject {
               parsed.clips[0].sourceFileStart == target.sourceFileStart else {
             throw TimelineError.invalidXML("isolated project did not preserve the selected source trim")
         }
-        return .init(data: data, name: name, originalTarget: target, duration: duration)
+        let destination = try XMLReplacementTarget(projectData: data)
+        guard destination.libraryURL == sourceProject.libraryURL,
+              destination.eventName == sourceProject.eventName,
+              destination.eventUID == sourceProject.eventUID,
+              destination.projectName == name,
+              destination.originalProjectUID != sourceProject.originalProjectUID else {
+            throw TimelineError.invalidXML("isolated project changed the source event or library")
+        }
+        return .init(data: data, name: name, originalTarget: target, duration: duration,
+            sourceProject: sourceProject, destination: destination)
     }
 
     private static func elements(_ node: XMLElement) -> [XMLElement] { (node.children ?? []).compactMap { $0 as? XMLElement } }

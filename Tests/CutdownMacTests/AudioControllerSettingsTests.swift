@@ -255,7 +255,7 @@ final class AudioControllerSettingsTests: XCTestCase {
         for (needle, replacement, name) in [
             ("-32.0", "nan", "Silence Threshold"),
             ("-32.0", "-81", "Silence Threshold"),
-            ("0.75", "0.09", "Minimum Silence"),
+            ("0.75", "0.00009", "Minimum Silence"),
             ("0.125", "-0.01", "Before Speech"),
             ("0.25", "2.1", "After Speech")
         ] {
@@ -272,6 +272,17 @@ final class AudioControllerSettingsTests: XCTestCase {
         let fixture = try fixture(filter: filter(values: xmlValues))
         XCTAssertTrue(try AudioControllerSettings.validate(projectData: fixture.data,
             target: fixture.target, requested: .defaults))
+    }
+
+    func testMinimumSilenceBoundarySurvivesAUFloatExport() throws {
+        let minimum = Double(Float(0.0001))
+        let fixture = try fixture(filter: filter(values: [-40, minimum, 0, 0]))
+        let requested = try AnalysisSettings(thresholdDBFS: -40, minimumSilenceDuration: 0.0001,
+                                             beforeSpeechPadding: 0, afterSpeechPadding: 0)
+        XCTAssertTrue(try AudioControllerSettings.validate(projectData: fixture.data,
+            target: fixture.target, requested: requested))
+        XCTAssertEqual(try AudioControllerSettings.read(projectData: fixture.data,
+            target: fixture.target).minimumSilenceDuration, minimum)
     }
 
     func testNameWithoutVerifiedUIDCannotMasqueradeAsController() throws {

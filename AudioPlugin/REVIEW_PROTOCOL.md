@@ -47,8 +47,13 @@ another running helper from overwriting the owner's response. If the owner exits
 the existing 15-second timeout enables Analyze again.
 
 Commands are `status`, `cancel`, `include`, `selectAll`, `deselectAll`, `highlight`,
-`apply`, `retryVerification`, `settings`, and `preview`. The legacy `settings` command is rejected with guidance to Analyze again; it cannot bypass fresh project and source validation. Analyze may then reuse verified measurements. An `analyzing` response can contain verified cut rows while cleanup runs, but `canApply`, `canChangeSelection`, and `canHighlight` remain false until `review`. Capability flags from the helper enable each implemented operation. `canApply` and `canHighlight` default to false. Defining a command does
-not establish that its timeline operation is implemented.
+`apply`, `retryVerification`, and `preview`. Changing settings requires Analyze
+again so the helper validates fresh project and source state before reusing
+measurements. An `analyzing` response can contain verified cut rows while cleanup
+runs, but `canApply`, `canChangeSelection`, and `canHighlight` remain false until
+`review`. Capability flags from the helper enable each implemented operation.
+`canApply` and `canHighlight` default to false. Defining a command does not
+establish that its timeline operation is implemented.
 
 Distributed notifications are untrusted. The helper must require an existing
 matching job, validate command payloads and current capabilities, and run the

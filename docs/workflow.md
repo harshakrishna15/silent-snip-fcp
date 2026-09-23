@@ -44,6 +44,8 @@ The four detection controls live in the Controls window:
 | Before Speech | 0.1 seconds | Retain this much quiet audio immediately before speech resumes. |
 | After Speech | 0.1 seconds | Retain this much quiet audio immediately after speech ends. |
 
+Minimum Silence accepts 0.0001–10 seconds. Analysis measures audio in 0.01-second windows, and cuts snap to project frames. With the default 0.1-second padding on each side, a quiet interval must exceed 0.2 seconds to leave any removable audio.
+
 Choose **Remove Silence** to close the selected pauses, or **Replace with 1-Second Gaps** to replace each selected pause with an editable gap. One second is rounded to the nearest project frame. Gap mode can lengthen a pause that was shorter than one second.
 
 Use **Save Settings** to commit the four values without starting analysis. New effect instances use last-used detection settings saved when Analyze is submitted. Existing instances restore their own saved state. Changing settings or output mode disables Apply until Analyze runs again.
@@ -61,7 +63,7 @@ The helper captures project XML through the configured Share exchange, identifie
 
 Every Analyze first captures fresh project XML and checks source contents. When those checks, the selected occurrence, host session, and complete supported processing state match the process-local cache, it recalculates cuts from retained measurements using the new threshold, minimum silence, and padding. A cache hit skips decoding and the isolated render. Preset names, omitted settings, partial native parameter lists, and unknown effects are insufficient evidence and force the normal route. See [cache limits and timing reports](analysis-speed.md).
 
-The isolated-render route is part of the current overhaul; historical manual processed-audio tests do not establish a successful automatic run of this newer route. Analysis projects appear in a **Cutdown Analysis** event. After verified rendering and return to the original project, the helper removes only its exact generated project through Final Cut. Unverified or interrupted cleanup leaves the project in place and records `Cleanup-Status.txt` in the analysis job folder.
+The isolated-render route is part of the current overhaul; historical manual processed-audio tests do not establish a successful automatic run of this newer route. The uniquely named analysis project imports into the original event. After verified rendering and return to the original project, the helper removes only its exact generated project through Final Cut. Unverified or interrupted cleanup leaves the project in place and records `Cleanup-Status.txt` in the analysis job folder.
 
 A processed Analyze cache miss requires three Share exchanges (original XML, isolated audio plus XML, and restored-original XML), down from four. Apply retains its two exchanges for a fresh baseline and imported-result verification. These are source-level operation counts, not measured live speedups. During analysis the captured XML bytes are reused; the missing-callback fallback parses only changed XML while retaining its existing three-second stability requirement. Audio and source-content checks remain in place.
 

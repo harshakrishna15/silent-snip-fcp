@@ -25,6 +25,7 @@ xcuserdata/
 /Fixtures/
 /Exports/
 /Recordings/
+/test-audio/
 
 # Local logs and Python caches
 *.log

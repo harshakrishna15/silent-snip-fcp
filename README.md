@@ -1,6 +1,6 @@
 # Cutdown
 
-Cutdown is a local, audio-only silence-removal tool for Final Cut Pro. Add **Cutdown Audio** to one selected primary-storyline audio clip, open **Controls**, and click **Analyze**. Review the proposed cuts, then use **Apply Cuts** to create a separate editable project. Original projects and source media stay unchanged.
+Cutdown is a local, audio-only silence-removal tool for Final Cut Pro. Add **Cutdown Audio** to one selected primary-storyline audio clip, open **Controls**, and click **Analyze**. Review the proposed cuts, then use **Apply Cuts** to replace the project in its original event. Cutdown saves recovery XML before replacement; source media stays unchanged.
 
 The Audio Unit passes audio through unchanged. A companion macOS helper measures silence, prepares the edited project, and communicates with Final Cut. Both components must be built and installed together.
 
@@ -78,9 +78,9 @@ On September 18, 2026:
 
 - The staged Release helper and staged audio plug-in built successfully and passed signature verification.
 - The audio harness passed 60 mono/stereo render cases plus its settings-persistence checks.
-- After fixture privacy cleanup, 56 focused Swift tests passed: `TimelineTests`, `NativeTimelineEditTests`, and `EditedProjectWriterTests`.
+- After fixture privacy cleanup, 56 then-current focused Swift tests passed. Retired native-edit tests have since been removed.
 
-The full Swift suite was not rerun during that copy/privacy audit. Earlier larger test totals and live observations are recorded in [the progress record](docs/overhaul-progress.md) and [integration history](docs/integration-history.md); they are historical evidence, not a new run against this checkout. Generated logs and installed bundles are excluded from Git.
+On September 22, 2026, the full Release Swift suite and both Audio Unit harnesses passed after unused workflow code and historical test fixtures were removed. This is offline validation; automatic Analyze/Apply still requires a current-build live Final Cut run. Earlier test totals and live observations are recorded in [the progress record](docs/overhaul-progress.md) and [integration history](docs/integration-history.md). Generated logs and installed bundles are excluded from Git.
 
 ## Capabilities and limits
 

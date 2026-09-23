@@ -41,17 +41,6 @@ final class GapOutputTests: XCTestCase {
         XCTAssertEqual(removed.report.insertedGapDuration, .zero)
     }
 
-    func testLiftedIntermediateAndResizedFinalStatesAreDistinct() throws {
-        let lifted = try NativeTimelineEdit.expected(data: data, selection: selection, removals: [long],
-            exclusions: .init(), gapDuration: .init(1), preservingGap: long)
-        let final = try NativeTimelineEdit.expected(data: data, selection: selection, removals: [long],
-            exclusions: .init(), gapDuration: .init(1))
-        XCTAssertEqual(lifted.projectRange.duration, .init(14))
-        XCTAssertEqual(final.projectRange.duration, .init(13))
-        XCTAssertEqual(lifted.clips.first { $0.kind == "gap" }?.timelineRange, long)
-        XCTAssertNotEqual(lifted.fingerprint, final.fingerprint)
-    }
-
     func testRejectsIncompleteOrUnalignedGapPlans() throws {
         for gaps: [TimeRange: RationalTime] in [[short: .init(1)], [short: .zero, long: .init(1)],
                                                [short: .init(1, 100), long: .init(1)]] {

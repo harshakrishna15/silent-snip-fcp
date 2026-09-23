@@ -158,13 +158,16 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
             [f.factory refreshSettings];
             require([f.factory commitSettings] && [f.unit.analysisParameterTree parameterWithAddress:3].value == number.floatValue, @"Formatter preserves exact Float32 padding");
         }
-        [f.unit.analysisParameterTree parameterWithAddress:2].value = 0.1f;
+        [f.unit.analysisParameterTree parameterWithAddress:2].value = 0.0001f;
         [f.factory refreshSettings];
-        require([f.factory commitSettings] && [f.unit.analysisParameterTree parameterWithAddress:2].value == 0.1f, @"Minimum boundary survives formatting");
+        require([f.factory commitSettings] && [f.unit.analysisParameterTree parameterWithAddress:2].value == 0.0001f, @"Minimum boundary survives formatting");
         NSNumberFormatter *display = [NSNumberFormatter new];
         display.numberStyle = NSNumberFormatterDecimalStyle;
-        require([f.fields[1].stringValue isEqual:[display stringFromNumber:@0.1]], @"Common decimals do not expose Float32 noise");
-        f.fields[1].stringValue = @"0.0999";
+        display.usesSignificantDigits = YES;
+        display.minimumSignificantDigits = 1;
+        display.maximumSignificantDigits = 1;
+        require([f.fields[1].stringValue isEqual:[display stringFromNumber:@0.0001]], @"Minimum decimal does not expose Float32 noise");
+        f.fields[1].stringValue = @"0.00009";
         require(![f.factory commitSettings], @"Below-minimum value rejected");
     });
 

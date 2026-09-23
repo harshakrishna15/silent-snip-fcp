@@ -74,7 +74,8 @@ public enum AudioControllerSettings {
     }
     private static let parameters = [
         Parameter(key: "4037165010", name: "Silence Threshold", range: -80...0, value: \.thresholdDBFS),
-        Parameter(key: "3342540801", name: "Minimum Silence", range: 0.1...10, value: \.minimumSilenceDuration),
+        // Match the Audio Unit's Float32 minimum so its exported boundary value survives validation.
+        Parameter(key: "3342540801", name: "Minimum Silence", range: Double(Float(0.0001))...10, value: \.minimumSilenceDuration),
         Parameter(key: "4090893112", name: "Before Speech", range: 0...2, value: \.beforeSpeechPadding),
         Parameter(key: "252981911", name: "After Speech", range: 0...2, value: \.afterSpeechPadding)
     ]

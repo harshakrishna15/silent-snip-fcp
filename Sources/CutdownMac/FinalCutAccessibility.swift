@@ -1,4 +1,3 @@
-import AppKit
 import ApplicationServices
 import Foundation
 
@@ -13,8 +12,7 @@ public struct AccessibilityNode: Codable, Sendable {
     public let children: [AccessibilityNode]
 }
 
-/// The first integration probe reads the real accessibility tree. It does not
-/// infer timeline selections from a clip name or issue unverified keyboard edits.
+/// Final Cut process identity and macOS control-access status for the live workflow.
 @MainActor public enum FinalCutAccessibility {
     public static let bundleIdentifier = "com.apple.FinalCut"
 
@@ -23,48 +21,6 @@ public struct AccessibilityNode: Codable, Sendable {
     public static func requestAccess() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
-    }
-
-    public static func capture() throws -> AccessibilityNode {
-        guard isTrusted else { throw AccessibilityError.permissionRequired }
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first else {
-            throw AccessibilityError.notRunning
-        }
-        let root = AXUIElementCreateApplication(app.processIdentifier)
-        AXUIElementSetMessagingTimeout(root, 2)
-        var budget = 10_000
-        return read(root, depth: 0, budget: &budget)
-    }
-
-    private static func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
-        var result: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success else { return nil }
-        return result
-    }
-
-    private static func string(_ element: AXUIElement, _ name: String) -> String? {
-        guard let value = attribute(element, name) else { return nil }
-        if let text = value as? String { return text }
-        if let number = value as? NSNumber { return number.stringValue }
-        return nil
-    }
-
-    private static func read(_ element: AXUIElement, depth: Int, budget: inout Int) -> AccessibilityNode {
-        budget -= 1
-        var children: [AccessibilityNode] = []
-        if depth < 40, budget > 0, let elements = attribute(element, kAXChildrenAttribute) as? [AXUIElement] {
-            for child in elements where budget > 0 {
-                children.append(read(child, depth: depth + 1, budget: &budget))
-            }
-        }
-        return AccessibilityNode(
-            role: string(element, kAXRoleAttribute), identifier: string(element, kAXIdentifierAttribute),
-            title: string(element, kAXTitleAttribute), description: string(element, kAXDescriptionAttribute),
-            value: string(element, kAXValueAttribute),
-            selected: (attribute(element, kAXSelectedAttribute) as? NSNumber)?.boolValue,
-            enabled: (attribute(element, kAXEnabledAttribute) as? NSNumber)?.boolValue,
-            children: children
-        )
     }
 
     public enum AccessibilityError: LocalizedError {

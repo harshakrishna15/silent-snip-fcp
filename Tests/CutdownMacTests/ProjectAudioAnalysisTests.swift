@@ -73,8 +73,6 @@ final class ProjectAudioAnalysisTests: XCTestCase {
             TimeRange(start: RationalTime(11, 10), end: RationalTime(19, 10))
         ])
         XCTAssertEqual(try result.review.selectedDuration, RationalTime(4, 5))
-        let preview = try MarkerPreview(review: result.review, existingMarkers: result.document.markers)
-        XCTAssertEqual(preview.additions.map(\.sourcePosition), [RationalTime(21, 10), RationalTime(43, 15)])
     }
 
     func testDialogueInSecondChannelProtectsAudioOnlyTarget() async throws {

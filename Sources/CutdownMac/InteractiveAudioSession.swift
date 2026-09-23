@@ -129,6 +129,7 @@ import Foundation
                         let deliveredData = try Data(contentsOf: deliveredXML)
                         try ProjectRoundTripVerification.verify(expected: isolated.data, actual: deliveredData,
                             reportURL: directory.appendingPathComponent("Render-Verification.json"), allowHostAssignedIdentity: true)
+                        try isolated.destination.verifyDestination(deliveredData)
                         cleanup = (isolated, deliveredData)
                         audioURL = receipt.mediaURLs[0]
                         boundContext = try DialogueRenderContext.capturedIsolated(document: capture.document, target: capture.target, audioURL: audioURL)
@@ -199,7 +200,7 @@ import Foundation
                     try await restored.removeAnalysisProject(isolated, verifiedData: delivered)
                     cleanup = nil; importedAnalysisName = nil
                 } catch {
-                    cleanupNotice = "Temporary project ‘\(isolated.name)’ remains in Cutdown Analysis: \(error.localizedDescription)"
+                    cleanupNotice = "Temporary project ‘\(isolated.name)’ remains in ‘\(isolated.destination.eventName)’: \(error.localizedDescription)"
                 }
                 try Data((cleanupNotice ?? "Temporary analysis project removed.").utf8)
                     .write(to: directory.appendingPathComponent("Cleanup-Status.txt"), options: .atomic)
@@ -225,7 +226,7 @@ import Foundation
                 if cleaned { importedAnalysisName = nil }
             }
             if let name = importedAnalysisName {
-                try? Data("Analysis interrupted; ‘\(name)’ may remain in Cutdown Analysis. Ownership/content verification or cleanup did not complete; no unverified project was deleted.\n".utf8)
+                try? Data("Analysis interrupted; ‘\(name)’ may remain in the original event. Ownership/content verification or cleanup did not complete; no unverified project was deleted.\n".utf8)
                     .write(to: directory.appendingPathComponent("Cleanup-Status.txt"), options: .atomic)
             }
             _ = await capture.restoreReviewWindow()

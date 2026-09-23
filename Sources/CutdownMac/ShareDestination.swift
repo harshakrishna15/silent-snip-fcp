@@ -46,7 +46,6 @@ public enum ShareDestinationError: LocalizedError, Equatable {
 @MainActor public final class ShareDestinationManager {
     public static let shared = ShareDestinationManager()
     public var onReceive: ((ShareDestinationReceipt) -> Void)?
-    public var onStatus: ((String) -> Void)?
     public var onFailure: ((Error) -> Void)?
     public var canBeginShare: (() -> Bool)?
     public private(set) var assets: [ShareDestinationAsset] = []
@@ -136,7 +135,6 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         if xmlRequest != nil { xmlRequest?.assetID = id }
         try persist(asset)
         record("make", asset: asset, details: ["offeredOptions": dataOptions])
-        onStatus?("Waiting for Final Cut to finish sharing \(name)…")
         return asset
     }
 
@@ -165,14 +163,12 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                 asset.completed = true
                 try persist(asset)
                 record("open-complete", asset: asset, details: ["files": urls.map(\.path)])
-                onStatus?("Received \(asset.name) from Final Cut.")
                 if asset.requestOwned || !asset.requiresMedia {
                     if xmlRequest?.assetID == asset.id { xmlRequest?.result = .success(receipt) }
                     // A canceled or restarted request must never start a different analysis.
                 } else { onReceive?(receipt) }
             } else {
                 record("open-partial", asset: asset, details: ["files": urls.map(\.path)])
-                onStatus?("Waiting for the project XML and rendered audio from Final Cut…")
             }
         } catch {
             record("open-failed", asset: candidates.first, details: ["error": error.localizedDescription])

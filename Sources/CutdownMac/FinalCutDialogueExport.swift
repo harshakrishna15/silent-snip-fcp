@@ -141,15 +141,13 @@ import Foundation
     }
 
     public enum ExportError: LocalizedError {
-        case invalidWorkspace, unexpectedDialog
-        case unverifiedControl(String), unverifiedDialogueOutput, projectChanged
+        case invalidWorkspace
+        case unverifiedControl(String), unverifiedDialogueOutput
         public var errorDescription: String? {
             switch self {
             case .invalidWorkspace: return "Cutdown could not create a private temporary export directory."
-            case .unexpectedDialog: return "Final Cut did not display the expected Export File dialog. Close other dialogs and Analyze again."
             case .unverifiedControl(let name): return "Cutdown could not verify Final Cut's \(name) export control."
             case .unverifiedDialogueOutput: return "Cutdown could not verify one WAV output containing All Dialogue. No audio mix was assumed."
-            case .projectChanged: return "The project changed while Dialogue audio was exporting. Analyze again."
             }
         }
     }

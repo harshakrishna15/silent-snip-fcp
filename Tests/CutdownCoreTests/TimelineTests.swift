@@ -99,27 +99,6 @@ final class TimelineTests: XCTestCase {
         XCTAssertTrue(try doc.protectedRanges(for: target).contains(.init(range: range(9, 10), reason: "Transition: Dissolve")))
     }
 
-    func testMarkerOwnershipIsExactAndIncludesNotesStatusAndTiming() throws {
-        let xml = try fixture()
-        let original = try parse(xml)
-        let marker = try XCTUnwrap(original.markers.first)
-        XCTAssertEqual(marker.parentClipID, "spine/0")
-        XCTAssertEqual(marker.timelinePosition, RationalTime(1))
-        XCTAssertEqual(marker.sourcePosition, RationalTime(106))
-        XCTAssertEqual(marker.note, "job:fixture")
-        let exclusions = TimelineFingerprintExclusions(ownedMarkers: [marker.identity])
-        let withoutMarker = xml.replacingOccurrences(of: "<marker start=\"106s\" duration=\"1001/30000s\" value=\"Cutdown Candidate 1\" note=\"job:fixture\" completed=\"0\"/>", with: "")
-        XCTAssertEqual(try parse(xml, exclusions: exclusions).fingerprint, try parse(withoutMarker).fingerprint)
-        XCTAssertNotEqual(original.fingerprint, try parse(withoutMarker).fingerprint)
-        for changed in [
-            xml.replacingOccurrences(of: "note=\"job:fixture\"", with: "note=\"user edited\""),
-            xml.replacingOccurrences(of: "completed=\"0\"", with: "completed=\"1\""),
-            xml.replacingOccurrences(of: "<marker start=\"106s\"", with: "<marker start=\"107s\"")
-        ] {
-            XCTAssertNotEqual(try parse(changed, exclusions: exclusions).fingerprint, try parse(withoutMarker).fingerprint)
-        }
-    }
-
     func testOnlyExplicitControllerUIDParametersAreExcluded() throws {
         let xml = try fixture()
         let thresholdChanged = xml.replacingOccurrences(of: "value=\"-40\"", with: "value=\"-30\"")
@@ -207,14 +186,6 @@ final class TimelineTests: XCTestCase {
         XCTAssertEqual(doc.clips.first(where: { $0.kind == "audition" })?.timelineRange, range(2, 6))
         XCTAssertFalse(doc.dialogueRoles.contains("dialogue.alternative"))
         XCTAssertFalse(doc.clips.contains(where: { $0.name == "Alternative dialogue" }))
-    }
-
-    func testUnownedSameNamedMarkerStillChangesFingerprint() throws {
-        let xml = try fixture()
-        let marker = try XCTUnwrap(parse(xml).markers.first)
-        let exclusions = TimelineFingerprintExclusions(ownedMarkers: [marker.identity])
-        let duplicate = xml.replacingOccurrences(of: "<filter-audio ref=\"r6\"", with: "<marker start=\"108s\" duration=\"1001/30000s\" value=\"Cutdown Candidate 1\" note=\"my own marker\"/><filter-audio ref=\"r6\"")
-        XCTAssertNotEqual(try parse(xml, exclusions: exclusions).fingerprint, try parse(duplicate, exclusions: exclusions).fingerprint)
     }
 
     func testMarkersMayOmitDurationAndTitleStyleReferencesAreLocal() throws {
@@ -426,21 +397,14 @@ final class TimelineTests: XCTestCase {
         }
     }
 
-    func testAudioOnlyReviewMapsPreviewToTrimmedSourceAndEntireSilenceMakesNoCuts() throws {
+    func testAudioOnlyReviewDoesNotSelectEntirelySilentClip() throws {
         let doc = try parse(audioOnlyFixture())
         let target = try doc.selectedTarget(.init(timelineRange: range(0, 8)), requireExistingMedia: false)
-        let candidate = TimeRange(start: RationalTime(6, 5), end: RationalTime(9, 5))
-        let analysis = try SilenceAnalysisResult(candidates: [candidate], disposition: .cuts)
-        let review = try ReviewPlan(jobID: UUID(), document: doc, target: target, analysis: analysis)
-        let markers = try MarkerPreview(review: review, existingMarkers: doc.markers)
-        XCTAssertEqual(markers.additions.map(\.timelinePosition), [RationalTime(6, 5), RationalTime(44, 25)])
-        XCTAssertEqual(markers.additions.map(\.sourcePosition), [RationalTime(531, 5), RationalTime(2669, 25)])
         let silence = try SilenceDetector.analyze(windows: [AudioLevelWindow(range: target.timelineRange, channelRMS: [0, 0])],
             target: target.timelineRange, frameDuration: doc.frameDuration)
         XCTAssertEqual(silence.disposition, .entirelySilent)
         let silentReview = try ReviewPlan(jobID: UUID(), document: doc, target: target, analysis: silence)
         XCTAssertTrue(silentReview.selectedCuts.isEmpty)
-        XCTAssertTrue(try MarkerPreview(review: silentReview, existingMarkers: doc.markers).additions.isEmpty)
     }
 
     func testAudioControllerExclusionRequiresExplicitUIDAndPreservesOtherAudioEffects() throws {

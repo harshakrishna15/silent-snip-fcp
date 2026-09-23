@@ -16,7 +16,7 @@ final class IsolatedProjectVerificationTests: XCTestCase {
         <fcpxml version="1.11"><resources><format id="f" frameDuration="1/30s"/>
         <asset id="a" start="3600s" duration="20s" hasAudio="1"><media-rep kind="original-media" src="\(directory.appendingPathComponent("Voice.wav").absoluteString)"/></asset>
         <effect id="c" uid="\(AudioControllerSettings.effectUID)"/><effect id="e" uid="test-limiter"/></resources>
-        <library location="\(directory.appendingPathComponent("Test.fcpbundle").absoluteString)"><event name="Original"><project name="Original" uid="original">
+        <library location="\(directory.appendingPathComponent("Test.fcpbundle").absoluteString)"><event name="Original" uid="9BB8C00A-93BC-4613-8018-9517EEDBC983"><project name="Original" uid="original">
         <sequence format="f" duration="8s" tcStart="7200s"><spine><gap offset="7200s" start="0s" duration="3s"/>
         <asset-clip ref="a" name="Voice" offset="7203s" start="3602s" duration="5s" audioRole="music">
         <adjust-volume amount="6dB"/><audio-channel-source srcCh="1, 2" role="effects"/>
@@ -50,11 +50,18 @@ final class IsolatedProjectVerificationTests: XCTestCase {
 
     func testCleanupRequiresOwnedVerifiedProjectAndRestoredOriginal() throws {
         let isolated = try IsolatedAudioProject.make(projectData: fixture(), selection: .init(timelineRange: .init(start: .init(3), end: .init(8))))
-        XCTAssertNoThrow(try AnalysisProjectCleanup.validate(isolated: isolated, delivered: isolated.data, currentProject: "Original"))
-        XCTAssertThrowsError(try AnalysisProjectCleanup.validate(isolated: isolated, delivered: isolated.data, currentProject: isolated.name))
+        let delivered = Data(String(decoding: isolated.data, as: UTF8.self)
+            .replacingOccurrences(of: "uid=\"\(isolated.destination.originalProjectUID)\"", with: "uid=\"\(UUID().uuidString)\"").utf8)
+        XCTAssertNoThrow(try AnalysisProjectCleanup.validate(isolated: isolated, delivered: delivered, currentProject: "Original"))
+        XCTAssertThrowsError(try AnalysisProjectCleanup.validate(isolated: isolated, delivered: delivered, currentProject: isolated.name))
+        XCTAssertThrowsError(try AnalysisProjectCleanup.validate(isolated: isolated, delivered: delivered, currentProject: "Other"))
         XCTAssertThrowsError(try AnalysisProjectCleanup.validate(isolated: isolated, delivered: fixture(), currentProject: "Original"))
-        let changed = Data(String(decoding: isolated.data, as: UTF8.self).replacingOccurrences(of: "6dB", with: "0dB").utf8)
+        let changed = Data(String(decoding: delivered, as: UTF8.self).replacingOccurrences(of: "6dB", with: "0dB").utf8)
         XCTAssertThrowsError(try AnalysisProjectCleanup.validate(isolated: isolated, delivered: changed, currentProject: "Original"))
+        let wrongEvent = Data(String(decoding: delivered, as: UTF8.self)
+            .replacingOccurrences(of: "name=\"Original\" uid=\"9BB8C00A-93BC-4613-8018-9517EEDBC983\"",
+                with: "name=\"Other\" uid=\"9BB8C00A-93BC-4613-8018-9517EEDBC983\"").utf8)
+        XCTAssertThrowsError(try AnalysisProjectCleanup.validate(isolated: isolated, delivered: wrongEvent, currentProject: "Original"))
     }
 
     func testIsolationPreservesSourceTrimProcessingAndChannelsWithoutNeighbors() throws {
@@ -66,7 +73,11 @@ final class IsolatedProjectVerificationTests: XCTestCase {
         XCTAssertEqual(document.clips[0].timelineRange, .init(start: .zero, end: .init(5)))
         XCTAssertEqual(document.clips[0].mediaURL, directory.appendingPathComponent("Voice.wav"))
         XCTAssertNotEqual(document.projectUID, "original")
+        XCTAssertEqual(result.destination.eventName, "Original")
+        XCTAssertEqual(result.destination.eventUID, result.sourceProject.eventUID)
+        XCTAssertEqual(result.destination.libraryURL, result.sourceProject.libraryURL)
         let xml = String(decoding: result.data, as: UTF8.self)
+        XCTAssertFalse(xml.contains("<event name=\"Cutdown Analysis\""))
         XCTAssertTrue(xml.contains("6dB")); XCTAssertTrue(xml.contains("srcCh=\"1, 2\""))
         XCTAssertTrue(xml.contains("value=\"-1\"")); XCTAssertTrue(xml.contains("role=\"dialogue.dialogue-1\""))
         XCTAssertFalse(xml.contains("name=\"Neighbor\"")); XCTAssertFalse(xml.contains("<filter-audio ref=\"c\""))

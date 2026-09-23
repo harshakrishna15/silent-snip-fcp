@@ -30,6 +30,19 @@ final class FinalCutPreviewReader: @unchecked Sendable {
     private var dialogDate = Date.distantPast
     private var effectDate = Date.distantPast
     private var effectLifetime = PreviewEffectLifetime()
+    private struct EffectInspectionProgress {
+        let inspector: AXUIElement
+        let viewport: CGRect
+        let controls: [AXUIElement]
+        var index = 0
+        var cutdown: CGRect?
+        var anchors: [String: CGRect] = [:]
+        var duplicateAnchors: Set<String> = []
+        var scrollPosition: Double?
+        var effectsHeading = false
+        var effectsExpanded = false
+    }
+    private var effectInspectionProgress: EffectInspectionProgress?
     private var nextDeadline = Date.distantFuture
     private let diagnostics = FileManager.default.fileExists(atPath:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -194,13 +207,15 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         var geometry = PreviewGeometry(frame: frame, visibleFrame: visibleFrame, occlusions: [],
             projectWindowNumber: projectWindowNumber,
             windowOrder: windows.compactMap { $0[kCGWindowNumber as String] as? Int })
-        if Date().timeIntervalSince(effectDate) >= 0.4 {
+        if Date().timeIntervalSince(effectDate) >= (effectInspectionProgress == nil ? 0.4 : 0.15) {
             // A separate budget: Inspector work cannot turn valid geometry into
             // a timeout. Partial snapshots are unknown, never effect absence.
-            nextDeadline = Date().addingTimeInterval(0.15)
+            nextDeadline = Date().addingTimeInterval(0.8)
             let inspection = inspectEffect(timeline: timeline, clip: clip)
             effectDate = Date()
-            if effectLifetime.observe(inspection, at: effectDate) { throw FinalCutPreviewError.effectRemoved }
+            if let inspection, effectLifetime.observe(inspection, at: effectDate) {
+                throw FinalCutPreviewError.effectRemoved
+            }
         }
         if diagnostics {
             geometry.diagnosticSurfaces = windows.prefix(40).map { info in
@@ -230,51 +245,77 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             }
             return selected.count == 1 && CFEqual(selected[0], clip)
         }
-        guard selectedTarget(),
-              let inspector = Self.search(mainWindow, role: kAXScrollAreaRole, description: "inspector", containersOnly: true),
-              let viewport = rect(inspector),
-              let controls = attribute(inspector, kAXChildrenAttribute) as? [AXUIElement], controls.count <= 300 else { return nil }
-        var cutdown: CGRect?
-        var anchors: [String: CGRect] = [:]
-        var duplicateAnchors: Set<String> = []
-        var scrollPosition: Double?
-        var effectsHeading = false
-        var effectsExpanded = false
-        for control in controls {
-            guard Date() < nextDeadline, let role = string(control, kAXRoleAttribute) else { return nil }
+        if effectInspectionProgress == nil {
+            guard selectedTarget() else { return nil }
+            guard let inspector = Self.search(mainWindow, role: kAXScrollAreaRole, description: "inspector", containersOnly: true) else { return nil }
+            guard let viewport = rect(inspector) else { return nil }
+            guard let controls = attribute(inspector, kAXChildrenAttribute) as? [AXUIElement], controls.count <= 300 else { return nil }
+            effectInspectionProgress = EffectInspectionProgress(inspector: inspector, viewport: viewport, controls: controls)
+        }
+        guard var progress = effectInspectionProgress else { return nil }
+        while progress.index < progress.controls.count {
+            let control = progress.controls[progress.index]
+            guard Date() < nextDeadline else { effectInspectionProgress = progress; return nil }
+            guard let role = string(control, kAXRoleAttribute) else {
+                effectInspectionProgress = Date() >= nextDeadline ? progress : nil
+                return nil
+            }
+            var candidate = progress
             var key: String?
             if [kAXCheckBoxRole, kAXButtonRole, kAXDisclosureTriangleRole, "AXToggleButton"].contains(role) {
-                let description = string(control, kAXDescriptionAttribute) ?? ""
-                if role == kAXCheckBoxRole && description.isEmpty { return nil }
+                let description = string(control, kAXDescriptionAttribute)
+                    ?? string(control, kAXHelpAttribute) ?? ""
                 if description.lowercased() == "cutdown audio check box" {
-                    guard cutdown == nil, let frame = rect(control) else { return nil }
-                    cutdown = frame
+                    guard candidate.cutdown == nil, let frame = rect(control) else {
+                        effectInspectionProgress = Date() >= nextDeadline ? progress : nil
+                        return nil
+                    }
+                    candidate.cutdown = frame
                 } else if description == "toggle Effects" {
                     guard PreviewEffectInspection.effectsExpanded(value: string(control, kAXValueAttribute),
-                        title: string(control, kAXTitleAttribute)) else { return nil }
-                    effectsExpanded = true
+                        title: string(control, kAXTitleAttribute)) else {
+                        effectInspectionProgress = Date() >= nextDeadline ? progress : nil
+                        return nil
+                    }
+                    candidate.effectsExpanded = true
                     key = "Effects"
                 } else if description.lowercased().hasSuffix(" check box") { key = description }
             } else if role == kAXStaticTextRole {
                 let value = string(control, kAXValueAttribute) ?? string(control, kAXTitleAttribute)
-                if value == "Effects" { effectsHeading = true }
+                if value == "Effects" { candidate.effectsHeading = true }
                 if let value, ["Volume", "Audio Enhancements", "Pan", "Audio Configuration"].contains(value) { key = value }
             } else if role == kAXScrollBarRole {
-                guard let value = attribute(control, kAXValueAttribute) as? NSNumber else { return nil }
-                scrollPosition = value.doubleValue
+                guard let value = attribute(control, kAXValueAttribute) as? NSNumber,
+                      let enabled = attribute(control, kAXEnabledAttribute) as? NSNumber else {
+                    effectInspectionProgress = Date() >= nextDeadline ? progress : nil
+                    return nil
+                }
+                candidate.scrollPosition = PreviewEffectInspection.scrollPosition(value: value.doubleValue, enabled: enabled.boolValue)
             }
-            if let key, let frame = rect(control) {
-                if anchors.updateValue(frame, forKey: key) != nil { duplicateAnchors.insert(key) }
+            if let key {
+                guard let frame = rect(control) else {
+                    effectInspectionProgress = Date() >= nextDeadline ? progress : nil
+                    return nil
+                }
+                if candidate.anchors.updateValue(frame, forKey: key) != nil { candidate.duplicateAnchors.insert(key) }
             }
+            candidate.index += 1
+            progress = candidate
         }
-        for key in duplicateAnchors { anchors.removeValue(forKey: key) }
-        guard !effectsHeading || effectsExpanded else { return nil }
+        for key in progress.duplicateAnchors { progress.anchors.removeValue(forKey: key) }
+        guard !progress.effectsHeading || progress.effectsExpanded else { effectInspectionProgress = nil; return nil }
         // The Inspector may have rebuilt or the selection may have changed
         // during reads. Accept only a complete, stable list on this occurrence.
         guard Date() < nextDeadline, selectedTarget(),
-              let after = attribute(inspector, kAXChildrenAttribute) as? [AXUIElement],
-              controls.count == after.count, zip(controls, after).allSatisfy({ CFEqual($0, $1) }) else { return nil }
-        return .init(viewport: viewport, cutdown: cutdown, anchors: anchors, scrollPosition: scrollPosition)
+              let after = attribute(progress.inspector, kAXChildrenAttribute) as? [AXUIElement],
+              progress.controls.count == after.count,
+              zip(progress.controls, after).allSatisfy({ CFEqual($0, $1) }) else {
+            effectInspectionProgress = Date() >= nextDeadline ? progress : nil
+            return nil
+        }
+        effectInspectionProgress = nil
+        return .init(viewport: progress.viewport, cutdown: progress.cutdown,
+                     anchors: progress.anchors, scrollPosition: progress.scrollPosition)
     }
     private func rect(_ element: AXUIElement) -> CGRect? {
             guard let p = attribute(element, kAXPositionAttribute),

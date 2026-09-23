@@ -272,15 +272,41 @@ extension FinalCutAXSession {
 
     func removeAnalysisProject(_ isolated: IsolatedAudioProject, verifiedData: Data) async throws {
         try AnalysisProjectCleanup.validate(isolated: isolated, delivered: verifiedData, currentProject: projectName)
+        try await activate()
+        try await pressMenu(path: ["File", "Reveal Project in Browser"])
+        try await waitUntil(timeout: 5, context: "the analysis project's original event") {
+            (try? self.assertReplacementEvent(isolated.destination)) != nil
+        }
         let container = try await selectBrowserProject(named: isolated.name)
         try await pressMenu(path: ["File", "Move to Trash"])
-        try await waitUntil(timeout: 5, context: "temporary analysis project removal") {
-            !self.children(container).contains { candidate in
+        func projectStillVisible() -> Bool {
+            self.children(container).contains { candidate in
                 self.children(candidate).contains {
                     self.string($0, kAXRoleAttribute) == kAXImageRole &&
                     (self.string($0, kAXTitleAttribute) == isolated.name || self.string($0, kAXDescriptionAttribute) == isolated.name)
                 }
             }
+        }
+        try await waitUntil(timeout: 5, context: "the temporary project's Trash confirmation") {
+            self.currentSheet() != nil || !projectStillVisible()
+        }
+        if let panel = currentSheet() {
+            let elements = importElements(in: panel)
+            let message = elements.filter { string($0, kAXRoleAttribute) == kAXStaticTextRole }
+                .flatMap { [string($0, kAXValueAttribute), string($0, kAXTitleAttribute)] }
+                .compactMap { $0 }.joined(separator: " ")
+            let buttons = elements.filter { string($0, kAXRoleAttribute) == kAXButtonRole }
+            guard message.contains("Media Moving to Trash"),
+                  message.contains("External files remain where they are."),
+                  buttons.count == 2,
+                  buttons.contains(where: { string($0, kAXTitleAttribute) == "Cancel" }),
+                  let confirm = buttons.first(where: { string($0, kAXTitleAttribute) == "OK" }) else {
+                throw FinalCutCaptureError.unavailable("Final Cut showed an unexpected Trash dialog; the temporary project was left for review.")
+            }
+            try press(confirm)
+        }
+        try await waitUntil(timeout: 5, context: "temporary analysis project removal") {
+            !projectStillVisible()
         }
         try await focusTimeline()
     }

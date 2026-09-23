@@ -148,13 +148,13 @@ int main(void) {
         second.fullStateForDocument=state;
         for (NSUInteger i=0;i<4;++i) assert([second.analysisParameterTree parameterWithAddress:i+1].value==expected[i]);
         NSError *error=nil;
-        NSURL *url=[second analysisRequestURLWithError:&error];
+        NSURL *url=[second analysisRequestWithError:&error].URL;
         assert(url && !error);
         NSMutableDictionary *query=[NSMutableDictionary dictionary];
         for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO].queryItems) query[item.name]=item.value;
         assert([query[@"threshold"] floatValue]==-32 && [query[@"minimum"] floatValue]==.75 && [query[@"before"] floatValue]==.125 && [query[@"after"] floatValue]==.25);
         [second.analysisParameterTree parameterWithAddress:1].value=NAN;
-        assert([second analysisRequestURLWithError:&error]==nil && error);
+        assert([second analysisRequestWithError:&error]==nil && error);
         CutdownAudioUnit *mismatch=makeUnit(1);
         AVAudioFormat *stereo=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
         assert([mismatch.outputBusses[0] setFormat:stereo error:&error]);
