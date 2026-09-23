@@ -146,6 +146,15 @@ public enum AudioControllerSettings {
         }
     }
 
+    /// Apply occurs after the host has had time to save the submitted controls.
+    /// Reject any newly exported values that differ from the analyzed settings.
+    /// A bare controller still uses the explicit request because it exports no
+    /// private values to compare.
+    static func validateForApply(projectData: Data, target: TimelineClip, requested: AnalysisSettings) throws {
+        try validate(projectData: projectData, target: target, requested: requested,
+            allowOmittedPrivateSettings: true)
+    }
+
     /// nil means only that the verified target has no known Cutdown controller.
     /// A present but invalid, duplicate or disabled controller always throws.
     private static func readIfPresent(projectData: Data, target: TimelineClip, submittedPrivateSettings: AnalysisSettings? = nil) throws -> AnalysisSettings? {

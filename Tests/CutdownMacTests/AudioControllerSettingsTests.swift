@@ -30,6 +30,24 @@ final class AudioControllerSettingsTests: XCTestCase {
         XCTAssertThrowsError(try AudioControllerSettings.validateInteractive(projectData: malformed.data, target: malformed.target, requested: requested))
     }
 
+    func testApplyRejectsSavedSettingsChangedAfterAnalysis() throws {
+        let changed = try fixture(filter: filter(values: [-26, 0.8, 0.15, 0.3]))
+        XCTAssertNoThrow(try AudioControllerSettings.validateInteractive(
+            projectData: changed.data, target: changed.target, requested: requested))
+        XCTAssertThrowsError(try AudioControllerSettings.validateForApply(
+            projectData: changed.data, target: changed.target, requested: requested)) {
+            guard case .settingsMismatch = $0 as? AudioControllerSettingsError else {
+                return XCTFail("Expected changed settings, got \($0)")
+            }
+        }
+        let matching = try fixture(filter: filter())
+        XCTAssertNoThrow(try AudioControllerSettings.validateForApply(
+            projectData: matching.data, target: matching.target, requested: requested))
+        let bare = try fixture(filter: "<filter-audio ref=\"au\"/>")
+        XCTAssertNoThrow(try AudioControllerSettings.validateForApply(
+            projectData: bare.data, target: bare.target, requested: requested))
+    }
+
     private let values = [-32.0, 0.75, 0.125, 0.25]
     private var requested: AnalysisSettings {
         get throws {

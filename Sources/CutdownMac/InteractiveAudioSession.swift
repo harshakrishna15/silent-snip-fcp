@@ -261,8 +261,8 @@ import Foundation
             let final = try TimelineParser.parse(data: finalData, exclusions: exclusions)
             try XMLProjectApply.verifyBaseline(final, analyzed: capture.document)
             guard try await Self.mediaSnapshot(final) == context.mediaSnapshot else { throw AudioProjectProcessingError.changedProject }
-            try AudioControllerSettings.validateInteractive(projectData: finalData, target: final.selectedTarget(capture.selection),
-                requested: result.analyzed.settings)
+            try AudioControllerSettings.validateForApply(projectData: finalData,
+                target: final.selectedTarget(capture.selection), requested: result.analyzed.settings)
             try Task.checkCancellation()
             progress("Creating all selected cuts in the edited project…", 0.4)
             let outputName = capture.projectName
