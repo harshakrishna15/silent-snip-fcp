@@ -175,4 +175,36 @@ public struct TimelineDocument: Codable, Sendable {
             return nil
         }
     }
+
+    /// Match the XML writer's connection restrictions before presenting cuts.
+    /// A connection on the target or an unresolved nested item blocks every
+    /// cut; other connections block the portion that cannot ripple safely.
+    func automaticCutRestrictions(for target: TimelineClip) throws -> [TimelineProtectedRange] {
+        var restrictions = try protectedRanges(for: target)
+        let primary = clips.filter(\.isPrimaryStoryline)
+        for clip in clips where !clip.isPrimaryStoryline {
+            if clip.id.hasPrefix(target.id + "/") {
+                restrictions.append(.init(range: target.timelineRange,
+                    reason: "An item is connected to the selected clip: \(clip.name)"))
+                continue
+            }
+            if clip.hasUnresolvedTiming {
+                restrictions.append(.init(range: target.timelineRange,
+                    reason: "Nested retimed content cannot be verified automatically: \(clip.name)"))
+                continue
+            }
+            let rootID = clip.id.split(separator: "/").prefix(2).joined(separator: "/")
+            if let parent = primary.first(where: { $0.id == rootID }),
+               parent.timelineRange.start < target.timelineRange.start,
+               clip.timelineRange.end > target.timelineRange.start {
+                restrictions.append(.init(range: TimeRange(start: target.timelineRange.start,
+                    end: min(target.timelineRange.end, clip.timelineRange.end)),
+                    reason: "An earlier connected item cannot ripple with this cut: \(clip.name)"))
+            } else if let overlap = clip.timelineRange.intersection(target.timelineRange) {
+                restrictions.append(.init(range: overlap,
+                    reason: "Connected item must stay synchronized: \(clip.name)"))
+            }
+        }
+        return restrictions
+    }
 }

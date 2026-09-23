@@ -71,6 +71,22 @@ final class TimelineTests: XCTestCase {
         XCTAssertTrue(protected[0].reason.contains("Connected speech"))
     }
 
+    func testReviewDisablesCutsOnTargetWithConnectedTitleAndMusic() throws {
+        let doc = try parse(fixture())
+        let target = try doc.selectedTarget(.init(timelineRange: range(0, 10)), requireExistingMedia: false)
+        let plan = try ReviewPlan(jobID: UUID(), document: doc, target: target,
+            analysis: SilenceAnalysisResult(candidates: [.init(start: .init(7007, 1000), end: .init(1001, 125))], disposition: .cuts))
+        XCTAssertEqual(plan.cuts.count, 1)
+        XCTAssertFalse(plan.cuts[0].isEligible)
+        XCTAssertTrue(try XCTUnwrap(plan.cuts[0].unavailableReason).contains("connected to the selected clip"))
+        XCTAssertTrue(plan.selectedCuts.isEmpty)
+
+        let next = try doc.selectedTarget(.init(timelineRange: range(10, 20)), requireExistingMedia: false)
+        let nextPlan = try ReviewPlan(jobID: UUID(), document: doc, target: next,
+            analysis: SilenceAnalysisResult(candidates: [.init(start: .init(3003, 250), end: .init(13013, 1000))], disposition: .cuts))
+        XCTAssertEqual(nextPlan.selectedCuts.count, 1)
+    }
+
     func testDisabledComponentsDoNotCountAsDialogue() throws {
         let xml = try fixture().replacingOccurrences(of: "audioRole=\"Dialogue.Voice\"/>", with: "audioRole=\"Dialogue.Voice\"><audio-channel-source srcCh=\"1\" role=\"dialogue.disabled\" active=\"0\"/></asset-clip>")
         let doc = try parse(xml)

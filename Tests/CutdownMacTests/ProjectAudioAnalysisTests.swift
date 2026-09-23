@@ -193,7 +193,9 @@ final class ProjectAudioAnalysisTests: XCTestCase {
             dialogueAudio: fixture.audio, renderContext: context)
         XCTAssertFalse(result.target.hasVideo)
         XCTAssertTrue(result.document.clips.contains { $0.name == "B-roll" && $0.hasVideo })
-        XCTAssertEqual(result.review.selectedCuts.count, 1)
+        XCTAssertEqual(result.review.cuts.count, 1)
+        XCTAssertTrue(result.review.selectedCuts.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(result.review.cuts[0].unavailableReason).contains("connected to the selected clip"))
 
         let changed = xml.replacingOccurrences(of: "name=\"B-roll\" lane=\"1\" offset=\"1s\"",
                                                with: "name=\"B-roll\" lane=\"1\" offset=\"3/2s\"")

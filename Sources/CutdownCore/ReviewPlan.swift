@@ -31,7 +31,7 @@ public struct ReviewPlan: Encodable, Sendable {
         self.baselineFingerprint = document.fingerprint
         self.target = target
         self.frameDuration = document.frameDuration
-        self.cuts = try Self.makeCuts(analysis, target: target, protected: document.protectedRanges(for: target), frame: document.frameDuration)
+        self.cuts = try Self.makeCuts(analysis, target: target, protected: document.automaticCutRestrictions(for: target), frame: document.frameDuration)
     }
 
     public var selectedCuts: [ReviewCut] { cuts.filter { $0.included && $0.isEligible } }
@@ -55,7 +55,7 @@ public struct ReviewPlan: Encodable, Sendable {
     ) throws -> Bool {
         guard document.projectName == projectName, document.projectUID == projectUID,
               document.fingerprint == baselineFingerprint else { throw ReviewError.staleProject }
-        var refreshed = try Self.makeCuts(analysis, target: target, protected: document.protectedRanges(for: target), frame: frameDuration)
+        var refreshed = try Self.makeCuts(analysis, target: target, protected: document.automaticCutRestrictions(for: target), frame: frameDuration)
         let changed = refreshed.map(\.range) != cuts.map(\.range)
         if !changed {
             for index in refreshed.indices {
