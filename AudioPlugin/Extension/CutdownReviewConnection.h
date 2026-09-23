@@ -27,6 +27,7 @@ FOUNDATION_EXPORT BOOL CutdownReviewStateCanRetry(CutdownReviewState state);
 @property(nonatomic) NSDictionary *pendingPreview;
 @property(nonatomic) NSNumber *previewRevision;
 @property(nonatomic) BOOL applyAcknowledged;
+@property(nonatomic) NSDictionary *pendingApply;
 @property(nonatomic) NSString *requestID;
 @property(nonatomic) NSNumber *revision;
 @property(nonatomic) NSDate *lastResponse;

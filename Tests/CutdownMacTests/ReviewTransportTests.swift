@@ -64,10 +64,26 @@ final class ReviewTransportTests: XCTestCase {
 
     func testSandboxEnvelopeUsesStringAndRoundTripsCommands() throws {
         let request = UUID()
-        let include = ReviewCommand(request: request, command: .include, cutID: "cut-2", included: false)
+        let include = ReviewCommand(request: request, command: .include, cutID: "cut-2", included: false, expectedRevision: 7)
         let object = try ReviewWire.encode(include)
         XCTAssertEqual(try ReviewWire.decodeCommand(object), include)
         XCTAssertEqual(ReviewWire.responseName(for: request), "local.cutdown.review.response.v1.\(request.uuidString)")
+    }
+
+    func testMutationsRequireCurrentRevisionAndApplyRequiresViewGesture() throws {
+        let request = UUID(), view = UUID(), gesture = UUID()
+        for command in [ReviewCommand.Kind.include, .selectAll, .deselectAll, .preview, .highlight, .apply] {
+            let packet = ReviewCommand(request: request, command: command, cutID: "cut-1", included: true)
+            XCTAssertThrowsError(try ReviewWire.decodeCommand(ReviewWire.encode(packet)))
+        }
+        let incomplete = ReviewCommand(request: request, command: .apply, expectedRevision: 4)
+        XCTAssertThrowsError(try ReviewWire.decodeCommand(ReviewWire.encode(incomplete)))
+        let apply = ReviewCommand(request: request, command: .apply, expectedRevision: 4,
+            view: view, applyGesture: gesture)
+        XCTAssertEqual(try ReviewWire.decodeCommand(ReviewWire.encode(apply)), apply)
+        let stale = ReviewCommand(request: request, command: .include, cutID: "cut-1",
+            included: false, expectedRevision: -1)
+        XCTAssertThrowsError(try ReviewWire.decodeCommand(ReviewWire.encode(stale)))
     }
 
     func testMalformedOrOversizedMessagesCannotBecomeCommands() {

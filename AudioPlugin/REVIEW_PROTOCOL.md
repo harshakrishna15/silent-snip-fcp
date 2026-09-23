@@ -55,6 +55,15 @@ runs, but `canApply`, `canChangeSelection`, and `canHighlight` remain false unti
 `canApply` and `canHighlight` default to false. Defining a command does not
 establish that its timeline operation is implemented.
 
+Selection, preview, highlight, and Apply commands include `expectedRevision`.
+The helper accepts them only while that review revision is current, so a delayed
+retransmission cannot undo a newer choice. Apply also includes the Controls view
+UUID and a fresh `applyGesture` UUID. The Apply button exposes that gesture in
+its accessibility identifier only after a click and while disabled awaiting
+acknowledgment. The helper checks the button in the sole selected clip's Controls
+window before starting the edit. Apply retries carry the same gesture and
+revision; acknowledgment or timeout clears the identifier.
+
 Distributed notifications are untrusted. The helper must require an existing
 matching job, validate command payloads and current capabilities, and run the
 separate project-state and recovery checks before any timeline edit. Receiving a

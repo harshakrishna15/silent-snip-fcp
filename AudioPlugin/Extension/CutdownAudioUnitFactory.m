@@ -420,6 +420,7 @@ static BOOL booleanValue(id value) {
         [NSDistributedNotificationCenter.defaultCenter removeObserver:self name:responseName(self.connection.requestID) object:nil];
     }
     self.connection = [CutdownReviewConnection new];
+    self.applyButton.identifier = @"cutdown.apply";
     for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO].queryItems)
         if ([item.name isEqual:@"request"]) self.connection.requestID = item.value;
     self.connection.revision = nil; self.connection.lastResponseObject = nil; self.submittedSettings = [self readFields];
@@ -492,6 +493,7 @@ static BOOL booleanValue(id value) {
         self.settingsDirty = YES; self.canApply = NO; self.applyButton.enabled = NO;
         self.connection.pendingSelection = nil; self.canChangeSelection = NO;
         self.connection.pendingRetry = nil; self.connection.pendingPreview = nil;
+        self.connection.pendingApply = nil; self.applyButton.identifier = @"cutdown.apply";
         self.previewButton.enabled = NO; self.jumpButton.enabled = NO; self.cancelButton.enabled = NO;
         self.cancelButton.hidden = YES;
         self.progressBar.hidden = YES; self.progressLabel.hidden = YES;
@@ -536,6 +538,7 @@ static BOOL booleanValue(id value) {
     }
     self.verificationPending = nil;
     self.connection = [CutdownReviewConnection new];
+    self.applyButton.identifier = @"cutdown.apply";
     self.connection.requestID = value[@"request"];
     self.connection.lastResponse = NSDate.date; self.connection.awaitingResponse = YES;
     for (NSUInteger i=0; i<4; i++) self.fields[i].stringValue = settingText([settings[i] floatValue]);
@@ -561,6 +564,7 @@ static BOOL booleanValue(id value) {
         if (self.connection.requestID)
             [NSDistributedNotificationCenter.defaultCenter removeObserver:self name:responseName(self.connection.requestID) object:nil];
         self.connection = [CutdownReviewConnection new]; self.settingsDirty = NO;
+        self.applyButton.identifier = @"cutdown.apply";
         self.canApply = NO; self.applyButton.enabled = NO; self.cancelButton.enabled = NO;
         self.canChangeSelection = NO; self.selectAllButton.enabled = NO; self.deselectAllButton.enabled = NO;
         self.previewButton.enabled = NO; self.jumpButton.enabled = NO; self.retryButton.enabled = NO;
@@ -599,9 +603,10 @@ static BOOL booleanValue(id value) {
     return button;
 }
 - (void)requestSelection:(NSDictionary *)fields {
-    if (!self.canChangeSelection || self.connection.pendingSelection || self.connection.applying) return;
+    if (!self.canChangeSelection || self.connection.pendingSelection || self.connection.applying || !self.connection.revision) return;
     NSMutableDictionary *command = [@{@"version":@1, @"request":self.connection.requestID} mutableCopy];
     [command addEntriesFromDictionary:fields];
+    command[@"expectedRevision"] = self.connection.revision;
     self.connection.pendingSelection = command; self.connection.selectionRevision = self.connection.revision;
     self.canApply = NO; self.applyButton.enabled = NO;
     [self.resultsView reloadData];
@@ -648,6 +653,10 @@ static BOOL booleanValue(id value) {
     self.deselectAllButton.enabled = self.canChangeSelection && !self.connection.pendingSelection;
     [self.resultsView reloadData];
     if (self.connection.applying && [value[@"state"] isEqual:CutdownReviewStateApplying]) self.connection.applyAcknowledged = YES;
+    if (self.connection.applyAcknowledged || (self.connection.applying && CutdownReviewStateIsTerminal(value[@"state"]))) {
+        self.connection.pendingApply = nil;
+        self.applyButton.identifier = @"cutdown.apply";
+    }
     if ([value[@"summary"] isKindOfClass:NSString.class]) self.summaryLabel.stringValue = value[@"summary"];
     else if ([value[@"state"] isEqual:CutdownReviewStateUnavailable]) self.summaryLabel.stringValue = @"Analysis is unavailable in this build. No cuts have been applied.";
     else if ([value[@"state"] isEqual:CutdownReviewStateFailed] || [value[@"state"] isEqual:CutdownReviewStateCancelled])
@@ -678,8 +687,8 @@ static BOOL booleanValue(id value) {
 }
 - (void)jumpToCut:(id)sender {
     NSInteger row = self.resultsView.selectedRow;
-    if (!self.connection.requestID || !self.canHighlight || self.connection.operationBusy || self.connection.applying || row < 0 || row >= self.cutRows.count) return;
-    [self sendPreviewCommand:@{@"version":@1, @"request":self.connection.requestID, @"command":@"highlight", @"cutID":self.cutRows[row][@"id"]}];
+    if (!self.connection.requestID || !self.connection.revision || !self.canHighlight || self.connection.operationBusy || self.connection.applying || row < 0 || row >= self.cutRows.count) return;
+    [self sendPreviewCommand:@{@"version":@1, @"request":self.connection.requestID, @"command":@"highlight", @"cutID":self.cutRows[row][@"id"], @"expectedRevision":self.connection.revision}];
 }
 - (void)retryVerification:(id)sender {
     if (!self.connection.requestID || !self.retryButton.enabled || self.connection.operationBusy || self.connection.applying) return;
@@ -691,9 +700,10 @@ static BOOL booleanValue(id value) {
     [self sendPreviewCommand:self.connection.pendingRetry];
 }
 - (void)togglePreview:(id)sender {
-    if (!self.connection.requestID || self.connection.operationBusy || self.connection.applying || self.connection.pendingPreview) return;
+    if (!self.connection.requestID || !self.connection.revision || self.connection.operationBusy || self.connection.applying || self.connection.pendingPreview) return;
     NSDictionary *command = @{@"version":@1, @"request":self.connection.requestID, @"command":@"preview",
-        @"included":self.previewButton.state == NSControlStateValueOn ? @YES : @NO};
+        @"included":self.previewButton.state == NSControlStateValueOn ? @YES : @NO,
+        @"expectedRevision":self.connection.revision};
     self.connection.pendingPreview = command; self.connection.previewRevision = self.connection.revision;
     // Keep showing the acknowledged helper state while delivery is pending.
     self.previewButton.state = self.previewButton.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
@@ -709,7 +719,7 @@ static BOOL booleanValue(id value) {
 
 - (void)apply:(id)sender {
     self.operationStarted = NSDate.date;
-    if (!self.canApply || self.connection.applying || ![[self readFields] isEqual:self.submittedSettings]) return;
+    if (!self.canApply || !self.connection.revision || self.connection.applying || ![[self readFields] isEqual:self.submittedSettings]) return;
     self.canApply = NO; self.applyButton.enabled = NO; self.connection.applying = YES;
     self.connection.applyAcknowledged = NO; self.connection.lastResponse = NSDate.date;
     self.canChangeSelection = NO; [self.resultsView reloadData];
@@ -717,10 +727,15 @@ static BOOL booleanValue(id value) {
     self.previewButton.enabled = NO;
     self.outputMode.enabled = NO;
     self.connection.applyRevision = self.connection.revision;
+    NSString *gesture = NSUUID.UUID.UUIDString;
+    self.applyButton.identifier = [@"cutdown.apply.requested." stringByAppendingString:gesture];
+    self.connection.pendingApply = @{@"version":@1, @"request":self.connection.requestID,
+        @"command":@"apply", @"expectedRevision":self.connection.revision,
+        @"view":self.viewID, @"applyGesture":gesture};
     self.analyzeButton.enabled = NO;
     for (NSTextField *field in self.fields) field.enabled = NO;
     self.statusLabel.stringValue = @"Requesting Apply Cuts…";
-    [self sendCommand:@"apply"];
+    [self sendPreviewCommand:self.connection.pendingApply];
 }
 - (void)dealloc {
     [_pollTimer invalidate];

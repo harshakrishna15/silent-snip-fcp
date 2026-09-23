@@ -40,6 +40,7 @@ public struct ReviewAnalysisResult: Sendable {
 
     private let operation: Operation
     private let applyOperation: ApplyOperation?
+    private let authorizeApply: @MainActor (ReviewCommand) -> Bool
     private let highlightOperation: HighlightOperation?
     private let verificationOperation: VerificationOperation?
     private let canRetryVerification: (UUID) -> Bool
@@ -51,6 +52,7 @@ public struct ReviewAnalysisResult: Sendable {
     private var active: UUID?
 
     public init(operation: @escaping Operation, applyOperation: ApplyOperation? = nil,
+                authorizeApply: @escaping @MainActor (ReviewCommand) -> Bool = { _ in false },
                 highlightOperation: HighlightOperation? = nil,
                 verificationOperation: VerificationOperation? = nil,
                 canRetryVerification: @escaping (UUID) -> Bool = { _ in false },
@@ -61,6 +63,7 @@ public struct ReviewAnalysisResult: Sendable {
                 }) {
         self.operation = operation
         self.applyOperation = applyOperation
+        self.authorizeApply = authorizeApply
         self.highlightOperation = highlightOperation
         self.verificationOperation = verificationOperation
         self.canRetryVerification = canRetryVerification
@@ -176,6 +179,10 @@ public struct ReviewAnalysisResult: Sendable {
             return
         }
         guard active == command.request, job.state == .review, var result = job.result else { return }
+        if let expected = command.expectedRevision, expected != job.revision {
+            resend(job)
+            return
+        }
         do {
             switch command.command {
             case .preview:
@@ -192,6 +199,19 @@ public struct ReviewAnalysisResult: Sendable {
                 beginHighlight(job, result: result, cutID: id)
                 return
             case .apply:
+                guard applyOperation != nil else {
+                    beginApply(job, result: result)
+                    return
+                }
+                guard authorizeApply(command) else {
+                    job.result = nil
+                    job.state = .failed
+                    job.message = "Apply was not confirmed in the selected Cutdown Controls window. Analyze again before applying cuts."
+                    if active == job.request.id { active = nil }
+                    publish(job)
+                    record(job.request, job.state.rawValue, job.message)
+                    return
+                }
                 beginApply(job, result: result)
                 return
             case .status, .cancel, .retryVerification: return

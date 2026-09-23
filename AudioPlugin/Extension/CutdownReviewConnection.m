@@ -32,8 +32,8 @@ static BOOL booleanValue(id value) {
 @implementation CutdownReviewConnection
 - (NSArray<NSDictionary *> *)commandsToRetry {
     NSMutableArray *commands = [NSMutableArray array];
-    if (self.applying && !self.applyAcknowledged && self.requestID)
-        [commands addObject:@{@"version":@1, @"request":self.requestID, @"command":@"apply"}];
+    if (self.applying && !self.applyAcknowledged && self.pendingApply)
+        [commands addObject:self.pendingApply];
     for (id pending in @[self.pendingSelection ?: NSNull.null, self.pendingRetry ?: NSNull.null, self.pendingPreview ?: NSNull.null])
         if (pending != NSNull.null) [commands addObject:pending];
     return commands;

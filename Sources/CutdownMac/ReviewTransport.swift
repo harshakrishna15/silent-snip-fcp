@@ -30,13 +30,23 @@ public enum ReviewWire {
             guard command.expectedRevision.map({ $0 >= 0 }) ?? true else { throw ReviewTransportError.invalidPayload }
         case .include:
             guard let id = command.cutID, !id.isEmpty, id.utf8.count <= 200,
-                  command.included != nil else { throw ReviewTransportError.invalidPayload }
-        case .preview:
-            guard command.included != nil else { throw ReviewTransportError.invalidPayload }
-        case .highlight:
-            guard let id = command.cutID, !id.isEmpty, id.utf8.count <= 200 else {
+                  command.included != nil, command.expectedRevision.map({ $0 >= 0 }) == true else {
                 throw ReviewTransportError.invalidPayload
             }
+        case .preview:
+            guard command.included != nil, command.expectedRevision.map({ $0 >= 0 }) == true else {
+                throw ReviewTransportError.invalidPayload
+            }
+        case .highlight:
+            guard let id = command.cutID, !id.isEmpty, id.utf8.count <= 200,
+                  command.expectedRevision.map({ $0 >= 0 }) == true else {
+                throw ReviewTransportError.invalidPayload
+            }
+        case .selectAll, .deselectAll:
+            guard command.expectedRevision.map({ $0 >= 0 }) == true else { throw ReviewTransportError.invalidPayload }
+        case .apply:
+            guard command.expectedRevision.map({ $0 >= 0 }) == true,
+                  command.view != nil, command.applyGesture != nil else { throw ReviewTransportError.invalidPayload }
         default: break
         }
         return command
@@ -64,15 +74,19 @@ public struct ReviewCommand: Codable, Equatable, Sendable {
     public let command: Kind
     public let cutID: String?
     public let included: Bool?
-    /// A remote retry is accepted only for the failed revision the user saw.
-    /// Retransmission cannot start another attempt after that revision changes.
+    /// Mutations are accepted only for the revision the user saw. Retransmitted
+    /// commands cannot undo a newer review choice or restart verification.
     public let expectedRevision: Int?
+    /// Apply also requires a fresh gesture exposed by the actual Controls view.
+    public let view: UUID?
+    public let applyGesture: UUID?
 
     public init(request: UUID, command: Kind, cutID: String? = nil, included: Bool? = nil,
-                expectedRevision: Int? = nil) {
+                expectedRevision: Int? = nil, view: UUID? = nil, applyGesture: UUID? = nil) {
         version = ReviewWire.version; self.request = request; self.command = command
         self.cutID = cutID; self.included = included
         self.expectedRevision = expectedRevision
+        self.view = view; self.applyGesture = applyGesture
     }
 }
 

@@ -11,6 +11,9 @@ import CutdownMac
             return try await interactive.analyze(request, progress: progress)
         }, applyOperation: { [unowned self] request, result, progress in
             try await interactive.apply(request, result: result, progress: progress)
+        }, authorizeApply: { [unowned self] command in
+            guard let view = command.view, let gesture = command.applyGesture else { return false }
+            return interactive.canAuthorizeApply(view: view, gesture: gesture)
         }, highlightOperation: { [unowned self] request, result, cutID in
             try await interactive.highlight(request, result: result, cutID: cutID)
         }, verificationOperation: { [unowned self] request, progress in

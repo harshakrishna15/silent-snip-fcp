@@ -120,6 +120,18 @@ extension FinalCutAXSession {
             identifier: "cutdown.review.reconnect.\(view.uuidString)", maxDepth: 16, maxNodes: 250) != nil
     }
 
+    /// The request UUID travels over a broadcast channel. An Apply message is
+    /// accepted only while the selected clip's sole Controls view exposes the
+    /// fresh gesture identifier set by its Apply button action.
+    func canAuthorizeApply(view: UUID, gesture: UUID) -> Bool {
+        guard canReconnectReview(view: view), let window = cutdownReviewWindows().first,
+              let button = find(in: window, role: kAXButtonRole,
+                  identifier: "cutdown.apply.requested.\(gesture.uuidString)", maxDepth: 16, maxNodes: 250),
+              string(button, kAXTitleAttribute) == "Apply Cuts",
+              (attribute(button, kAXEnabledAttribute) as? NSNumber)?.boolValue == false else { return false }
+        return true
+    }
+
     func makePreviewReader() -> FinalCutPreviewReader? {
         guard let expected = activeReviewSelection else { return nil }
         return FinalCutPreviewReader(pid: application.processIdentifier, root: root,

@@ -205,6 +205,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f review]; [f.preview performClick:nil];
         NSDictionary *hide = f.factory.previewCommand;
         require([hide[@"included"] isEqual:@NO] && CFGetTypeID((__bridge CFTypeRef)hide[@"included"]) == CFBooleanGetTypeID(), @"Preview uses a JSON boolean");
+        require([hide[@"expectedRevision"] isEqual:@1], @"Preview names the review revision");
         deliver(f.factory, connection(f.factory).lastResponseObject); [f.factory pollStatus];
         require([f.factory.previewCommand isEqual:hide] && !f.preview.enabled && f.preview.state == NSControlStateValueOn && f.apply.enabled, @"Pending hide retries and shows confirmed state without blocking Apply");
         response(f.factory, 2, @"review", nil);
@@ -220,11 +221,19 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f review]; NSString *review = connection(f.factory).lastResponseObject;
         [f.apply performClick:nil];
         require(commandCount(f.factory, @"apply") == 1 && !f.apply.enabled && !f.analyze.enabled, @"Apply sent exactly once");
+        NSDictionary *apply = f.factory.previewCommand;
+        require([apply[@"expectedRevision"] isEqual:@1] && [apply[@"view"] isKindOfClass:NSString.class] &&
+            [apply[@"applyGesture"] isKindOfClass:NSString.class] &&
+            [f.apply.identifier isEqual:[@"cutdown.apply.requested." stringByAppendingString:apply[@"applyGesture"]]],
+            @"Apply carries a fresh gesture exposed by its disabled button");
         NSDate *before = [NSDate dateWithTimeIntervalSinceNow:-5]; connection(f.factory).lastResponse = before;
         deliver(f.factory, review); [f.apply performClick:nil];
         require([connection(f.factory).lastResponse isEqual:before] && !connection(f.factory).applyAcknowledged && commandCount(f.factory, @"apply") == 1, @"Old review neither acknowledges nor postpones Apply timeout");
-        [f.factory pollStatus]; require(commandCount(f.factory, @"apply") == 2, @"Unacknowledged Apply retries same job");
+        [f.factory pollStatus]; require(commandCount(f.factory, @"apply") == 2 &&
+            [f.factory.previewCommand isEqual:apply], @"Unacknowledged Apply retries the same gesture and revision");
         response(f.factory, 2, @"applying", @{@"canApply":@NO});
+        require([f.apply.identifier isEqual:@"cutdown.apply"] && connection(f.factory).pendingApply == nil,
+            @"Acknowledgment consumes the Apply gesture");
         connection(f.factory).lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16];
         deliver(f.factory, connection(f.factory).lastResponseObject); [f.factory pollStatus];
         require(commandCount(f.factory, @"apply") == 2 && connection(f.factory).applying, @"Acknowledged Apply only polls and remains alive on heartbeats");
@@ -290,6 +299,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require(cut.enabled && cut.state == NSControlStateValueOn, @"Eligible cuts have checkboxes");
         [cut performClick:nil];
         require([f.factory.previewCommand[@"cutID"] isEqual:@"cut-1"] && ![f.factory.previewCommand[@"included"] boolValue] && !f.apply.enabled, @"Exact selection sent and Apply blocked");
+        require([f.factory.previewCommand[@"expectedRevision"] isEqual:@1], @"Selection names the review revision");
         deliver(f.factory, connection(f.factory).lastResponseObject);
         response(f.factory, 2, @"review", nil);
         require(connection(f.factory).pendingSelection != nil && !f.apply.enabled, @"Equal and unrelated revisions cannot acknowledge selection");
@@ -304,7 +314,8 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f review]; response(f.factory, 2, @"review", @{@"canHighlight":@YES});
         NSTableView *table = [f.factory valueForKey:@"resultsView"];
         [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO]; [f.factory jumpToCut:nil];
-        require([f.factory.previewCommand[@"command"] isEqual:@"highlight"] && [f.factory.previewCommand[@"cutID"] isEqual:@"cut-1"], @"Navigation sends selected identity");
+        require([f.factory.previewCommand[@"command"] isEqual:@"highlight"] && [f.factory.previewCommand[@"cutID"] isEqual:@"cut-1"] &&
+            [f.factory.previewCommand[@"expectedRevision"] isEqual:@2], @"Navigation sends selected identity and revision");
         response(f.factory, 3, @"failed", @{@"canRetryVerification":@YES});
         [f.factory retryVerification:nil]; [f.factory retryVerification:nil];
         require(commandCount(f.factory, @"retryVerification") == 1, @"Retry rejects duplicate clicks");

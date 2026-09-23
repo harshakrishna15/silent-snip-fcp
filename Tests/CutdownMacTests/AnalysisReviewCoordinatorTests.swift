@@ -14,7 +14,8 @@ import XCTest
         let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
             await withCheckedContinuation { finish = $0 }
             return fixture.result
-        }, applyOperation: { _, _, _ in applies += 1 }, emit: { response = $0.response }, record: { _, _, _ in })
+        }, applyOperation: { _, _, _ in applies += 1 }, authorizeApply: { _ in true },
+            emit: { response = $0.response }, record: { _, _, _ in })
         defer { coordinator.stop() }
         coordinator.onReviewChange = { _, plan in preview = plan }
         coordinator.start(request)
@@ -110,7 +111,7 @@ import XCTest
         var sent: [ReviewPublication] = []
         var local: ReviewResponse?
         let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
-            applyOperation: { _, _, _ in }, emit: { sent.append($0) },
+            applyOperation: { _, _, _ in }, authorizeApply: { _ in true }, emit: { sent.append($0) },
             receiveLocal: { local = $0 }, record: { _, _, _ in })
         defer { coordinator.stop() }
         coordinator.start(request)
@@ -132,6 +133,48 @@ import XCTest
         XCTAssertEqual(local, changed.response)
     }
 
+    func testDelayedSelectionReplayCannotUndoNewerChoice() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest()
+        var response: ReviewResponse?
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            emit: { response = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request)
+        try await waitUntil { response?.state == "review" }
+        let original = try XCTUnwrap(response)
+        let cut = try XCTUnwrap(original.cuts.first)
+        let old = ReviewCommand(request: request.id, command: .include, cutID: cut.id,
+            included: false, expectedRevision: original.revision)
+        coordinator.handle(old)
+        let firstRevision = try XCTUnwrap(response).revision
+        XCTAssertFalse(try XCTUnwrap(response).cuts[0].included)
+        coordinator.handle(.init(request: request.id, command: .include, cutID: cut.id,
+            included: true, expectedRevision: firstRevision))
+        let current = try XCTUnwrap(response)
+        XCTAssertTrue(current.cuts[0].included)
+        coordinator.handle(old)
+        XCTAssertEqual(response, current)
+    }
+
+    func testUnconfirmedApplyCannotStartTimelineEdit() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest()
+        var response: ReviewResponse?
+        var applies = 0
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            applyOperation: { _, _, _ in applies += 1 }, authorizeApply: { _ in false },
+            emit: { response = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request)
+        try await waitUntil { response?.state == "review" }
+        coordinator.handle(.init(request: request.id, command: .apply,
+            expectedRevision: try XCTUnwrap(response).revision, view: UUID(), applyGesture: UUID()))
+        XCTAssertEqual(applies, 0)
+        XCTAssertEqual(response?.state, "failed")
+        XCTAssertFalse(try XCTUnwrap(response).canApply)
+    }
+
     func testStaleNavigationInvalidatesCutsAndPreviewWhileOrdinaryErrorsKeepReview() async throws {
         for error in [XMLProjectBaselineError(changes: ["timeline content"]) as Error,
                       FinalCutCaptureError.changedProject as Error, FixtureError.exportFailed as Error] {
@@ -140,7 +183,7 @@ import XCTest
             var response: ReviewResponse?
             var preview: ReviewPlan?
             let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
-                applyOperation: { _, _, _ in XCTFail("A stale plan must not apply") },
+                applyOperation: { _, _, _ in XCTFail("A stale plan must not apply") }, authorizeApply: { _ in true },
                 highlightOperation: { _, _, _ in throw error },
                 emit: { response = $0.response }, record: { _, _, _ in })
             coordinator.onReviewChange = { _, plan in preview = plan }
@@ -189,7 +232,7 @@ import XCTest
             applyOperation: { _, result, _ in
                 applies += 1
                 XCTAssertEqual(result.analyzed.review.selectedCuts.count, 1)
-            }, emit: { publication in
+            }, authorizeApply: { _ in true }, emit: { publication in
                 let response = publication.response
                 if transportFailed { throw FixtureError.exportFailed }
                 remote.append(response)
@@ -237,6 +280,7 @@ import XCTest
         var pending = false
         let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
             applyOperation: { _, _, _ in imports += 1; pending = true; throw FixtureError.exportFailed },
+            authorizeApply: { _ in true },
             verificationOperation: { _, progress in
                 verifications += 1
                 try await Task.sleep(for: .milliseconds(10))
@@ -259,7 +303,7 @@ import XCTest
     func testRestoredVerificationDoesNotAnalyzeOrApply() async throws {
         var responses: [ReviewResponse] = []
         let coordinator = AnalysisReviewCoordinator(operation: { _, _ in XCTFail("No analysis during recovery"); throw FixtureError.exportFailed },
-            applyOperation: { _, _, _ in XCTFail("No import during recovery") },
+            applyOperation: { _, _, _ in XCTFail("No import during recovery") }, authorizeApply: { _ in true },
             verificationOperation: { _, progress in progress("Recovered verification", 1) },
             canRetryVerification: { _ in true }, emit: { responses.append($0.response) }, record: { _, _, _ in })
         defer { coordinator.stop() }
@@ -278,7 +322,7 @@ import XCTest
         var responses: [ReviewResponse] = []
         var jumps: [String] = []
         let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
-            applyOperation: { _, _, _ in XCTFail("Must not apply while navigating") },
+            applyOperation: { _, _, _ in XCTFail("Must not apply while navigating") }, authorizeApply: { _ in true },
             highlightOperation: { _, _, cutID in
                 jumps.append(cutID)
                 try await Task.sleep(for: .milliseconds(10))
@@ -307,7 +351,8 @@ import XCTest
             defer { fixture.remove() }
             var responses: [ReviewResponse] = []
             let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
-                applyOperation: { _, _, _ in }, emit: { responses.append($0.response) }, record: { _, _, _ in })
+                applyOperation: { _, _, _ in }, authorizeApply: { _ in true },
+                emit: { responses.append($0.response) }, record: { _, _, _ in })
             coordinator.start(try makeRequest())
             try await waitUntil { responses.last?.state == "review" }
             XCTAssertTrue(try XCTUnwrap(responses.last).canApply)
@@ -361,7 +406,8 @@ import XCTest
         var responses: [ReviewResponse] = []
         var preview: ReviewPlan?
         let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
-            applyOperation: { _, _, _ in }, emit: { responses.append($0.response) }, record: { _, _, _ in })
+            applyOperation: { _, _, _ in }, authorizeApply: { _ in true },
+            emit: { responses.append($0.response) }, record: { _, _, _ in })
         coordinator.onReviewChange = { _, value in preview = value }
         defer { coordinator.stop() }
         coordinator.start(request)
@@ -394,7 +440,7 @@ import XCTest
                 XCTAssertEqual(result.analyzed.review.selectedCuts.count, 2)
                 applyCalls += 1
                 progress("Cut-up project saved and sent to Final Cut. Original preserved.", 1)
-            }, emit: { responses.append($0.response) }, record: { _, _, _ in })
+            }, authorizeApply: { _ in true }, emit: { responses.append($0.response) }, record: { _, _, _ in })
         defer { coordinator.stop() }
         coordinator.start(request)
         try await waitUntil { responses.last?.state == "review" }

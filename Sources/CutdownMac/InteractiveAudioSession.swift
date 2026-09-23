@@ -20,6 +20,10 @@ import Foundation
         !restoringControllerSettings && reviewSession?.canReconnectReview(view: view) == true
     }
 
+    public func canAuthorizeApply(view: UUID, gesture: UUID) -> Bool {
+        !restoringControllerSettings && reviewSession?.canAuthorizeApply(view: view, gesture: gesture) == true
+    }
+
     public func updatePreview(_ id: UUID, review: ReviewPlan?) {
         guard let review, let context = contexts[id] else { preview.hide(); return }
         preview.show(review: review, session: context.capture.session)
