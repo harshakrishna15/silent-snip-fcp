@@ -15,6 +15,7 @@ struct PreviewGeometry: Equatable {
 /// are retained references, not AppKit views; no window drawing occurs here.
 final class FinalCutPreviewReader: @unchecked Sendable {
     let observationTargets: [AXUIElement]
+    let scrollBarTargets: [AXUIElement]
     let pid: pid_t
     let root: AXUIElement
     let mainWindow: AXUIElement
@@ -27,9 +28,15 @@ final class FinalCutPreviewReader: @unchecked Sendable {
     private var scrollAncestors: [AXUIElement] = []
     private var regularApplications: [pid_t: Bool] = [:]
     private var validationDate = Date.distantPast
-    private var dialogDate = Date.distantPast
     private var effectDate = Date.distantPast
     private var effectLifetime = PreviewEffectLifetime()
+    private struct WindowSnapshot {
+        let projectNumber: Int
+        let order: [Int]
+        let diagnosticSurfaces: [String]
+    }
+    private var windowSnapshot: WindowSnapshot?
+    private var windowDate = Date.distantPast
     private struct EffectInspectionProgress {
         let inspector: AXUIElement
         let viewport: CGRect
@@ -54,7 +61,8 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         let timeline = Self.search(mainWindow, role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true)
         let scroll = timeline.flatMap { Self.elementAttribute($0, kAXParentAttribute) }
         let controls = scroll.flatMap { Self.rawAttribute($0, kAXChildrenAttribute) as? [AXUIElement] } ?? []
-        observationTargets = [root, mainWindow] + [timeline, scroll].compactMap { $0 } + controls.filter { Self.rawAttribute($0, kAXRoleAttribute) as? String == kAXScrollBarRole }
+        scrollBarTargets = controls.filter { Self.rawAttribute($0, kAXRoleAttribute) as? String == kAXScrollBarRole }
+        observationTargets = [root, mainWindow] + [timeline, scroll].compactMap { $0 } + scrollBarTargets
     }
 
     func sample(completion: @escaping @Sendable (Result<PreviewGeometry, Error>, Double) -> Void) {
@@ -62,14 +70,16 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             let start = Date()
             self.nextDeadline = start.addingTimeInterval(0.25)
             let result = Result { try self.read() }
-            // Retry validation without discarding good handles on a single
-            // transient read failure during host layout/selection updates.
-            if case .failure = result { self.validationDate = .distantPast }
+            // Scrolling the clip offscreen is expected. Keep its verified AX
+            // handles instead of rescanning the entire timeline each sample.
+            if case .failure(let error) = result, case FinalCutPreviewError.transient = error {
+                self.validationDate = .distantPast
+            }
             completion(result, Date().timeIntervalSince(start))
         }
     }
 
-    func invalidate() { queue.async { self.validationDate = .distantPast; self.dialogDate = .distantPast } }
+    func invalidate() { queue.async { self.validationDate = .distantPast; self.windowDate = .distantPast } }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         guard Date() < nextDeadline else { return nil }
@@ -154,17 +164,15 @@ final class FinalCutPreviewReader: @unchecked Sendable {
                 }
             }
         }
-        dialogDate = Date()
     }
 
     private func read() throws -> PreviewGeometry {
         dispatchPrecondition(condition: .onQueue(queue))
         if effectLifetime.removed { throw FinalCutPreviewError.effectRemoved }
-        if timeline == nil || clip == nil || Date().timeIntervalSince(validationDate) >= 0.5 { try validate() }
+        if timeline == nil || clip == nil || Date().timeIntervalSince(validationDate) >= 1.0 { try validate() }
         guard let timeline, let clip, let projectControl,
               let title = string(projectControl, kAXTitleAttribute) else { throw FinalCutPreviewError.transient("Project is unavailable") }
         guard title == projectName else { throw FinalCutPreviewError.unavailable("Project changed") }
-        if Date().timeIntervalSince(dialogDate) >= 0.2 { try validateDialogs() }
         guard let frame = rect(clip), let viewport = rect(timeline) else {
             throw FinalCutPreviewError.transient("Final Cut did not supply clip or viewport geometry")
         }
@@ -179,8 +187,38 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         guard let visibleFrame = FinalCutPreviewGeometry.visibleFrame(clip: frame, timeline: viewport, scrollViewports: scrollViewports) else {
             throw FinalCutPreviewError.unavailable("Analyzed clip is outside the verified timeline scroll viewport")
         }
-        // Mask only the covered portion instead of hiding every boundary when
-        // the review window overlaps any part of the clip.
+        // Clip and viewport positions are read on every sample, independently
+        // of AX notifications. Window enumeration and Inspector traversal are
+        // safety checks, not part of the high-frequency tracking path.
+        if windowSnapshot == nil || Date().timeIntervalSince(windowDate) >= 0.75 {
+            try validateDialogs()
+            windowSnapshot = try readWindowSnapshot()
+            windowDate = Date()
+        }
+        guard let windowSnapshot else { throw FinalCutPreviewError.transient("Visible Final Cut window could not be verified") }
+        // WindowServer composites the overlay immediately above the project.
+        // Rectangles are not opacity masks: transparent host/utility surfaces
+        // often cover the entire display, despite containing no visible pixels.
+        var geometry = PreviewGeometry(frame: frame, visibleFrame: visibleFrame, occlusions: [],
+            projectWindowNumber: windowSnapshot.projectNumber, windowOrder: windowSnapshot.order)
+        if Date().timeIntervalSince(effectDate) >= (effectInspectionProgress == nil ? 1.0 : 0.1) {
+            // Bound each Inspector slice so it cannot monopolize tracking.
+            // Partial snapshots resume on later samples and remain unknown,
+            // never evidence that the effect was removed.
+            nextDeadline = Date().addingTimeInterval(effectInspectionProgress == nil ? 0.35 : 0.1)
+            let inspection = inspectEffect(timeline: timeline, clip: clip)
+            effectDate = Date()
+            if let inspection, effectLifetime.observe(inspection, at: effectDate) {
+                throw FinalCutPreviewError.effectRemoved
+            }
+        }
+        if diagnostics {
+            geometry.diagnosticSurfaces = windowSnapshot.diagnosticSurfaces
+        }
+        return geometry
+    }
+
+    private func readWindowSnapshot() throws -> WindowSnapshot {
         guard let projectWindowFrame = rect(mainWindow),
               let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             throw FinalCutPreviewError.transient("Visible Final Cut window could not be verified")
@@ -189,40 +227,21 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             guard let pid = info[kCGWindowOwnerPID as String] as? Int32,
                   let bounds = info[kCGWindowBounds as String] as? NSDictionary,
                   let frame = CGRect(dictionaryRepresentation: bounds) else { return nil }
-            // Screen-wide utility/system surfaces can report alpha 1 despite
-            // having transparent content. They must not erase the whole preview.
             guard pid == self.pid || pid == ProcessInfo.processInfo.processIdentifier || isRegularApplication(pid) else { return nil }
             return FinalCutPreviewSurface(pid: pid, frame: frame,
                 layer: info[kCGWindowLayer as String] as? Int ?? 0,
                 alpha: info[kCGWindowAlpha as String] as? Double ?? 1,
                 number: info[kCGWindowNumber as String] as? Int ?? 0)
         }
-        guard let projectWindowNumber = FinalCutPreviewSurface.projectWindowNumber(in: surfaces,
-            projectPID: pid, projectFrame: projectWindowFrame), projectWindowNumber > 0 else {
+        guard let projectNumber = FinalCutPreviewSurface.projectWindowNumber(in: surfaces,
+            projectPID: pid, projectFrame: projectWindowFrame), projectNumber > 0 else {
             throw FinalCutPreviewError.unavailable("Final Cut project window is minimized, offscreen, or on another Space")
         }
-        // WindowServer composites the overlay immediately above the project.
-        // Rectangles are not opacity masks: transparent host/utility surfaces
-        // often cover the entire display, despite containing no visible pixels.
-        var geometry = PreviewGeometry(frame: frame, visibleFrame: visibleFrame, occlusions: [],
-            projectWindowNumber: projectWindowNumber,
-            windowOrder: windows.compactMap { $0[kCGWindowNumber as String] as? Int })
-        if Date().timeIntervalSince(effectDate) >= (effectInspectionProgress == nil ? 0.4 : 0.15) {
-            // A separate budget: Inspector work cannot turn valid geometry into
-            // a timeout. Partial snapshots are unknown, never effect absence.
-            nextDeadline = Date().addingTimeInterval(0.8)
-            let inspection = inspectEffect(timeline: timeline, clip: clip)
-            effectDate = Date()
-            if let inspection, effectLifetime.observe(inspection, at: effectDate) {
-                throw FinalCutPreviewError.effectRemoved
-            }
-        }
-        if diagnostics {
-            geometry.diagnosticSurfaces = windows.prefix(40).map { info in
-                "owner=\(info[kCGWindowOwnerName as String] ?? "unknown") pid=\(info[kCGWindowOwnerPID as String] ?? 0) layer=\(info[kCGWindowLayer as String] ?? 0) alpha=\(info[kCGWindowAlpha as String] ?? 1) bounds=\(info[kCGWindowBounds as String] ?? [:])"
-            }
-        }
-        return geometry
+        let details = diagnostics ? windows.prefix(40).map { info in
+            "owner=\(info[kCGWindowOwnerName as String] ?? "unknown") pid=\(info[kCGWindowOwnerPID as String] ?? 0) layer=\(info[kCGWindowLayer as String] ?? 0) alpha=\(info[kCGWindowAlpha as String] ?? 1) bounds=\(info[kCGWindowBounds as String] ?? [:])"
+        } : []
+        return WindowSnapshot(projectNumber: projectNumber,
+            order: windows.compactMap { $0[kCGWindowNumber as String] as? Int }, diagnosticSurfaces: details)
     }
 
     private func inspectEffect(timeline: AXUIElement, clip: AXUIElement) -> PreviewEffectInspection? {

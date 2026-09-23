@@ -216,6 +216,8 @@ import Foundation
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
                 presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply replaces this project in its current event and saves recovery XML before import. Import verification automatically recovers saved Cutdown settings if Final Cut resets them. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "))
         } catch {
+            try? Data(error.localizedDescription.utf8).write(
+                to: directory.appendingPathComponent("Analysis-Failure.txt"), options: .atomic)
             // A cancellation must not prevent bounded cleanup of a verified,
             // request-owned project after returning to the original timeline.
             if let (isolated, delivered) = cleanup {

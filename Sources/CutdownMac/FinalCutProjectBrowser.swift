@@ -20,10 +20,29 @@ extension FinalCutAXSession {
             try await browserSession.pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
             return try await browserSession.waitForProject(named: name)
         }
-        if let current = try? FinalCutAXSession(), current.projectName == name { return current }
-        _ = try await selectBrowserProject(named: name)
-        try await pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
-        return try await waitForProject(named: name)
+        // Import can replace the toolbar and briefly leave an empty timeline.
+        // Re-pin after delivery rather than using pre-import AX objects for
+        // browser navigation. Never navigate from an unrelated project/window.
+        let browserSession = try FinalCutAXSession(allowEmptyTimeline: true)
+        guard browserSession.application.processIdentifier == application.processIdentifier,
+              CFEqual(browserSession.mainWindow, mainWindow),
+              FinalCutImportTimeline.permits(browserSession.projectName, original: projectName, imported: name) else {
+            throw FinalCutCaptureError.changedProject
+        }
+        if browserSession.projectName == name { return try FinalCutAXSession() }
+        do {
+            _ = try await browserSession.selectBrowserProject(named: name)
+            try await browserSession.pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
+        } catch FinalCutCaptureError.changedProject {
+            // A first import can open the exact generated project while we
+            // navigate. Accept that host transition only after re-pinning to
+            // the same window; semantic XML verification still follows.
+            if let current = try? FinalCutAXSession(),
+               current.application.processIdentifier == application.processIdentifier,
+               CFEqual(current.mainWindow, mainWindow), current.projectName == name { return current }
+            throw FinalCutCaptureError.changedProject
+        }
+        return try await browserSession.waitForProject(named: name)
     }
 
     private func waitForImportCompletion(named name: String, importedXML: URL, replacement: XMLReplacementTarget?,
@@ -43,7 +62,10 @@ extension FinalCutAXSession {
             // our exact generated project; don't repin to another user project.
             let control = Self.search(mainWindow, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true)
             let currentName = control.flatMap { string($0, kAXTitleAttribute) }
-            if replacement == nil, let currentName, currentName != projectName && currentName != name { throw FinalCutCaptureError.changedProject }
+            if replacement == nil,
+               !FinalCutImportTimeline.permits(currentName, original: projectName, imported: name) {
+                throw FinalCutCaptureError.changedProject
+            }
             let panel = currentSheet()
             if let panel {
                 let elements = importElements(in: panel)
@@ -112,8 +134,18 @@ extension FinalCutAXSession {
                                  originalTimelineClosed: replacementTransition) { return }
             if replacement == nil, browserReveal.observe(projectVisible: visible, originalProjectCurrent: currentName == projectName,
                                      hasDialog: panel != nil, elapsed: Date().timeIntervalSince(started)) {
-                try await activate()
-                try await pressMenu(path: ["Window", "Go To", "Libraries"])
+                // The generated project may open between sampling the toolbar
+                // and this navigation. In that exact case the reveal is no
+                // longer needed; re-read import state on the next iteration.
+                do {
+                    try await activate()
+                    try await pressMenu(path: ["Window", "Go To", "Libraries"])
+                } catch FinalCutCaptureError.changedProject {
+                    let now = Self.search(mainWindow, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true)
+                        .flatMap { string($0, kAXTitleAttribute) }
+                    guard now == name else { throw FinalCutCaptureError.changedProject }
+                    continue
+                }
                 // Some list layouts omit project names from the exposed AX
                 // rows. Use the same filmstrip representation as selection.
                 if let toggle = find(in: mainWindow, role: kAXButtonRole, description: "Show clips in filmstrip view") {

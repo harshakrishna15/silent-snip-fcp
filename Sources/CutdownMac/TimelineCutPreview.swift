@@ -17,6 +17,21 @@ struct PreviewRequestGate {
     }
 }
 
+/// Notifications are hints; the periodic read still discovers host scrolling
+/// and zooming when Final Cut does not emit one. Repeated hints cannot force
+/// unbounded accessibility requests during scrubbing.
+struct PreviewSamplePacer {
+    private(set) var nextRead = Date.distantPast
+    private var activeUntil = Date.distantPast
+
+    mutating func reset() { nextRead = .distantPast; activeUntil = .distantPast }
+    mutating func wake(at now: Date) { activeUntil = max(activeUntil, now.addingTimeInterval(0.5)) }
+    func isDue(at now: Date) -> Bool { now >= nextRead }
+    mutating func didStartRead(at now: Date) {
+        nextRead = now.addingTimeInterval(now < activeUntil ? 1.0 / 15 : 0.15)
+    }
+}
+
 @MainActor final class PreviewChangeObserver {
     private var observer: AXObserver?
     private let changed: () -> Void
@@ -34,10 +49,11 @@ struct PreviewRequestGate {
         observer = result
         let context = Unmanaged.passUnretained(self).toOpaque()
         for element in reader.observationTargets {
-            for name in [kAXMovedNotification, kAXResizedNotification, kAXValueChangedNotification,
+            let valueChanges = reader.scrollBarTargets.contains { CFEqual($0, element) }
+            for name in [kAXMovedNotification, kAXResizedNotification,
                          kAXSelectedChildrenChangedNotification, kAXLayoutChangedNotification,
                          kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification,
-                         kAXUIElementDestroyedNotification] {
+                         kAXUIElementDestroyedNotification] + (valueChanges ? [kAXValueChangedNotification] : []) {
                 if AXObserverAddNotification(result, element, name as CFString, context) == .success { registrations += 1 }
             }
         }
@@ -59,11 +75,11 @@ struct PreviewRequestGate {
     private var reader: FinalCutPreviewReader?
     private var observer: PreviewChangeObserver?
     private var gate = PreviewRequestGate()
-    private var nextSample = Date.distantPast
-    private var activeUntil = Date.distantPast
+    private var pacer = PreviewSamplePacer()
     private var visibility = PreviewVisibility()
     private weak var removedEffectSession: FinalCutAXSession?
     private var lastGeometry: PreviewGeometry?
+    private var lastOrderedWindowOrder: [Int]?
     private var readTimes: [Double] = []
     private var paintTimes: [Double] = []
     private var diagnosticEnabled = false
@@ -109,16 +125,17 @@ struct PreviewRequestGate {
     func hide() {
         gate.reset(); observer?.stop(); observer = nil
         timer?.invalidate(); timer = nil; reader = nil; session = nil
-        panel?.orderOut(nil); lastGeometry = nil; visibility.reset()
+        pacer.reset()
+        panel?.orderOut(nil); lastGeometry = nil; lastOrderedWindowOrder = nil; visibility.reset()
     }
-    private func wake() { activeUntil = Date().addingTimeInterval(0.5); nextSample = .distantPast }
+    private func wake() { pacer.wake(at: Date()) }
 
     private func tick() {
         let now = Date()
         // A slow/unresponsive host must not leave an old rectangle over edits.
         if visibility.expired(at: now), panel?.isVisible == true { panel?.orderOut(nil) }
-        guard let reader, now >= nextSample, let token = gate.begin() else { return }
-        nextSample = now.addingTimeInterval(now < activeUntil ? 1.0 / 30 : 0.15)
+        guard let reader, pacer.isDue(at: now), let token = gate.begin() else { return }
+        pacer.didStartRead(at: now)
         reader.sample { [weak self] result, duration in
             Task { @MainActor in
                 guard let self, self.gate.finish(token) else { return }
@@ -147,7 +164,7 @@ struct PreviewRequestGate {
 
     private func present(_ geometry: PreviewGeometry) {
         let changed = geometry.frame != lastGeometry?.frame || geometry.visibleFrame != lastGeometry?.visibleFrame
-        if changed { activeUntil = Date().addingTimeInterval(0.5) }
+        if changed { pacer.wake(at: Date()) }
         visibility.verified(at: Date())
         let window = panel ?? makePanel()
         let visible = geometry.visibleFrame
@@ -164,7 +181,12 @@ struct PreviewRequestGate {
         if PreviewVisibility.needsOrdering(visible: window.isVisible, overlay: window.windowNumber,
             project: geometry.projectWindowNumber, windowOrder: geometry.windowOrder) {
             guard geometry.projectWindowNumber > 0 else { window.orderOut(nil); return }
-            window.order(.above, relativeTo: geometry.projectWindowNumber)
+            // A window snapshot is reused across geometry reads. Order once
+            // for that snapshot instead of repeatedly raising the same panel.
+            if !window.isVisible || lastOrderedWindowOrder != geometry.windowOrder {
+                window.order(.above, relativeTo: geometry.projectWindowNumber)
+                lastOrderedWindowOrder = geometry.windowOrder
+            }
         }
         lastGeometry = geometry
         if diagnosticEnabled { record("Visible: clip=\(geometry.frame), panel=\(window.frame), vector boundaries=\(drawing.boundaries.count)") }

@@ -1,5 +1,16 @@
 import Foundation
 
+/// A first XML import can briefly clear Final Cut's timeline while it creates
+/// the imported item. The import itself is read-only until the exact generated
+/// project is opened and verified, so an empty title is a transition, not a
+/// different user project.
+struct FinalCutImportTimeline {
+    static func permits(_ current: String?, original: String, imported: String) -> Bool {
+        guard let current, !current.isEmpty else { return true }
+        return current == original || current == imported
+    }
+}
+
 struct FinalCutImportDialog: Codable, Equatable {
     let title: String
     let text: [String]

@@ -3,6 +3,24 @@ import XCTest
 @testable import CutdownMac
 
 final class TimelineCutPreviewTests: XCTestCase {
+    func testPositionPollingDoesNotDependOnNotificationsOrAccelerateWithoutBound() {
+        let start = Date(timeIntervalSince1970: 100)
+        var pacer = PreviewSamplePacer()
+        XCTAssertTrue(pacer.isDue(at: start))
+        pacer.didStartRead(at: start)
+        for step in 1...20 { pacer.wake(at: start.addingTimeInterval(Double(step) / 1000)) }
+        XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(0.1)))
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.15)))
+        pacer.didStartRead(at: start.addingTimeInterval(0.15))
+        XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(0.2)))
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.22)))
+        pacer.reset()
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.22)))
+        pacer.didStartRead(at: start.addingTimeInterval(0.22))
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.37)),
+            "Polling must continue even when Final Cut sends no notifications.")
+    }
+
     func testClickTimeReadGapsKeepPreviewButUnresponsiveHostExpires() {
         let now = Date(timeIntervalSince1970: 100)
         var visibility = PreviewVisibility()

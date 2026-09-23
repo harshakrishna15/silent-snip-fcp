@@ -4,6 +4,24 @@ This record tracks export reliability, isolated clip rendering, verified imports
 
 Earlier entries describe the original development environment. Their installed/staged app state and logs under `build/` are not part of a Git checkout. The project currently provides local ad hoc builds; no release installer or updater is included.
 
+## September 23 first-import navigation repair
+
+An observed Analyze attempt on the integration library stopped immediately after
+delivering its temporary `Cutdown Analysis` project; the next attempt on the same
+clip reached review. The first job's timing report ended after render preparation,
+and its generated project remained in the original event. Final Cut's import log
+showed transient event creation. The previous error message was overwritten by
+the succeeding job, so the exact thrown error cannot be recovered.
+
+Import navigation now tolerates a temporarily empty timeline title, re-pins to
+the current Final Cut accessibility objects after delivery, and accepts an
+in-flight switch only to the exact generated project. Unrelated projects and
+windows remain rejected. Analyze also saves its failure message per job to
+`Analysis-Failure.txt` so a later success cannot erase the diagnostic. Ten
+focused import tests pass. The changed helper has not been installed or tested
+with a fresh disposable Final Cut project; automatic first-run Analyze and Apply
+remain unverified for this change.
+
 ## September 18 repository copy and privacy verification
 
 The copied repository includes the helper and Audio Unit source, build configuration, Swift tests, sanitized XML fixtures, build-script tests, and documentation. Local Release helper and Debug audio candidates built and passed signature verification with Xcode 27.0 / Swift 6.4 on Apple Silicon. The audio harness passed 60 render cases plus its settings checks. Sandbox restrictions on process inspection and debug-symbol creation required access-enabled build retries.
