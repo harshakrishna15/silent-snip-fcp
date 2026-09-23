@@ -27,44 +27,18 @@ final class ClipAudioAnalysisRouteTests: XCTestCase {
         }
     }
 
-    func testNonoverlappingAudioAndSilentVideoDoNotContaminateRender() throws {
-        let data = xml("", following: "<asset-clip ref=\"audio\" offset=\"3s\" duration=\"3s\" audioRole=\"dialogue\"/>")
-        let doc = try TimelineParser.parse(data: data)
-        XCTAssertNoThrow(try ClipAudioAnalysisRoute.validateRenderIsolation(document: doc,
-            target: doc.selectedTarget(selection, requireExistingMedia: false)))
-        let video = try TimelineParser.parse(data: xml("<asset-clip ref=\"video\" lane=\"1\" offset=\"0s\" duration=\"3s\"/>"))
-        XCTAssertNoThrow(try ClipAudioAnalysisRoute.validateRenderIsolation(document: video,
-            target: video.selectedTarget(selection, requireExistingMedia: false)))
-    }
-
-    func testOtherAudioAndUnknownContainersNeverMasqueradeAsSelectedClip() throws {
-        for children in [
-            "<asset-clip ref=\"audio\" lane=\"-1\" offset=\"1s\" duration=\"1s\" audioRole=\"dialogue\"/>",
-            "<asset-clip ref=\"audio\" lane=\"-1\" offset=\"1s\" duration=\"1s\" audioRole=\"music\"/>",
-            "<clip lane=\"1\" offset=\"1s\" duration=\"1s\"/>"
-        ] {
-            let doc = try TimelineParser.parse(data: xml(children))
-            XCTAssertThrowsError(try ClipAudioAnalysisRoute.validateRenderIsolation(document: doc,
-                target: doc.selectedTarget(selection, requireExistingMedia: false)))
-        }
-    }
-
-    private func xml(_ children: String, following: String = "") -> Data {
+    private func xml(_ children: String) -> Data {
         Data("""
         <fcpxml version="1.14"><resources>
         <format id="format" frameDuration="1/30s"/>
         <asset id="audio" start="0s" duration="6s" hasAudio="1" audioSources="1" audioChannels="2">
           <media-rep kind="original-media" src="file:///fixtures/audio.wav"/>
         </asset>
-        <asset id="video" start="0s" duration="6s" hasVideo="1" hasAudio="0">
-          <media-rep kind="original-media" src="file:///fixtures/video.mov"/>
-        </asset>
         <effect id="controller" uid="\(AudioControllerSettings.effectUID)"/>
         <effect id="limiter" uid="Limiter.Levels.audio.effectBundle"/>
         <effect id="thirdParty" uid="AudioUnit: 0x617566785445535454455354"/>
         </resources><project name="Effects"><sequence format="format" duration="6s" tcStart="0s"><spine>
-        <asset-clip ref="audio" offset="0s" duration="3s" audioRole="dialogue">\(children)</asset-clip>
-        \(following)</spine></sequence></project></fcpxml>
+        <asset-clip ref="audio" offset="0s" duration="3s" audioRole="dialogue">\(children)</asset-clip></spine></sequence></project></fcpxml>
         """.utf8)
     }
 }

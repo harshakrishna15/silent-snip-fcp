@@ -38,29 +38,4 @@ enum ClipAudioAnalysisRoute: Equatable {
         }
         return .source
     }
-
-    /// A project render represents this target only while no other audio can
-    /// contribute to its interval. Unresolved containers cannot prove isolation.
-    static func validateRenderIsolation(document: TimelineDocument, target: TimelineClip) throws {
-        for clip in document.clips where clip.id != target.id && clip.enabled {
-            if !["asset-clip", "gap"].contains(clip.kind) || clip.hasUnresolvedTiming {
-                throw IsolationError.unresolvedContext
-            }
-            if clip.hasAudio, clip.timelineRange.intersection(target.timelineRange) != nil {
-                throw IsolationError.overlappingAudio
-            }
-        }
-    }
-
-    enum IsolationError: LocalizedError {
-        case overlappingAudio, unresolvedContext
-        var errorDescription: String? {
-            switch self {
-            case .overlappingAudio:
-                return "Cutdown needs an isolated render of this processed clip, but another enabled audio clip overlaps it. Automatic isolation is not supported yet. No source-only analysis was substituted."
-            case .unresolvedContext:
-                return "Cutdown cannot verify an isolated render with compound, multicam, transition, or retimed context in this project. No source-only analysis was substituted."
-            }
-        }
-    }
 }
