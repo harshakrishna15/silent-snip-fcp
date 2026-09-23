@@ -40,11 +40,11 @@ The four detection controls live in the Controls window:
 | Setting | Default | Meaning |
 |---|---|---|
 | Silence Threshold | −40 dBFS | Windows below this level in every channel qualify as quiet. Raising it toward zero includes louder quiet material. |
-| Minimum Silence | 0.5 seconds | A continuous quiet interval must reach this length before padding is applied. |
+| Minimum Silence | 0.5 seconds | The proposed removal must reach this length after padding and frame rounding. |
 | Before Speech | 0.1 seconds | Retain this much quiet audio immediately before speech resumes. |
 | After Speech | 0.1 seconds | Retain this much quiet audio immediately after speech ends. |
 
-Minimum Silence accepts 0.0001–10 seconds. Analysis measures audio in 0.01-second windows, and cuts snap to project frames. With the default 0.1-second padding on each side, a quiet interval must exceed 0.2 seconds to leave any removable audio.
+Minimum Silence accepts 0.0001–10 seconds. Analysis measures audio in 0.01-second windows, and cuts snap to project frames. With the default 0.1-second padding on each side, a quiet interval generally needs at least Minimum Silence plus 0.2 seconds, and frame rounding can require more.
 
 Choose **Remove Silence** to close the selected pauses, or **Replace with 1-Second Gaps** to replace each selected pause with an editable gap. One second is rounded to the nearest project frame. Gap mode can lengthen a pause that was shorter than one second.
 
@@ -77,7 +77,7 @@ A noise gate can make background noise qualify as silence; compression, makeup g
 
 This is generic audio-effect handling, not certification of every installed plugin. Source-time keyframes are preserved with all surrounding curve points. Fades stay only on the original outer edges; a proposed cut intersecting a fade is unavailable rather than reshaping that fade. Empty/invalid animations and trimmed audio components still prevent Apply. Retimed clips, compound clips, external sidechain routing, and plugin behavior across new cut boundaries are not established by these compatibility tests. Linked-video cutting remains outside the current audio-only scope.
 
-Detection measures RMS loudness in 10 ms windows. A window is quiet only when every channel is below the threshold. Adjacent quiet windows form candidate pauses. The detector applies minimum duration, retains before/after padding, and rounds removal boundaries inward to project frames. Entirely silent targets are not automatically deleted.
+Detection measures RMS loudness in 10 ms windows. A window is quiet only when every channel is below the threshold. Adjacent quiet windows form candidate pauses. The detector retains before/after padding, rounds removal boundaries inward to project frames, and applies Minimum Silence to the resulting removal. Entirely silent targets are not automatically deleted.
 
 This is level detection, not a speech or breath classifier. Quiet breaths can qualify. RMS values can differ from Final Cut's peak meter readings.
 

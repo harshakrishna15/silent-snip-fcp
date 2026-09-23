@@ -181,13 +181,15 @@ public enum SilenceDetector {
         var candidates: [TimeRange] = []
         for quiet in quietRuns {
             let duration = try quiet.checkedDuration()
-            guard duration >= minimum else { continue }
             // Padding is retained at both boundaries, including target edges and gaps
-            // in the measurements. Clip intersection precedes duration/padding rules.
+            // in the measurements. Minimum Silence limits the actual removal,
+            // after padding and inward frame rounding, not the raw quiet run.
             guard duration > totalPadding else { continue }
             let start = try quiet.start.adding(afterSpeech).roundedUp(toFrame: frameDuration)
             let end = try quiet.end.subtracting(beforeSpeech).roundedDown(toFrame: frameDuration)
-            if end > start { candidates.append(TimeRange(start: start, end: end)) }
+            if end > start, try end.subtracting(start) >= minimum {
+                candidates.append(TimeRange(start: start, end: end))
+            }
         }
         return try SilenceAnalysisResult(candidates: candidates, disposition: candidates.isEmpty ? .noSilence : .cuts)
     }

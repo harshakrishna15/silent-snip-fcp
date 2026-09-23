@@ -55,11 +55,30 @@ final class AnalysisTests: XCTestCase {
         XCTAssertEqual(result.candidates, [range(1.1, 1.9)])
     }
 
-    func testMinimumDurationIncludesEqualityBeforePadding() throws {
-        let below = try analyze([window(0, 1, [0.3]), window(1, 1.49, [0]), window(1.49, 3, [0.3])])
+    func testMinimumDurationAppliesToPaddedRemovalAndIncludesEquality() throws {
+        let settings = try AnalysisSettings(minimumSilenceDuration: 0.3)
+        let below = try analyze([window(0, 1, [0.3]), window(1, 1.49, [0]), window(1.49, 3, [0.3])], settings: settings)
         XCTAssertEqual(below.disposition, .noSilence)
-        let equal = try analyze([window(0, 1, [0.3]), window(1, 1.5, [0]), window(1.5, 3, [0.3])])
+        let equal = try analyze([window(0, 1, [0.3]), window(1, 1.5, [0]), window(1.5, 3, [0.3])], settings: settings)
         XCTAssertEqual(equal.candidates, [range(1.1, 1.4)])
+    }
+
+    func testMinimumDurationRejectsOneFrameCutAfterPaddingAndFrameRounding() throws {
+        let settings = try AnalysisSettings(minimumSilenceDuration: 0.1)
+        let frame = RationalTime(1, 30)
+        let short = try SilenceDetector.analyze(
+            windows: [window(0, 1, [0.3]), window(1, 1.24, [0]), window(1.24, 3, [0.3])],
+            target: range(0, 3), frameDuration: frame, settings: settings
+        )
+        XCTAssertEqual(short.disposition, .noSilence)
+        XCTAssertTrue(short.candidates.isEmpty)
+
+        let qualifying = try SilenceDetector.analyze(
+            windows: [window(0, 1, [0.3]), window(1, 1.3, [0]), window(1.3, 3, [0.3])],
+            target: range(0, 3), frameDuration: frame, settings: settings
+        )
+        XCTAssertEqual(qualifying.candidates, [range(1.1, 1.2)])
+        XCTAssertEqual(qualifying.removedDuration, RationalTime(1, 10))
     }
 
     func testClipIntersectionHappensBeforeMinimumDuration() throws {

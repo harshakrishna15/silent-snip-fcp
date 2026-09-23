@@ -58,9 +58,11 @@ final class BreathLevelProcessingTests: XCTestCase {
         XCTAssertEqual(higherThreshold.removedDuration, RationalTime(8, 5))
     }
 
-    func testShortQuietNoiseIsEligibleOnlyAfterMinimumDurationIsLowered() async throws {
+    func testShortQuietNoiseRequiresMinimumRemovalAfterPadding() async throws {
         let audio = try await decodedFixture()
-        let result = try analyze(audio, settings: AnalysisSettings(minimumSilenceDuration: 0.25))
+        let tooShort = try analyze(audio, settings: AnalysisSettings(minimumSilenceDuration: 0.25))
+        XCTAssertEqual(tooShort.candidates, [range(11, 19, denominator: 10)])
+        let result = try analyze(audio, settings: AnalysisSettings(minimumSilenceDuration: 0.1))
         XCTAssertEqual(result.candidates, [
             range(11, 19, denominator: 10), range(51, 52, denominator: 10)
         ])
