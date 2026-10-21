@@ -125,6 +125,11 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     require([extension[@"NSExtensionPointIdentifier"] isEqual:@"com.apple.AudioUnit-UI"], @"Custom effect window registration");
     require(NSClassFromString(extension[@"NSExtensionPrincipalClass"]) == CutdownAudioUnitFactory.class, @"Registered view factory");
     require([CutdownAudioUnitFactory isSubclassOfClass:AUViewController.class], @"Factory supplies the Audio Unit view");
+    NSDictionary *component = [extension[@"NSExtensionAttributes"][@"AudioComponents"] firstObject];
+    require([component[@"name"] isEqual:@"Silent Snip: Silent Snip Audio"] &&
+            [component[@"description"] isEqual:@"Silent Snip Audio"], @"Silent Snip effect discovery names");
+    require([component[@"manufacturer"] isEqual:@"Ctdn"] && [component[@"subtype"] isEqual:@"ctdn"],
+            @"Existing projects retain the same Audio Unit identity");
 
     run(@"state persistence and native legacy compatibility", ^(Fixture *f) {
         require(f.unit.parameterTree.allParameters.count == 0 && f.fields.count == 4, @"Four private controls, no Inspector parameters");

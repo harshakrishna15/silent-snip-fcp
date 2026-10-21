@@ -191,7 +191,7 @@ public enum DialogueAudioReader {
             switch self {
             case .invalidAudio: return "The dialogue render could not be decoded completely as PCM audio."
             case .expectedSingleDialogueRender: return "Choose one completed, full-project dialogue-only audio render."
-            case .discontinuousAudio: return "The dialogue render contains a timestamp gap. Cutdown cannot safely align it to the timeline."
+            case .discontinuousAudio: return "The dialogue render contains a timestamp gap. Silent Snip cannot safely align it to the timeline."
             case let .durationMismatch(expected, actual):
                 return String(format: "The dialogue render is %.3f seconds; the project is %.3f seconds. Export the entire project without a range selection.", actual, expected)
             }

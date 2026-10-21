@@ -77,7 +77,7 @@ final class IsolatedProjectVerificationTests: XCTestCase {
         XCTAssertEqual(result.destination.eventUID, result.sourceProject.eventUID)
         XCTAssertEqual(result.destination.libraryURL, result.sourceProject.libraryURL)
         let xml = String(decoding: result.data, as: UTF8.self)
-        XCTAssertFalse(xml.contains("<event name=\"Cutdown Analysis\""))
+        XCTAssertFalse(xml.contains("<event name=\"Silent Snip Analysis\""))
         XCTAssertTrue(xml.contains("6dB")); XCTAssertTrue(xml.contains("srcCh=\"1, 2\""))
         XCTAssertTrue(xml.contains("value=\"-1\"")); XCTAssertTrue(xml.contains("role=\"dialogue.dialogue-1\""))
         XCTAssertFalse(xml.contains("name=\"Neighbor\"")); XCTAssertFalse(xml.contains("<filter-audio ref=\"c\""))

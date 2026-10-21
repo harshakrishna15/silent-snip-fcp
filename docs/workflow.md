@@ -1,12 +1,12 @@
-# Cutdown workflow
+# Silent Snip workflow
 
 Updated September 18, 2026, from the effect window and helper source. This describes the implemented workflow, not a claim that the current build has passed every live integration step. Superseded native-edit and export workflows are archived in `integration-history.md`. The integration overhaul remains marked in progress.
 
-Cutdown is a local, audio-only silence-removal tool for Final Cut Pro. The user adds an audio effect, analyzes one selected clip, reviews proposed cuts, and explicitly applies them by replacing the current project through XML. The effect itself passes audio through unchanged; the helper performs analysis and project replacement.
+Silent Snip is a local, audio-only silence-removal tool for Final Cut Pro. The user adds an audio effect, analyzes one selected clip, reviews proposed cuts, and explicitly applies them by replacing the current project through XML. The effect itself passes audio through unchanged; the helper performs analysis and project replacement.
 
 ## 1. Install and prepare
 
-For a local development installation, quit Final Cut and the Cutdown helper, then run these commands from the workspace:
+For a local development installation, quit Final Cut and the Silent Snip helper, then run these commands from the workspace:
 
 ```sh
 ./Scripts/build-helper.sh --release
@@ -15,19 +15,19 @@ For a local development installation, quit Final Cut and the Cutdown helper, the
 ./Scripts/register-local.sh
 ```
 
-Keep the registered bundles at their build locations. Complete [first-time setup](setup.md) to grant the helper macOS control access and create a Share destination named **Cutdown** targeting `build/Cutdown.app`. Neither step is performed by registration. Reopen Final Cut after registration. The helper has no separate application window; the Audio Unit's Controls window is its interface.
+Keep the registered bundles at their build locations. Complete [first-time setup](setup.md) to grant the helper macOS control access and create a Share destination named **Silent Snip** targeting `build/Cutdown.app`. Neither step is performed by registration. Reopen Final Cut after registration. The helper has no separate application window; the Audio Unit's Controls window is its interface.
 
 After an ad hoc rebuild, quit and relaunch the helper if an existing permission grant is not recognized. If that does not restore access, refresh its entry in the macOS control-access settings. Changed ad hoc builds can require a new grant; an existing consistent signing identity can be used for development.
 
-Share is part of the helper's implementation. The normal user interaction does not require manually exporting XML, choosing an export method, or sending a project to Cutdown.
+Share is part of the helper's implementation. The normal user interaction does not require manually exporting XML, choosing an export method, or sending a project to Silent Snip.
 
-XML capture now always uses the Share exchange; the unused Export XML / Go to Folder / Save-dialog driver has been removed. The helper still starts and confirms the Cutdown Share destination through Accessibility. Apple's documented exchange supplies output paths and delivery, but does not provide a command here to initiate sharing without host UI.
+XML capture now always uses the Share exchange; the unused Export XML / Go to Folder / Save-dialog driver has been removed. The helper still starts and confirms the Silent Snip Share destination through Accessibility. Apple's documented exchange supplies output paths and delivery, but does not provide a command here to initiate sharing without host UI.
 
 Host actions are conditional: range clearing is skipped when the timeline is verified to have no range selection, export tabs already selected are left alone, and opening an already visible imported project skips Libraries navigation and the filmstrip switch. Timeline focus uses the direct Accessibility property first, with a verified menu fallback. Existing selected ranges still use the host's advertised Clear Selected Ranges shortcut (or its menu fallback), followed by verification. Project opening selects the exact browser item through Accessibility, with a hit-tested single-click fallback, verifies sole selection and browser focus, then invokes Clip → Open Clip. It confirms the requested timeline before exporting its XML for identity/content verification.
 
 ## 2. Select the audio clip
 
-Open a project and select the particular audio-only clip occurrence in the primary storyline. Add **Cutdown Audio** from the Effects browser. Open **Audio Inspector → Cutdown Audio → Controls**.
+Open a project and select the particular audio-only clip occurrence in the primary storyline. Add **Silent Snip Audio** from the Effects browser. Open **Audio Inspector → Silent Snip Audio → Controls**.
 
 The supported target is one normal-speed audio-only clip with available source media. Source trims and repeated uses of the same file are distinguished by the selected timeline occurrence. A target containing video is rejected, although an audio-only insertion can reference a file with an unused video stream.
 
@@ -54,12 +54,12 @@ Use **Save Settings** to commit the four values without starting analysis. New e
 
 Click **Analyze**. It does not apply cuts. The button disables immediately while the request connects; repeated clicks cannot cancel and replace a pending analysis. A failed launch or response timeout releases it for retry.
 
-**Controls is the single Cutdown interface.** The helper runs in the background and keeps the job when Final Cut recreates the effect view during rendering. After returning to the original project, Cutdown attempts to restore Controls. A recreated view reconnects only after the helper verifies that its unique native control belongs to the original selected clip and project; it then restores the submitted settings and retrieves the latest review. Reopening Controls on that original clip also reconnects. Another clip cannot adopt a global “latest review.” Use Cancel in Controls to discard the current review or stop a running operation. This revised host reconnection still requires live verification.
+**Controls is the single Silent Snip interface.** The helper runs in the background and keeps the job when Final Cut recreates the effect view during rendering. After returning to the original project, Silent Snip attempts to restore Controls. A recreated view reconnects only after the helper verifies that its unique native control belongs to the original selected clip and project; it then restores the submitted settings and retrieves the latest review. Reopening Controls on that original clip also reconnects. Another clip cannot adopt a global “latest review.” Use Cancel in Controls to discard the current review or stop a running operation. This revised host reconnection still requires live verification.
 
-The helper captures project XML through the configured Share exchange, identifies the target and its Cutdown controller, records project/media state, and selects an audio-analysis route:
+The helper captures project XML through the configured Share exchange, identifies the target and its Silent Snip controller, records project/media state, and selects an audio-analysis route:
 
 - **Unprocessed clip:** decode the original source audio over the selected source interval.
-- **Processed clip:** the current source creates an isolated analysis project referencing the original media. It retains the target's audio processing, removes the passthrough Cutdown controller, and excludes neighboring timeline items. It imports that project and requests rendered audio plus XML in one Share exchange. Before using the audio, it verifies that the delivered XML matches the intended isolated project, including timing, media, and rendering effects, and binds Final Cut's newly assigned project UUID. It then returns to and rechecks the original project. The preceding XML-only verification Share was removed because the render already delivers the project XML. It does not silently substitute source audio when rendering or verification fails.
+- **Processed clip:** the current source creates an isolated analysis project referencing the original media. It retains the target's audio processing, removes the passthrough Silent Snip controller, and excludes neighboring timeline items. It imports that project and requests rendered audio plus XML in one Share exchange. Before using the audio, it verifies that the delivered XML matches the intended isolated project, including timing, media, and rendering effects, and binds Final Cut's newly assigned project UUID. It then returns to and rechecks the original project. The preceding XML-only verification Share was removed because the render already delivers the project XML. It does not silently substitute source audio when rendering or verification fails.
 
 Every Analyze first captures fresh project XML and checks source contents. When those checks, the selected occurrence, host session, and complete supported processing state match the process-local cache, it recalculates cuts from retained measurements using the new threshold, minimum silence, and padding. A cache hit skips decoding and the isolated render. Preset names, omitted settings, partial native parameter lists, and unknown effects are insufficient evidence and force the normal route. See [cache limits and timing reports](analysis-speed.md).
 
@@ -69,11 +69,11 @@ A processed Analyze cache miss requires three Share exchanges (original XML, iso
 
 ### Using other audio plugins
 
-Apply your Noise Gate, Compressor, EQ, Limiter, or third-party Audio Unit to the same audio-only clip as Cutdown Audio, then click Analyze. Cutdown measures Final Cut's processed output from the complete effect chain. Cutdown itself is passthrough, so its position in the chain does not select which other effects are analyzed. The order of the processing effects still matters and is preserved.
+Apply your Noise Gate, Compressor, EQ, Limiter, or third-party Audio Unit to the same audio-only clip as Silent Snip Audio, then click Analyze. Silent Snip measures Final Cut's processed output from the complete effect chain. Silent Snip itself is passthrough, so its position in the chain does not select which other effects are analyzed. The order of the processing effects still matters and is preserved.
 
-The rendered audio is a temporary analysis file, not replacement media. The edited project continues to reference your original source files and keeps the effects editable on each retained clip segment. Cutdown does not bake the effects into a new audio clip. The Share-delivered rendered media is cleaned up after analysis; an eligible cache retains one verified, bounded copy until eviction or helper shutdown; the analysis project is removed after verified use; any cleanup failure is reported as described above.
+The rendered audio is a temporary analysis file, not replacement media. The edited project continues to reference your original source files and keeps the effects editable on each retained clip segment. Silent Snip does not bake the effects into a new audio clip. The Share-delivered rendered media is cleaned up after analysis; an eligible cache retains one verified, bounded copy until eviction or helper shutdown; the analysis project is removed after verified use; any cleanup failure is reported as described above.
 
-A noise gate can make background noise qualify as silence; compression, makeup gain, or limiting can change what falls below the detection threshold. Set those effects first and analyze again after changing their settings, order, presets, or bypass state. Apply retains the effect entries and their settings on each editable audio segment; host re-export verification must pass before success is reported. If Final Cut drops or changes plugin state on import, Cutdown stops verification rather than reporting preserved effects.
+A noise gate can make background noise qualify as silence; compression, makeup gain, or limiting can change what falls below the detection threshold. Set those effects first and analyze again after changing their settings, order, presets, or bypass state. Apply retains the effect entries and their settings on each editable audio segment; host re-export verification must pass before success is reported. If Final Cut drops or changes plugin state on import, Silent Snip stops verification rather than reporting preserved effects.
 
 This is generic audio-effect handling, not certification of every installed plugin. Source-time keyframes are preserved with all surrounding curve points. Fades stay only on the original outer edges; a proposed cut intersecting a fade is unavailable rather than reshaping that fade. Empty/invalid animations and trimmed audio components still prevent Apply. Retimed clips, compound clips, external sidechain routing, and plugin behavior across new cut boundaries are not established by these compatibility tests. Linked-video cutting remains outside the current audio-only scope.
 
@@ -99,7 +99,7 @@ Use the checkbox beside each eligible range, or Select All / Select None, to cho
 
 Apply requires a valid review, at least one eligible included cut, unchanged submitted settings, and a plan that has not already been consumed. Changing timeline content, processing effects, or source media requires fresh analysis; Apply checks for stale project state before generating output.
 
-If **Go to Cut** detects a changed project, Cutdown discards the stale review and preview and requires Analyze again. A recoverable navigation error keeps the review. Failed or cancelled timecode entry attempts bounded cleanup only while Cutdown still owns the field, project, and keyboard focus.
+If **Go to Cut** detects a changed project, Silent Snip discards the stale review and preview and requires Analyze again. A recoverable navigation error keeps the review. Failed or cancelled timecode entry attempts bounded cleanup only while Silent Snip still owns the field, project, and keyboard focus.
 
 ## 6. Apply Cuts
 
@@ -145,10 +145,10 @@ After an import or verification failure, use **Retry Verification** in Controls.
 
 Controls disables Retry Verification while waiting for acknowledgment and resends a lost request safely. A later failed attempt permits another explicit retry. If another review prevents verification from starting, the helper explains that and releases the button. Use both matching builds from the [current cleanup update](cleanup-fixes.md).
 
-If Final Cut drops Cutdown settings during import, verification plans recovery for each affected imported segment, selects the exact occurrence, opens its controller, restores the saved values, and commits them using **Save Settings**. It then re-exports and verifies the actual settings. Each segment gets its own verified selection identity, including when multiple segments have the same name. Displayed/restored detection values preserve Float32 precision. A controller write alone does not count as success. Interrupted recovery is retryable; segments whose values already match are skipped. Settings recovery writes only to the verified replacement. **Restore Saved Settings…** remains available as a manual fallback if the host cannot expose or persist the controls.
+If Final Cut drops Silent Snip settings during import, verification plans recovery for each affected imported segment, selects the exact occurrence, opens its controller, restores the saved values, and commits them using **Save Settings**. It then re-exports and verifies the actual settings. Each segment gets its own verified selection identity, including when multiple segments have the same name. Displayed/restored detection values preserve Float32 precision. A controller write alone does not count as success. Interrupted recovery is retryable; segments whose values already match are skipped. Settings recovery writes only to the verified replacement. **Restore Saved Settings…** remains available as a manual fallback if the host cannot expose or persist the controls.
 
 ## 8. Verification boundary
 
-Historical evidence establishes editable XML cut structure, source interval preservation, and selected earlier button/native-edit flows. It also records Final Cut dropping Cutdown settings on XML import. These findings do not prove that the current isolated-render and automatic import-verification workflow has passed end to end in the installed build.
+Historical evidence establishes editable XML cut structure, source interval preservation, and selected earlier button/native-edit flows. It also records Final Cut dropping Silent Snip settings on XML import. These findings do not prove that the current isolated-render and automatic import-verification workflow has passed end to end in the installed build.
 
 Historical September 17 Analyze follow-up (superseded two-window design): after stopping stale helpers, the six-second generated fixture completed automatic processed-audio analysis, render/original verification, and temporary-project cleanup. Its recreated Controls view lost the review, prompting the now-removed helper-owned window. The new window passed focused tests and a subsequent live Analyze completed after restarting the helper to recognize the permission already granted. The helper window visibly showed one selected 1.933-second cut, with selection, preview, and Apply enabled. No permission setting or binary changed during that restart. No Apply was tested. Evidence and limitations: `build/AnalyzeVisibilityVerification/Notes.md`. Any future Final Cut integration test must use a small disposable project in this workspace's existing **Cutdown Integration.fcpbundle**, reference generated source media in place, and avoid copied, optimized, or proxy media.

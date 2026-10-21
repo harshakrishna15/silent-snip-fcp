@@ -20,7 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 @interface CutdownAudioUnit : AUAudioUnit
-// Private to Cutdown's custom view. The host-facing parameterTree is empty.
+// Private to Silent Snip's custom view. The host-facing parameterTree is empty.
 @property(nonatomic, readonly) AUParameterTree *analysisParameterTree;
 - (BOOL)setAnalysisSettings:(NSArray<NSNumber *> *)settings error:(NSError **)error;
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)description

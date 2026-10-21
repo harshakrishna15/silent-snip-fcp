@@ -235,7 +235,7 @@ public enum EditedProjectWriter {
             (node as? XMLElement)?.attribute(forName: "uid")?.stringValue?
                 .caseInsensitiveCompare(eventUID.uuidString) != .orderedSame
         })) else { throw EditedProjectWriterError.unsupported("the result must have a different event identity.") }
-        set(event, "name", replacement?.eventName ?? "Cutdown Results")
+        set(event, "name", replacement?.eventName ?? "Silent Snip Results")
         set(event, "uid", (replacement?.eventUID ?? eventUID).uuidString)
         event.addChild(project.copy() as! XMLNode)
         library.addChild(event)

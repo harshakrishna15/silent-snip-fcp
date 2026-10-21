@@ -341,7 +341,7 @@ final class ProjectAudioAnalysisTests: XCTestCase {
     func testNativeControllerMismatchRejectsBeforeOpeningDialogueAudio() async throws {
         let fixture = try fixture()
         let uid = AudioControllerSettings.effectUID
-        let effect = "<effect id=\"au\" name=\"Cutdown Audio\" uid=\"\(uid)\"/>"
+        let effect = "<effect id=\"au\" name=\"Silent Snip Audio\" uid=\"\(uid)\"/>"
         let filter = """
         <filter-audio ref="au"><data key="effectState">b3BhcXVl</data>
         <param name="Silence Threshold" key="4037165010" value="-40"/>

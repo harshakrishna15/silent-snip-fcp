@@ -8,7 +8,7 @@ September 18, 2026. Implemented and checked offline; the user is performing live
 
 Analyze captures fresh project XML and hashes source contents before checking a single process-local cache entry. A matching entry reuses audio measurements to recalculate threshold, minimum silence, and before/after padding. It creates a new review plan for the new request; it never reuses an old Apply authorization or cut selection.
 
-The key includes the project fingerprint and identity, selected occurrence, measurement window size, host process and launch time, and source content snapshot. Cutdown controller settings are excluded from the rendering fingerprint. Processing order, bypass, serialized settings, trim, timing, volume, fades, automation, and channel changes invalidate reuse. Source files changed without changing their size or timestamp also invalidate it. Apply retains its separate fresh-project and media checks.
+The key includes the project fingerprint and identity, selected occurrence, measurement window size, host process and launch time, and source content snapshot. Silent Snip controller settings are excluded from the rendering fingerprint. Processing order, bypass, serialized settings, trim, timing, volume, fades, automation, and channel changes invalidate reuse. Source files changed without changing their size or timestamp also invalidate it. Apply retains its separate fresh-project and media checks.
 
 Processed-audio reuse is deliberately narrow. Supported built-in volume/panning/channel/fade data and Apple's Noise Gate with serialized `effectState` can qualify. Preset-only state, missing effect state, partial native parameter lists, other effects, nested mixes, extra audio references, and retiming cannot qualify. These use the existing full Final Cut render workflow, which retains the complete supported effect chain; there is no source-audio fallback.
 
@@ -42,7 +42,7 @@ Offline verification: 358 full Release Swift tests pass (281 Mac, 77 Core); eigh
 Candidates are build artifacts; the installed bundles have not been replaced by this update. Xcode can discover audio candidates automatically. Quit Final Cut, then run from this workspace:
 
 ```sh
-pkill -x Cutdown
+pkill -x Silent Snip
 Scripts/build-helper.sh --release && Scripts/build-audio-plugin.sh && Scripts/register-local.sh
 ```
 
@@ -50,7 +50,7 @@ For build-only validation, `Scripts/build-helper.sh --stage --release` leaves th
 
 Use small disposable projects only in the existing workspace `Cutdown Integration.fcpbundle`, referencing generated source media in place without copied, optimized, or proxy media.
 
-1. Analyze an unprocessed clip, change only Cutdown detection settings, then Analyze again. Check fresh rows and a cache hit in the timing report.
+1. Analyze an unprocessed clip, change only Silent Snip detection settings, then Analyze again. Check fresh rows and a cache hit in the timing report.
 2. Change volume, trim, or other processing and Analyze again. Check that the cache misses and the displayed results match the changed audio.
 3. Use the preset-only gate and limiter chain. Confirm every Analyze rerenders and includes the effects; caching must not silently substitute original audio.
 4. Observe early rows during cleanup if Controls is visible. Apply must remain disabled until review is ready. Cancel must clear rows and prevent a late response from restoring them.

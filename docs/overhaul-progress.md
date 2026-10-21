@@ -7,7 +7,7 @@ Earlier entries describe the original development environment. Their installed/s
 ## September 23 live preview validation
 
 After the final helper rebuild, the user restored its macOS Device Control and
-Data Access permission and live-tested Cutdown in Final Cut. The user reports
+Data Access permission and live-tested Silent Snip in Final Cut. The user reports
 that the dotted guidelines now stay visible as expected while interacting with
 the timeline. The final source passed 68 focused Swift tests and all 18 Audio
 Unit Controls harness scenarios; local build products and signatures passed
@@ -17,7 +17,7 @@ flicker. Automatic timeline cuts remain unverified.
 ## September 23 click flicker follow-up
 
 A later live Analyze in `Cutdown Preview Scrub 0923` completed and produced
-two selected cuts (3.167 seconds total). Cutdown's separate transparent panel
+two selected cuts (3.167 seconds total). Silent Snip's separate transparent panel
 contained four rendered boundary lines. A temporary WindowServer probe placed
 that panel above the verified Final Cut project window and confirmed that its
 retained vector layers remained attached while selecting the other clip.
@@ -30,7 +30,7 @@ lost macOS Device Control and Data Access approval; the diagnostic evidence is
 retained under `~/Library/Application Support/Cutdown/Integration`.
 
 A later live retry found an intermittent false dialog blocker during Analyze.
-Final Cut's nonmodal Cutdown Controls sometimes appears as `AXDialog` while its
+Final Cut's nonmodal Silent Snip Controls sometimes appears as `AXDialog` while its
 child accessibility controls are temporarily unreadable. A gated diagnostic
 captured `modal=false` and missing review/status IDs during the failure.
 Capture and preview validation now treat an explicitly nonmodal window as
@@ -39,8 +39,8 @@ the helper, repeated Analyze attempts reached the macOS Device Control and
 Data Access permission message instead of the false dialog error.
 
 The effect-removal path was also too eager: two complete-looking Inspector
-reads without a Cutdown row, only 0.35 seconds apart, could permanently
-dismiss a valid preview. After observing the Cutdown row, removal now requires
+reads without a Silent Snip row, only 0.35 seconds apart, could permanently
+dismiss a valid preview. After observing the Silent Snip row, removal now requires
 at least three bounded absence reads over 2.5 seconds. If the row was never
 observed, the reader waits for five bounded absence reads over six seconds;
 this still detects deletion immediately after analysis. Short Inspector
@@ -49,14 +49,14 @@ line-persistence check remains blocked
 by the local helper's macOS Device Control and Data Access permission.
 
 Clicking around Final Cut exposed two remaining preview dismissal paths. The
-helper could classify Cutdown's own Controls window as a modal dialog, and the
+helper could classify Silent Snip's own Controls window as a modal dialog, and the
 preview hid after 2.5 seconds of temporary Accessibility read failures or
 immediately when a window snapshot could not be matched. Controls is now
-identified by its Cutdown accessibility IDs even when Final Cut reports it as
+identified by its Silent Snip accessibility IDs even when Final Cut reports it as
 modal. Temporary reads, open sheets/dialogs, and unmatched WindowServer
 snapshots retain the last verified drawing. A different project or analyzed
 clip outside the timeline viewport must remain verified for 2.5 seconds before
-the overlay hides. Confirmed Cutdown effect removal still dismisses it, as
+the overlay hides. Confirmed Silent Snip effect removal still dismisses it, as
 does Apply through the existing review lifecycle.
 
 WindowServer can omit an overlay fully covered by Final Cut's raised project
@@ -134,7 +134,7 @@ The 15 focused preview tests pass. The updated helper was built and installed.
 A live two-clip check was attempted only inside the workspace
 `Cutdown Integration.fcpbundle`, with source WAVs referenced in place. Final
 Cut quit during XML import, but the disposable project appeared after it
-reopened. The project and Cutdown Controls opened; Analyze then stopped at
+reopened. The project and Silent Snip Controls opened; Analyze then stopped at
 macOS Device Control and Data Access permission for the rebuilt helper.
 The on-screen scrub behavior therefore remains unverified in this run. The
 previous timeline was restored; no Apply or automatic timeline cuts were tested.
@@ -143,7 +143,7 @@ previous timeline was restored; no Apply or automatic timeline cuts were tested.
 
 Three recent Analyze attempts on an existing project in the integration library
 reached project capture, then stopped after about four seconds. The exported
-clip contains two direct Cutdown Audio effects, so the helper correctly refused
+clip contains two direct Silent Snip Audio effects, so the helper correctly refused
 to choose one. No measurement or timeline edit ran. The user can remove the
 extra instance in Final Cut’s Audio Inspector and Analyze again.
 
@@ -164,7 +164,7 @@ The compact Controls window was checked in Final Cut using the disposable ten-se
 The rebuilt Audio Unit opens, exposes the detection tooltips, shows the simplified
 More menu, and saves settings from its icon button. A live Analyze retry exposed
 an Accessibility mismatch that made the helper mistake Controls for an unrelated
-Final Cut dialog. Matching the window by its stable Cutdown accessibility IDs
+Final Cut dialog. Matching the window by its stable Silent Snip accessibility IDs
 fixes that regression: Analyze now passes the dialog check. Long status messages
 wrap within the window, including the full permission recovery instructions.
 
@@ -221,9 +221,9 @@ not yet verified. See [behavior, limits and live checks](preview-persistence.md)
 
 ## September 17 registration recovery
 
-After installation, the user reported that Cutdown disappeared from Final Cut.
+After installation, the user reported that Silent Snip disappeared from Final Cut.
 The installed bundle signatures pass, but both PlugInKit discovery and `auval -a`
-show no Cutdown extension. The candidate-cleanup code could abort on a failed
+show no Silent Snip extension. The candidate-cleanup code could abort on a failed
 removal before registering the installed copy. Cleanup now warns and continues
 to installation; actual registration failures remain fatal. The script also
 requires the installed extension path in PlugInKit discovery before reporting
@@ -232,7 +232,7 @@ build/registration tests pass, including failed cleanup, a failed add and a
 zero-exit add that never appears in discovery.
 
 At this update's handoff, registration restoration was pending Final Cut being
-closed. A subsequent September 18 read-only inspection shows Cutdown Audio in
+closed. A subsequent September 18 read-only inspection shows Silent Snip Audio in
 the Effects browser again. No Final Cut project was opened or modified by this
 repair. Logs are in `build/RegistrationRecovery/`.
 
@@ -353,7 +353,7 @@ No live tests or permission changes were performed. User-owned live testing
 remains pending after installation with the helper stopped.
 
 Import-completion follow-up: reproduced the user's post-import dialog failure on
-the disposable six-second Cutdown Import Completion 0917 fixture. Added bounded
+the disposable six-second Silent Snip Import Completion 0917 fixture. Added bounded
 import readiness, exact-file completed-warning acknowledgment with saved dialog
 evidence, and accurate persisted post-import failure status. All 52 focused tests
 passed and the helper is installed. The user is handling further live testing

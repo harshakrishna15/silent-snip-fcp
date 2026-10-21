@@ -72,7 +72,7 @@ fi
     def test_running_helper_blocks_before_build(self):
         result, preserved, _, built = self.run_build((0, 0))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Quit Cutdown", result.stderr)
+        self.assertIn("Quit Silent Snip", result.stderr)
         self.assertTrue(preserved)
         self.assertFalse(built)
 

@@ -19,8 +19,8 @@ enum FinalCutWindowPolicy {
         // AXDialog. Their child controls can temporarily be unavailable to AX.
         if modal == false { return false }
         // Final Cut can mark an Audio Unit editor as modal even though its
-        // verified Cutdown Controls content is safe to leave open during a
-        // review. Only an exact Cutdown window receives this exemption.
+        // verified Silent Snip Controls content is safe to leave open during a
+        // review. Only an exact Silent Snip window receives this exemption.
         if containsCutdownReview { return false }
         if modal == true { return true }
         return subrole == kAXDialogSubrole
@@ -72,7 +72,7 @@ enum FinalCutPreviewError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unavailable(let reason), .transient(let reason): return reason
-        case .effectRemoved: return "Cutdown effect removed"
+        case .effectRemoved: return "Silent Snip effect removed"
         }
     }
 }
@@ -107,9 +107,20 @@ struct FinalCutPreviewSurface {
 }
 
 enum FinalCutReviewInspector {
+    // Final Cut can retain the previous effect label in existing projects.
+    static func isControllerName(_ name: String?) -> Bool {
+        guard let name else { return false }
+        return ["Silent Snip Audio", "Cutdown Audio"].contains(name)
+    }
+
+    static func isControllerCheckbox(_ description: String?) -> Bool {
+        guard let description else { return false }
+        return ["silent snip audio check box", "cutdown audio check box"].contains(description.lowercased())
+    }
+
     static func controllerCount(in controls: [AccessibilityNode]) -> Int {
         controls.filter {
-            $0.role == kAXCheckBoxRole && $0.description?.lowercased() == "cutdown audio check box"
+            $0.role == kAXCheckBoxRole && isControllerCheckbox($0.description)
         }.count
     }
 
@@ -118,14 +129,14 @@ enum FinalCutReviewInspector {
     static func editorIndex(in controls: [AccessibilityNode]) -> Int? {
         let anchors = controls.indices.filter {
             controls[$0].role == kAXCheckBoxRole
-                && controls[$0].description?.lowercased() == "cutdown audio check box"
+                && isControllerCheckbox(controls[$0].description)
         }
         guard anchors.count == 1, let start = anchors.first else { return nil }
         let end = controls.indices.dropFirst(start + 1).first { controls[$0].role == kAXCheckBoxRole } ?? controls.count
         let group = Array(controls.indices[(start + 1)..<end])
         guard group.contains(where: { index in
             controls[index].role == kAXStaticTextRole
-                && (controls[index].value == "Cutdown Audio" || controls[index].title == "Cutdown Audio")
+                && (isControllerName(controls[index].value) || isControllerName(controls[index].title))
         }) else { return nil }
         let editors = group.filter {
             controls[$0].role == kAXButtonRole && controls[$0].description == "Show effect editor"

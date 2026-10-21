@@ -80,7 +80,7 @@ public enum AudioControllerSettings {
         Parameter(key: "252981911", name: "After Speech", range: 0...2, value: \.afterSpeechPadding)
     ]
 
-    /// A Share to Cutdown job obtains settings from the effect already saved in
+    /// A Share to Silent Snip job obtains settings from the effect already saved in
     /// the project. No helper-window defaults or a running AU instance are used.
     public static func read(projectData: Data, target: TimelineClip) throws -> AnalysisSettings {
         guard let settings = try readIfPresent(projectData: projectData, target: target) else {
@@ -95,7 +95,7 @@ public enum AudioControllerSettings {
         return try read(projectData: Data(contentsOf: url), target: target)
     }
 
-    /// Interactive analysis requires the known Cutdown AU on the exact target.
+    /// Interactive analysis requires the known Silent Snip AU on the exact target.
     /// Read-only verification may explicitly allow an absent controller; if an
     /// AU is present, every identity and settings check is still mandatory.
     @discardableResult public static func validate(
@@ -155,7 +155,7 @@ public enum AudioControllerSettings {
             allowOmittedPrivateSettings: true)
     }
 
-    /// nil means only that the verified target has no known Cutdown controller.
+    /// nil means only that the verified target has no known Silent Snip controller.
     /// A present but invalid, duplicate or disabled controller always throws.
     private static func readIfPresent(projectData: Data, target: TimelineClip, submittedPrivateSettings: AnalysisSettings? = nil) throws -> AnalysisSettings? {
         // Reuse the core parser's size, DTD, entity, nesting and timeline checks
@@ -365,17 +365,17 @@ public enum AudioControllerSettingsError: LocalizedError, Equatable {
         case .targetChanged:
             return "The selected audio-only clip changed. Select the exact clip and Analyze Again."
         case .missingController:
-            return "The selected audio-only clip does not carry Cutdown Audio. Select the clip with this effect, or apply Cutdown Audio to it, then Analyze Again."
+            return "The selected audio-only clip does not carry Silent Snip Audio. Select the clip with this effect, or apply Silent Snip Audio to it, then Analyze Again."
         case .ambiguousController:
-            return "Multiple Cutdown Audio effects on this clip. Remove the extra one in the Audio Inspector, then Analyze Again."
+            return "Multiple Silent Snip Audio effects on this clip. Remove the extra one in the Audio Inspector, then Analyze Again."
         case .disabledController:
-            return "The selected Cutdown Audio effect is disabled. Enable it and Analyze Again."
+            return "The selected Silent Snip Audio effect is disabled. Enable it and Analyze Again."
         case .unsupportedControllerLocation:
-            return "Cutdown Audio must be applied directly to the selected audio-only clip. Component-level effects are not supported yet."
+            return "Silent Snip Audio must be applied directly to the selected audio-only clip. Component-level effects are not supported yet."
         case .unavailableSettings:
-            return "Final Cut did not export a complete, supported set of saved Cutdown Audio controls. Finish updating all four controls, then Analyze Again."
+            return "Final Cut did not export a complete, supported set of saved Silent Snip Audio controls. Finish updating all four controls, then Analyze Again."
         case .invalidParameter(let name):
-            return "Final Cut exported an ambiguous, animated or invalid Cutdown Audio control: \(name). Restore a fixed value and Analyze Again."
+            return "Final Cut exported an ambiguous, animated or invalid Silent Snip Audio control: \(name). Restore a fixed value and Analyze Again."
         case .settingsMismatch(let names):
             return "Final Cut's current controls differ from the Analyze request: \(names.joined(separator: ", ")). Finish updating the effect, then Analyze Again."
         }

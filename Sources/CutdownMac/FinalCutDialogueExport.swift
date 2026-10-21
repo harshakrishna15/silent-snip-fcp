@@ -145,9 +145,9 @@ import Foundation
         case unverifiedControl(String), unverifiedDialogueOutput
         public var errorDescription: String? {
             switch self {
-            case .invalidWorkspace: return "Cutdown could not create a private temporary export directory."
-            case .unverifiedControl(let name): return "Cutdown could not verify Final Cut's \(name) export control."
-            case .unverifiedDialogueOutput: return "Cutdown could not verify one WAV output containing All Dialogue. No audio mix was assumed."
+            case .invalidWorkspace: return "Silent Snip could not create a private temporary export directory."
+            case .unverifiedControl(let name): return "Silent Snip could not verify Final Cut's \(name) export control."
+            case .unverifiedDialogueOutput: return "Silent Snip could not verify one WAV output containing All Dialogue. No audio mix was assumed."
             }
         }
     }

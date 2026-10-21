@@ -39,7 +39,7 @@ final class AudioPluginCompatibilityTests: XCTestCase {
         let processors = [filter("Noise Gate"), filter("Limiter"), filter("Third Party")]
         for index in 0...processors.count {
             var filters = processors
-            filters.insert("<filter-audio ref=\"controller\" name=\"Cutdown Audio\"/>", at: index)
+            filters.insert("<filter-audio ref=\"controller\" name=\"Silent Snip Audio\"/>", at: index)
             let original = fixture(filters: filters.joined())
             let isolation = try IsolatedAudioProject.make(projectData: original, selection: selection)
             let isolatedXML = try XMLDocument(data: isolation.data)
@@ -137,7 +137,7 @@ final class AudioPluginCompatibilityTests: XCTestCase {
     }
 
     private var stack: String {
-        plugins.map(filter).joined() + "<filter-audio ref=\"controller\" name=\"Cutdown Audio\"/>"
+        plugins.map(filter).joined() + "<filter-audio ref=\"controller\" name=\"Silent Snip Audio\"/>"
     }
 
     private func fixture(filters: String, neighbor: Bool = false, componentEffect: Bool = false) -> Data {

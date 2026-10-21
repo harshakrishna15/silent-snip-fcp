@@ -44,7 +44,7 @@ public struct AnalyzeRequest: Equatable, Sendable {
 
     public enum RequestError: LocalizedError {
         case invalidURL
-        public var errorDescription: String? { "The Cutdown analysis request is invalid. Analyze again from the effect’s Inspector controls." }
+        public var errorDescription: String? { "The Silent Snip analysis request is invalid. Analyze again from the effect’s Inspector controls." }
     }
 }
 

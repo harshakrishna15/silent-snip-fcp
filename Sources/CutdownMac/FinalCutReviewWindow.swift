@@ -33,24 +33,24 @@ extension FinalCutAXSession {
         guard !windows.isEmpty else { return }
         guard windows.count == 1, let window = windows.first,
               let title = string(window, kAXTitleAttribute), !title.isEmpty else {
-            throw FinalCutCaptureError.unavailable("Close extra Cutdown review windows, then Analyze again from the intended clip.")
+            throw FinalCutCaptureError.unavailable("Close extra Silent Snip review windows, then Analyze again from the intended clip.")
         }
         let selected = try? selectionSnapshot()
         if let selected, selected.clipName != title {
-            throw FinalCutCaptureError.invalidSelection("The open Cutdown review belongs to a different clip.")
+            throw FinalCutCaptureError.invalidSelection("The open Silent Snip review belongs to a different clip.")
         }
         let directCloseButtons = children(window).filter {
             string($0, kAXRoleAttribute) == kAXButtonRole && string($0, kAXSubroleAttribute) == kAXCloseButtonSubrole
         }
         guard let close = Self.elementAttribute(window, kAXCloseButtonAttribute)
             ?? (directCloseButtons.count == 1 ? directCloseButtons.first : nil) else {
-            throw FinalCutCaptureError.unavailable("The Cutdown effect window must close temporarily for Final Cut to export. Close it, then retry analysis.")
+            throw FinalCutCaptureError.unavailable("The Silent Snip effect window must close temporarily for Final Cut to export. Close it, then retry analysis.")
         }
         // Save the identity before the close call: an AX error can occur after
         // the window has already closed, in which case recovery still applies.
         suspendedReview = SuspendedReview(title: title, selection: selected)
         try press(close)
-        try await waitUntil(timeout: 3, context: "the Cutdown review window to close for export") {
+        try await waitUntil(timeout: 3, context: "the Silent Snip review window to close for export") {
             !(self.attribute(self.root, kAXWindowsAttribute) as? [AXUIElement] ?? []).contains { CFEqual($0, window) }
         }
     }
@@ -70,7 +70,7 @@ extension FinalCutAXSession {
     func restoreReviewWindowIfSafe() async -> String? {
         guard let expected = suspendedReview?.selection ?? activeReviewSelection else { return nil }
         let suspended = suspendedReview ?? SuspendedReview(title: expected.clipName, selection: expected)
-        let guidance = "To reopen the results, close any unfinished export dialog, select ‘\(suspended.title)’ in ‘\(projectName)’, and click Cutdown Audio’s Show effect editor button."
+        let guidance = "To reopen the results, close any unfinished export dialog, select ‘\(suspended.title)’ in ‘\(projectName)’, and click Silent Snip Audio’s Show effect editor button."
         do {
             try assertCurrentProject()
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier else {
@@ -102,7 +102,7 @@ extension FinalCutAXSession {
             try assertCurrentProject()
             guard try selectionSnapshot() == expected else { return guidance }
             try press(controls[editor])
-            try await waitUntil(timeout: 3, context: "the Cutdown review window to reopen") {
+            try await waitUntil(timeout: 3, context: "the Silent Snip review window to reopen") {
                 let opened = self.cutdownReviewWindows()
                 return opened.count == 1 && self.string(opened[0], kAXTitleAttribute) == suspended.title
             }
@@ -114,7 +114,7 @@ extension FinalCutAXSession {
     }
 
     /// A UUID alone does not establish ownership. Require its native control
-    /// inside the sole Cutdown view on the pinned project and selected clip.
+    /// inside the sole Silent Snip view on the pinned project and selected clip.
     func canReconnectReview(view: UUID) -> Bool {
         guard let expected = activeReviewSelection,
               (try? assertCurrentProject()) != nil, currentSheet() == nil,

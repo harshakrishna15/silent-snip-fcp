@@ -3,11 +3,11 @@ import XCTest
 
 final class FinalCutImportCompletionTests: XCTestCase {
     func testFirstImportAllowsEmptyTimelineButRejectsOtherProjects() {
-        XCTAssertTrue(FinalCutImportTimeline.permits(nil, original: "Original", imported: "Cutdown Analysis 1"))
-        XCTAssertTrue(FinalCutImportTimeline.permits("", original: "Original", imported: "Cutdown Analysis 1"))
-        XCTAssertTrue(FinalCutImportTimeline.permits("Original", original: "Original", imported: "Cutdown Analysis 1"))
-        XCTAssertTrue(FinalCutImportTimeline.permits("Cutdown Analysis 1", original: "Original", imported: "Cutdown Analysis 1"))
-        XCTAssertFalse(FinalCutImportTimeline.permits("Another project", original: "Original", imported: "Cutdown Analysis 1"))
+        XCTAssertTrue(FinalCutImportTimeline.permits(nil, original: "Original", imported: "Silent Snip Analysis 1"))
+        XCTAssertTrue(FinalCutImportTimeline.permits("", original: "Original", imported: "Silent Snip Analysis 1"))
+        XCTAssertTrue(FinalCutImportTimeline.permits("Original", original: "Original", imported: "Silent Snip Analysis 1"))
+        XCTAssertTrue(FinalCutImportTimeline.permits("Silent Snip Analysis 1", original: "Original", imported: "Silent Snip Analysis 1"))
+        XCTAssertFalse(FinalCutImportTimeline.permits("Another project", original: "Original", imported: "Silent Snip Analysis 1"))
     }
 
     func testHiddenBrowserCanBeRevealedBeforeTheImportedProjectAppears() {

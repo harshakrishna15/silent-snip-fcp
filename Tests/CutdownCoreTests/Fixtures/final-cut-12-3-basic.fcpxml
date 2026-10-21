@@ -25,8 +25,8 @@
         <format id="r3" frameDuration="512/15360s" width="640" height="360" colorSpace="6-1-6 (Rec. 601 (NTSC))"/>
     </resources>
     <library location="file:///fixtures/Cutdown%20Integration.fcpbundle/">
-        <event name="Cutdown Integration Fixtures" uid="22222222-2222-4222-8222-222222222222">
-            <project name="Cutdown Basic" uid="33333333-3333-4333-8333-333333333333">
+        <event name="Silent Snip Integration Fixtures" uid="22222222-2222-4222-8222-222222222222">
+            <project name="Silent Snip Basic" uid="33333333-3333-4333-8333-333333333333">
                 <sequence format="r1" duration="10s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
                     <spine>
                         <asset-clip ref="r2" offset="0s" name="Recording" duration="10s" tcFormat="NDF" audioRole="dialogue">

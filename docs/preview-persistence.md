@@ -21,7 +21,7 @@ occurrence is the sole selection before and after reading an unchanged list of
 Inspector children. Missing data, collapsed sections, and partial/offscreen
 effect lists are unknown, not evidence of deletion. Confirmed absence requires
 either visible native section headers bounding the effect list or previously
-observed visible headers on both sides of Cutdown with unchanged scrolling.
+observed visible headers on both sides of Silent Snip with unchanged scrolling.
 Two qualifying samples at least 0.35 seconds apart dismiss the preview and stop
 its observer and timer. The same old review cannot revive it after Undo or
 re-adding the effect; a new Analyze creates a fresh session.
@@ -40,23 +40,23 @@ The signed helper candidate is `build/Candidate/Cutdown.app`; build evidence is
 `build/PreviewPersistence/helper-stage.log`. The installed helper was not replaced.
 
 No live analysis, effect deletion or Apply test was performed. A read-only
-inspection found Cutdown Audio listed in Final Cut's Effects browser again.
+inspection found Silent Snip Audio listed in Final Cut's Effects browser again.
 All live tests remain with the user, using disposable projects in the existing
 workspace `Cutdown Integration.fcpbundle` and generated media referenced in
 place without copying, optimized media or proxies.
 
-With Final Cut and Cutdown closed, install the helper and refresh registration:
+With Final Cut and Silent Snip closed, install the helper and refresh registration:
 
 ```sh
 # Run from the repository root.
-pkill -x Cutdown
+pkill -x Silent Snip
 Scripts/build-helper.sh && Scripts/register-local.sh
 ```
 
 Analyze, then click around the timeline, other clips, Controls and effect
 windows; boundaries should persist on the analyzed clip while its geometry is
 available. Scroll/zoom and confirm their positions follow the clip. Delete
-Cutdown in the Audio Inspector and confirm the lines disappear and stay gone
+Silent Snip in the Audio Inspector and confirm the lines disappear and stay gone
 after clicking elsewhere or undoing removal. Repeat with Noise Gate and Limiter
-above/below Cutdown. Reanalyze after restoring Cutdown. Modal dialogs/project
+above/below Silent Snip. Reanalyze after restoring Silent Snip. Modal dialogs/project
 switches and preview cancellation should still hide the overlay.

@@ -5,7 +5,7 @@ import XCTest
 
 final class AudioControllerSettingsTests: XCTestCase {
     func testExplicitWindowRequestSuppliesOnlyCompletelyOmittedPrivateSettings() throws {
-        let bare = try fixture(filter: "<filter-audio ref=\"au\" name=\"Cutdown Audio\"/>")
+        let bare = try fixture(filter: "<filter-audio ref=\"au\" name=\"Silent Snip Audio\"/>")
         XCTAssertThrowsError(try AudioControllerSettings.validate(projectData: bare.data, target: bare.target, requested: requested))
         XCTAssertTrue(try AudioControllerSettings.validate(projectData: bare.data, target: bare.target,
             requested: requested, allowOmittedPrivateSettings: true))
@@ -122,7 +122,7 @@ final class AudioControllerSettingsTests: XCTestCase {
     }
 
     func testNativeInheritedSettingsWithOnlyThresholdPublished() throws {
-        // Captured from a Cutdown effect instance in FCP 12.3.
+        // Captured from a Silent Snip effect instance in FCP 12.3.
         // This preserves the native archive independently of our test encoder.
         let archive = "YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVtlZmZlY3RTdGF0ZYABrQsMHR4fICEiIyQlJidVJG51bGzTDQ4PEBYcV05TLmtleXNaTlMub2JqZWN0c1YkY2xhc3OlERITFBWAAoADgASABYAGpRcYGRobgAeACIAJgAqAC4AMXG1hbnVmYWN0dXJlclRkYXRhVHR5cGVXc3VidHlwZVd2ZXJzaW9uEkN0ZG5PEGMAAAAACQAAAHQAaAByAGUAcwBoAG8AbABkAAAA0MEAAAcAAABtAGkAbgBpAG0AdQBtAAAAQD8AAAYAAABiAGUAZgBvAHIAZQAAAAA+AAAAAAUAAABhAGYAdABlAHIAAACAPv8SYXVmeBJjdGRuEAHSKCkqK1okY2xhc3NuYW1lWCRjbGFzc2VzXxATTlNNdXRhYmxlRGljdGlvbmFyeaMqLC1cTlNEaWN0aW9uYXJ5WE5TT2JqZWN0AAgAEQAaACQAKQAyADcASQBMAFgAWgBoAG4AdQB9AIgAjwCVAJcAmQCbAJ0AnwClAKcAqQCrAK0ArwCxAL4AwwDIANAA2ADdAUMBSAFNAU8BVAFfAWgBfgGCAY8AAAAAAAACAQAAAAAAAAAuAAAAAAAAAAAAAAAAAAABmA=="
         let fixture = try fixture(filter: "<filter-audio ref=\"au\"><data key=\"effectState\">\(archive)</data><param name=\"Silence Threshold\" key=\"4037165010\" value=\"-26\"/></filter-audio>")
@@ -373,14 +373,14 @@ final class AudioControllerSettingsTests: XCTestCase {
         return "<data key=\"effectState\">\(archiver.encodedData.base64EncodedString())</data>"
     }
     private func filter(values: [Double]? = nil) -> String {
-        "<filter-audio ref=\"au\" name=\"Cutdown Audio\"><data key=\"effectState\">stale opaque state</data>\(parameters(values: values))</filter-audio>"
+        "<filter-audio ref=\"au\" name=\"Silent Snip Audio\"><data key=\"effectState\">stale opaque state</data>\(parameters(values: values))</filter-audio>"
     }
     private func fixture(filter: String, second: String? = nil, uid: String = AudioControllerSettings.effectUID) throws -> (data: Data, target: TimelineClip) {
         let secondClip = second.map { "<asset-clip ref=\"a\" name=\"Same source\" offset=\"3s\" start=\"1s\" duration=\"3s\" audioRole=\"dialogue\">\($0)</asset-clip>" } ?? ""
         let data = Data("""
         <fcpxml version="1.14"><resources>
         <format id="f" frameDuration="1/30s"/><asset id="a" start="0s" duration="10s" hasAudio="1"><media-rep kind="original-media" src="file:///Cutdown-Test-Source.wav"/></asset>
-        <effect id="au" name="Cutdown Audio" uid="\(uid)"/></resources>
+        <effect id="au" name="Silent Snip Audio" uid="\(uid)"/></resources>
         <library><event><project name="AU settings" uid="settings-project"><sequence format="f" duration="\(second == nil ? 3 : 6)s" tcStart="0s">
         <spine><asset-clip ref="a" name="Same source" offset="0s" start="1s" duration="3s" audioRole="dialogue">\(filter)</asset-clip>\(secondClip)</spine>
         </sequence></project></event></library></fcpxml>

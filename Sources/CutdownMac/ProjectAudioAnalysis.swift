@@ -185,7 +185,7 @@ public enum ProjectAudioAnalysis {
         let target = try document.selectedTarget(selection)
         // The app verifies a required controller before driving Final Cut's
         // export. The read-only verifier also accepts audio-only fixtures with
-        // no controller, but must validate any Cutdown AU that is present.
+        // no controller, but must validate any Silent Snip AU that is present.
         if renderContext.allowOmittedPrivateSettings {
             try AudioControllerSettings.validateInteractive(projectData: projectData, target: target, requested: settings)
         } else {

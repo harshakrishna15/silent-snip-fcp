@@ -6,7 +6,7 @@ September 17, 2026. Live Final Cut testing remains with the user.
 
 Registration follow-up: candidate cleanup now continues if an old registration
 cannot be removed and verifies discovery of the installed extension before
-reporting success. The user reported Cutdown missing after installation; see
+reporting success. The user reported Silent Snip missing after installation; see
 the current [registration recovery status](overhaul-progress.md).
 
 The reported Controls screenshot had no review rows and said the helper was not
@@ -65,13 +65,13 @@ Quit Final Cut Pro, then run:
 
 ```sh
 # Run from the repository root.
-pkill -x Cutdown
+pkill -x Silent Snip
 Scripts/build-helper.sh && Scripts/build-audio-plugin.sh && Scripts/register-local.sh
 ```
 
 Open the existing workspace **Cutdown Integration.fcpbundle** and use a small
 disposable project referencing generated media in place, with no copying,
-optimized media or proxies. Set Noise Gate and Limiter, open Cutdown Controls,
+optimized media or proxies. Set Noise Gate and Limiter, open Silent Snip Controls,
 then Analyze. Once analysis completes, check that the cut list appears and
 **Show Cut Preview** is enabled and checked; dotted boundaries require detected,
 included cuts. Follow the [single-window live check](single-window-effects.md)

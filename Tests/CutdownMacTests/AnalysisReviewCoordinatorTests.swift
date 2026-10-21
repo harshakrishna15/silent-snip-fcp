@@ -559,7 +559,7 @@ import XCTest
         let rejected = try XCTUnwrap(responses.last)
         XCTAssertEqual(rejected.request, second.id)
         XCTAssertEqual(rejected.state, "failed")
-        XCTAssertTrue(rejected.message.contains("Another Cutdown analysis is running"))
+        XCTAssertTrue(rejected.message.contains("Another Silent Snip analysis is running"))
         XCTAssertEqual(calls, 1)
 
         gate.finish(fixture.result)

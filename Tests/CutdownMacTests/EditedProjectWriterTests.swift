@@ -49,14 +49,14 @@ final class EditedProjectWriterTests: XCTestCase {
         XCTAssertEqual(result.report.resultProjectDuration, RationalTime(73, 10))
         XCTAssertEqual(generated.projectUID, projectUID.uuidString)
         XCTAssertEqual(generated.projectName, "Edited & Reviewed")
-        XCTAssertEqual(try TimelineParser.parse(data: before).projectName, "Cutdown Audio Native")
+        XCTAssertEqual(try TimelineParser.parse(data: before).projectName, "Silent Snip Audio Native")
         let source = try XMLDocument(data: before)
         let output = try XMLDocument(data: result.xmlData)
         XCTAssertEqual(try text(source, "/fcpxml/resources/asset/media-rep/bookmark"),
                        try text(output, "/fcpxml/resources/asset/media-rep/bookmark"))
         XCTAssertEqual(try output.nodes(forXPath: "//project").count, 1)
         XCTAssertEqual(try output.nodes(forXPath: "//event").count, 1)
-        XCTAssertEqual(try text(output, "//event/@name"), "Cutdown Results")
+        XCTAssertEqual(try text(output, "//event/@name"), "Silent Snip Results")
         XCTAssertEqual(try text(output, "//event/@uid"), eventUID.uuidString)
         XCTAssertTrue(try output.nodes(forXPath: "//project/@modDate").isEmpty)
     }

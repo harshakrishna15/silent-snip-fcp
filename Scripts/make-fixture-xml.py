@@ -19,7 +19,7 @@ def make_project(folder, name, *, context=False, repeated=False):
         attrs = dict(id=identifier, name=filename, start="0s", duration=duration, hasAudio="1", audioSources="1", audioChannels=channels, audioRate="48000")
         asset = ET.SubElement(resources, "asset", attrs)
         ET.SubElement(asset, "media-rep", kind="original-media", src=(folder / filename).as_uri())
-    event = ET.SubElement(root, "event", name="Cutdown Integration Fixtures")
+    event = ET.SubElement(root, "event", name="Silent Snip Integration Fixtures")
     project = ET.SubElement(event, "project", name=name)
     sequence = ET.SubElement(project, "sequence", format="r1", duration="16s" if repeated else "10s", tcStart="0s", tcFormat="NDF", audioLayout="stereo", audioRate="48k")
     spine = ET.SubElement(sequence, "spine")
@@ -49,17 +49,17 @@ def main():
     args = parser.parse_args()
     folder = args.output_dir.resolve()
     folder.mkdir(parents=True, exist_ok=True)
-    make_project(folder, "Cutdown Audio Only Basic")
-    make_project(folder, "Cutdown Audio Only Trimmed Repeated", repeated=True)
-    make_project(folder, "Cutdown Audio Only Dialogue Context", context=True)
+    make_project(folder, "Silent Snip Audio Only Basic")
+    make_project(folder, "Silent Snip Audio Only Trimmed Repeated", repeated=True)
+    make_project(folder, "Silent Snip Audio Only Dialogue Context", context=True)
     expectations = {
         "settings": {"thresholdDBFS": -40, "minimumSilenceDuration": 0.5, "beforeSpeechPadding": 0.1, "afterSpeechPadding": 0.1},
         "timeUnit": "seconds from the beginning of the project; end-exclusive intervals",
         "projects": [
-            {"name": "Cutdown Audio Only Basic", "targetRange": [0, 10], "sourceRange": [0, 10], "expectedCuts": [[2.1, 3.4], [5.1, 6.9]], "remainingTargetDuration": 6.9, "userMarkerBeforeCuts": 4},
-            {"name": "Cutdown Audio Only Trimmed Repeated", "targetRange": [0, 8], "sourceRange": [1, 9], "expectedCuts": [[1.1, 2.4], [4.1, 5.9]], "remainingTargetDuration": 4.9, "userMarkerBeforeCuts": 3},
-            {"name": "Cutdown Audio Only Trimmed Repeated", "targetRange": [8, 16], "sourceRange": [1, 9], "expectedCuts": [[9.1, 10.4], [12.1, 13.9]], "remainingTargetDuration": 4.9, "userMarkerBeforeCuts": 3},
-            {"name": "Cutdown Audio Only Dialogue Context", "targetRange": [0, 10], "sourceRange": [0, 10], "expectedCuts": [[5.1, 6.9]], "remainingTargetDuration": 8.2, "userMarkerBeforeCuts": 4},
+            {"name": "Silent Snip Audio Only Basic", "targetRange": [0, 10], "sourceRange": [0, 10], "expectedCuts": [[2.1, 3.4], [5.1, 6.9]], "remainingTargetDuration": 6.9, "userMarkerBeforeCuts": 4},
+            {"name": "Silent Snip Audio Only Trimmed Repeated", "targetRange": [0, 8], "sourceRange": [1, 9], "expectedCuts": [[1.1, 2.4], [4.1, 5.9]], "remainingTargetDuration": 4.9, "userMarkerBeforeCuts": 3},
+            {"name": "Silent Snip Audio Only Trimmed Repeated", "targetRange": [8, 16], "sourceRange": [1, 9], "expectedCuts": [[9.1, 10.4], [12.1, 13.9]], "remainingTargetDuration": 4.9, "userMarkerBeforeCuts": 3},
+            {"name": "Silent Snip Audio Only Dialogue Context", "targetRange": [0, 10], "sourceRange": [0, 10], "expectedCuts": [[5.1, 6.9]], "remainingTargetDuration": 8.2, "userMarkerBeforeCuts": 4},
         ],
         "notes": [
             "Each expectation starts from a fresh, unmodified project.",

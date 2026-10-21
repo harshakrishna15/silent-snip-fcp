@@ -11,7 +11,9 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>Silent Snip Audio</string>
+	<key>CFBundleDisplayName</key>
+	<string>Silent Snip Audio</string>
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
@@ -32,9 +34,9 @@
 			<array>
 				<dict>
 					<key>name</key>
-					<string>Cutdown: Cutdown Audio</string>
+					<string>Silent Snip: Silent Snip Audio</string>
 					<key>description</key>
-					<string>Cutdown Audio</string>
+					<string>Silent Snip Audio</string>
 					<key>manufacturer</key>
 					<string>Ctdn</string>
 					<key>subtype</key>

@@ -23,10 +23,10 @@ final class XMLProjectApplyTests: XCTestCase {
         Data("""
         <fcpxml version="1.11"><resources><format id="f" frameDuration="1/30s"/>
         <asset id="a" name="Voice" start="0s" duration="10s" hasAudio="1"><media-rep kind="original-media" src="file:///tmp/voice.wav"/></asset>
-        <effect id="e" name="Cutdown Audio" uid="\(AudioControllerSettings.effectUID)"/>
+        <effect id="e" name="Silent Snip Audio" uid="\(AudioControllerSettings.effectUID)"/>
         </resources><library location="\(location ?? library.absoluteString)"><event name="Fixture" uid="original-event"><project name="Original" uid="original-project">
         <sequence format="f" duration="10s" tcStart="0s"><spine>
-        <asset-clip ref="a" name="Voice" offset="0s" start="0s" duration="10s" audioRole="dialogue"><filter-audio ref="e" name="Cutdown Audio"/></asset-clip>
+        <asset-clip ref="a" name="Voice" offset="0s" start="0s" duration="10s" audioRole="dialogue"><filter-audio ref="e" name="Silent Snip Audio"/></asset-clip>
         </spine></sequence></project></event></library></fcpxml>
         """.utf8)
     }

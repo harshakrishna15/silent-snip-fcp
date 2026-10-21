@@ -29,7 +29,7 @@ removed, cancel or reanalyze; Apply still checks a fresh project baseline.
 
 Processed audio continues through Final Cut's complete effect-chain render,
 with no source-audio fallback. Regression coverage exercises gate, limiter and
-opaque third-party effects with Cutdown at every stack position, verified
+opaque third-party effects with Silent Snip at every stack position, verified
 isolation and editable output segments. Existing tests cover component effects,
 bypass, preset/parameter/opaque-state preservation, processing changes that
 invalidate reviews, and generated gated audio. These are offline contracts,
@@ -37,7 +37,7 @@ not vendor DSP certification or proof of a live Final Cut round trip.
 
 ## Installation and live check
 
-Install both matching builds, with Final Cut and Cutdown closed:
+Install both matching builds, with Final Cut and Silent Snip closed:
 
 ```sh
 # Run from the repository root.
@@ -48,11 +48,11 @@ Use only a small disposable project in this workspace's existing
 **Cutdown Integration.fcpbundle**. Reference generated source media in place;
 do not copy, optimize or proxy fixture media.
 
-1. Put Noise Gate, Limiter and Cutdown Audio on the same audio-only clip. Set the
-   processing first. Open Cutdown Controls and Analyze.
+1. Put Noise Gate, Limiter and Silent Snip Audio on the same audio-only clip. Set the
+   processing first. Open Silent Snip Controls and Analyze.
 2. Confirm only Controls appears and, after rendering returns to the original
    project, it displays the completed review. If Final Cut does not restore it,
-   select the original clip and reopen its Cutdown Controls.
+   select the original clip and reopen its Silent Snip Controls.
 3. With eligible pauses selected and Show Cut Preview enabled, confirm green
    START and orange END dotted/dashed lines. Open a nonmodal effect editor or
    scroll/collapse the Inspector; uncovered lines should remain visible.

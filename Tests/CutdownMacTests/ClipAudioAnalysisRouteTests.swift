@@ -8,7 +8,7 @@ final class ClipAudioAnalysisRouteTests: XCTestCase {
 
     func testOnlyUnprocessedClipUsesSourceAudio() throws {
         for children in ["", "<marker start=\"1s\" value=\"Note\"/>",
-                         "<filter-audio ref=\"controller\" name=\"Cutdown Audio\"/>"] {
+                         "<filter-audio ref=\"controller\" name=\"Silent Snip Audio\"/>"] {
             XCTAssertEqual(try ClipAudioAnalysisRoute.resolve(projectData: xml(children), selection: selection), .source)
         }
         for children in [
@@ -17,7 +17,7 @@ final class ClipAudioAnalysisRouteTests: XCTestCase {
             "<adjust-panner mode=\"stereo\" amount=\"50\"/>",
             "<filter-audio ref=\"limiter\"/>",
             "<filter-audio ref=\"thirdParty\"><data key=\"effectState\">opaque</data></filter-audio>",
-            "<filter-audio ref=\"limiter\" name=\"Cutdown Audio\"/>",
+            "<filter-audio ref=\"limiter\" name=\"Silent Snip Audio\"/>",
             "<audio-channel-source srcCh=\"1\" role=\"dialogue\"/>",
             "<adjust-loudness amount=\"50\"/>",
             "<filter-audio ref=\"controller\"/><filter-audio ref=\"limiter\"/>"

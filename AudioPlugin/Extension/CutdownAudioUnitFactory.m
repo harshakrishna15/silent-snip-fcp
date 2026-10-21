@@ -114,7 +114,7 @@ static BOOL booleanValue(id value) {
         [content.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:16],
         [content.bottomAnchor constraintLessThanOrEqualToAnchor:self.view.bottomAnchor constant:-16]
     ]];
-    NSTextField *title = label(@"Cutdown Audio", YES);
+    NSTextField *title = label(@"Silent Snip Audio", YES);
     title.font = [NSFont boldSystemFontOfSize:17];
     title.toolTip = @"Analyze an audio clip, review the proposed cuts, then apply them.";
     self.moreButton = [NSButton buttonWithTitle:@"" target:self action:@selector(showMoreActions:)];
@@ -172,7 +172,7 @@ static BOOL booleanValue(id value) {
     self.moreButton.identifier = [@"cutdown.review.reconnect." stringByAppendingString:self.viewID];
     self.saveButton.toolTip = @"Save the detection values to the selected clip without starting analysis.";
     NSTextField *detectionLabel = label(@"Detection", YES);
-    detectionLabel.toolTip = @"Adjust how Cutdown finds quiet passages. Analyze to preview the result.";
+    detectionLabel.toolTip = @"Adjust how Silent Snip finds quiet passages. Analyze to preview the result.";
     NSStackView *settingsHeader = horizontalRow(@[detectionLabel, flexibleSpace(), self.saveButton]);
     [content addArrangedSubview:settingsHeader];
     [settingsHeader.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
@@ -469,12 +469,12 @@ static BOOL booleanValue(id value) {
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.canChooseDirectories = NO; panel.allowsMultipleSelection = NO;
     panel.allowedContentTypes = @[UTTypeJSON];
-    panel.message = @"Choose Analysis-Settings.json from the Cutdown result folder.";
+    panel.message = @"Choose Analysis-Settings.json from the Silent Snip result folder.";
     [panel beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse result) {
         if (result != NSModalResponseOK) return;
         NSNumber *size = nil; [panel.URL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
         NSData *data = size && size.unsignedLongLongValue <= 16384 ? [NSData dataWithContentsOfURL:panel.URL] : nil;
-        if (!data || ![self restoreSettingsData:data]) [self setStatusMessage:@"That file does not contain four valid Cutdown detection settings."];
+        if (!data || ![self restoreSettingsData:data]) [self setStatusMessage:@"That file does not contain four valid Silent Snip detection settings."];
     }];
 }
 
@@ -512,7 +512,7 @@ static BOOL booleanValue(id value) {
     self.emptyLabel.stringValue = @"Detected cuts will appear here after analysis.";
     self.connection.pendingSelection = nil; self.connection.pendingRetry = nil; self.connection.pendingPreview = nil; self.canChangeSelection = NO;
     self.summaryLabel.stringValue = @"Waiting for analysis. No cuts have been applied.";
-    [self setStatusMessage:@"Connecting to Cutdown…"];
+    [self setStatusMessage:@"Connecting to Silent Snip…"];
     self.connection.awaitingResponse = YES; self.connection.lastResponse = NSDate.date;
     self.analyzeButton.enabled = NO;
     [self updatePrimaryAction];
@@ -529,7 +529,7 @@ static BOOL booleanValue(id value) {
         self.analyzeButton.enabled = YES; self.outputMode.enabled = YES;
         [self updatePrimaryAction];
         for (NSTextField *field in self.fields) field.enabled = YES;
-        [self setStatusMessage:@"Cutdown could not open its background helper. Check the local installation, then Analyze again."];
+        [self setStatusMessage:@"Silent Snip could not open its background helper. Check the local installation, then Analyze again."];
         return;
     }
     [self.audioUnit rememberSettingsForRequest:request error:nil];
@@ -671,7 +671,7 @@ static BOOL booleanValue(id value) {
         [self setStatusMessage:@"Connecting to the saved result…"];
         if (![self openAnalysisURL:url.URL]) {
             self.verificationPending = nil;
-            [self setStatusMessage:@"Cutdown could not open its background helper."];
+            [self setStatusMessage:@"Silent Snip could not open its background helper."];
             [self updatePrimaryAction];
         }
         [self startPolling];

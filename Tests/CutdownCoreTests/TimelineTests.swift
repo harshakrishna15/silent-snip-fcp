@@ -245,7 +245,7 @@ final class TimelineTests: XCTestCase {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "final-cut-12-3-basic", withExtension: "fcpxml", subdirectory: "Fixtures"))
         let doc = try TimelineParser.parse(url: url)
         XCTAssertEqual(doc.version, "1.14")
-        XCTAssertEqual(doc.projectName, "Cutdown Basic")
+        XCTAssertEqual(doc.projectName, "Silent Snip Basic")
         XCTAssertEqual(doc.projectTimecodeStart, .zero)
         XCTAssertEqual(doc.projectRange, range(0, 10))
         XCTAssertEqual(doc.frameDuration, RationalTime(1, 30))
@@ -259,7 +259,7 @@ final class TimelineTests: XCTestCase {
         XCTAssertTrue(video.hasVideo && video.hasAudio)
         XCTAssertThrowsError(try doc.selectedTarget(.init(timelineRange: range(0, 10)), requireExistingMedia: false)) {
             XCTAssertEqual($0 as? TimelineError, .unsupportedTarget([
-                "Cutdown supports audio-only timeline clips; video clips with audio are not supported"
+                "Silent Snip supports audio-only timeline clips; video clips with audio are not supported"
             ]))
         }
         XCTAssertEqual(doc.markers.count, 1)
@@ -337,7 +337,7 @@ final class TimelineTests: XCTestCase {
             $0.range == range(2, 4) && $0.reason.contains("Other speaker camera")
         })
         // Even a mistakenly allowlisted video effect remains part of project
-        // state. Only Cutdown's audio-controller controls can be excluded.
+        // state. Only Silent Snip's audio-controller controls can be excluded.
         let exclusions = TimelineFingerprintExclusions(controllerEffectUIDs: ["context.camera.color"])
         let changed = xml.replacingOccurrences(of: "value=\"0.25\"", with: "value=\"0.75\"")
         XCTAssertNotEqual(try parse(xml, exclusions: exclusions).fingerprint,
@@ -425,13 +425,13 @@ final class TimelineTests: XCTestCase {
 
     func testAudioControllerExclusionRequiresExplicitUIDAndPreservesOtherAudioEffects() throws {
         let resources = """
-        <effect id="r6" name="Cutdown Audio" uid="fixture.verified.audio-controller"/>
-        <effect id="r7" name="Cutdown Audio" uid="fixture.other.audio-effect"/>
+        <effect id="r6" name="Silent Snip Audio" uid="fixture.verified.audio-controller"/>
+        <effect id="r7" name="Silent Snip Audio" uid="fixture.other.audio-effect"/>
         """
         let originalMarker = "<marker start=\"106s\" duration=\"1/25s\" value=\"User voice marker\"/>"
         let audioEffects = """
-        <filter-audio ref="r6" name="Cutdown Audio"><param name="Threshold" key="1" value="-40"/></filter-audio>
-        <filter-audio ref="r7" name="Cutdown Audio"><param name="Gain" key="1" value="-3"/></filter-audio>
+        <filter-audio ref="r6" name="Silent Snip Audio"><param name="Threshold" key="1" value="-40"/></filter-audio>
+        <filter-audio ref="r7" name="Silent Snip Audio"><param name="Gain" key="1" value="-3"/></filter-audio>
         """
         let xml = try audioOnlyFixture().replacingOccurrences(of: "</resources>", with: resources + "</resources>")
             .replacingOccurrences(of: originalMarker, with: originalMarker + audioEffects)
@@ -449,7 +449,7 @@ final class TimelineTests: XCTestCase {
 
     func testNativeFinalCut123AudioExportUsesSupportedDirectAudioAssetClip() throws {
         let doc = try parse(nativeAudioFixture())
-        XCTAssertEqual(doc.projectName, "Cutdown Audio Native")
+        XCTAssertEqual(doc.projectName, "Silent Snip Audio Native")
         XCTAssertEqual(doc.projectRange, range(0, 10))
         XCTAssertEqual(doc.frameDuration, RationalTime(1, 30))
         let target = try doc.selectedTarget(.init(timelineRange: range(0, 10)), requireExistingMedia: false)

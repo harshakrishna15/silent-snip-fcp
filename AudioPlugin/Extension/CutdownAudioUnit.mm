@@ -187,7 +187,7 @@ BOOL validSettings(id settings) {
     if (input.channelCount != output.channelCount || input.sampleRate != output.sampleRate ||
         input.commonFormat != AVAudioPCMFormatFloat32 || output.commonFormat != AVAudioPCMFormatFloat32 ||
         input.isInterleaved || output.isInterleaved || input.channelCount < 1 || input.channelCount > 2)
-        return fail(error, kAudioUnitErr_FormatNotSupported, @"Cutdown requires matching mono or stereo Float32 audio.");
+        return fail(error, kAudioUnitErr_FormatNotSupported, @"Silent Snip requires matching mono or stereo Float32 audio.");
     if (!self.maximumFramesToRender || self.maximumFramesToRender > 1048576)
         return fail(error, kAudioUnitErr_TooManyFramesToProcess, @"Unsupported audio buffer capacity.");
     _storage->channels = input.channelCount;

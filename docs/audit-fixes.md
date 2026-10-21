@@ -25,7 +25,7 @@ Validation:
 - **12 build-script tests passed** (`build/AuditFixes/build-scripts.log`).
 - Matching candidates: `build/Candidate/Cutdown.app` and `build/Candidate/AudioPlugin/CutdownAudio.app`. Build/signature results are in `build/AuditFixes/helper-stage.log` and `build/AuditFixes/plugin-stage.log`.
 
-For installation, first finish/save work and quit both Final Cut Pro and Cutdown. From this workspace, run:
+For installation, first finish/save work and quit both Final Cut Pro and Silent Snip. From this workspace, run:
 
 ```sh
 ./scripts/build-helper.sh
@@ -41,7 +41,7 @@ Run the following checks together in small disposable projects inside the existi
 2. Apply a plan yielding at least three retained segments. If Final Cut resets controller state, all affected segments should recover during one verification attempt. Confirm the imported cuts, original project, and per-segment settings.
 3. Use nondefault settings, including a small padding value such as `0.00123456789` and minimum silence `0.1`. Confirm Controls can save/reopen them and verification does not loop on a rounded setting. AU values are stored at Float32 precision.
 4. After Analyze, change the original timeline and then choose Go to Cut. The old review/preview should disappear and Apply should remain unavailable until Analyze runs again.
-5. Test normal Go to Cut and cancellation while navigation is running. Confirm no timecode field remains awaiting input. If focus moves to another app or a user-owned dialog, Cutdown should leave that surface alone.
+5. Test normal Go to Cut and cancellation while navigation is running. Confirm no timecode field remains awaiting input. If focus moves to another app or a user-owned dialog, Silent Snip should leave that surface alone.
 6. Interrupt verification after an import, then use Retry Verification. Also reopen a saved result after restarting the helper. These actions should verify/recover the existing project without another import.
 
 The malformed-XML crash, bounded retention, and build-publication race have automated regression coverage. They do not require deliberately crashing the app or replacing a loaded plug-in during live checks. Automated passes do not establish native timeline cuts, settings persistence, navigation cleanup, preview, or processed-render fidelity; those remain the purpose of the checks above.

@@ -169,7 +169,7 @@ enum ImportedSettingsRecovery {
             }
         }
         guard report.controllerSettingsPreserved != false else {
-            throw EditedProjectWriterError.verificationFailed("Final Cut did not retain the recovered Cutdown settings. Retry Verification to try recovery again; no new import is needed")
+            throw EditedProjectWriterError.verificationFailed("Final Cut did not retain the recovered Silent Snip settings. Retry Verification to try recovery again; no new import is needed")
         }
         try Task.checkCancellation()
         return report

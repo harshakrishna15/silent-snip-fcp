@@ -69,14 +69,14 @@ extension FinalCutAXSession {
                   let text = formatter.string(from: NSNumber(value: Float(value))),
                   AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, text as CFString) == .success,
                   string(field, kAXValueAttribute) == text else {
-                throw FinalCutCaptureError.unavailable("Could not restore the imported Cutdown settings.")
+                throw FinalCutCaptureError.unavailable("Could not restore the imported Silent Snip settings.")
             }
         }
         try assertController()
         guard let commit = find(in: window, role: kAXButtonRole, identifier: "cutdown.saveSettings", maxDepth: 16),
               (attribute(commit, kAXEnabledAttribute) as? NSNumber)?.boolValue == true,
               AXUIElementPerformAction(commit, kAXPressAction as CFString) == .success else {
-            throw FinalCutCaptureError.unavailable("The imported controller could not save its settings. Install the matching Cutdown Audio build before retrying verification.")
+            throw FinalCutCaptureError.unavailable("The imported controller could not save its settings. Install the matching Silent Snip Audio build before retrying verification.")
         }
         try await waitUntil(timeout: 3, context: "the controller settings to save") {
             guard let label = self.find(in: window, identifier: "cutdown.status", maxDepth: 16) else { return false }

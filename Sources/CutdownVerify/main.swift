@@ -15,7 +15,7 @@ Verify one exported project and its completed Dialogue render.
 TIME uses FCPXML rational seconds, for example 0s, 10s, or 1001/30000s.
 Repeat --role for every Dialogue role/subrole in the exported render. Roles are
 explicit caller assertions; a filename cannot establish what audio was exported.
-Only pass --controller-uid for an exact Cutdown UID verified in an actual export.
+Only pass --controller-uid for an exact Silent Snip UID verified in an actual export.
 Defaults: threshold -40 dBFS, minimum 0.5s, before 0.1s, after 0.1s.
 By default this is read-only. --output-directory creates a NEW directory with an
 editable cut-up FCPXML project, the input XML, and a processing report. Its parent
@@ -155,7 +155,7 @@ private enum CutdownVerify {
                 let processed = try await AudioProjectProcessor.process(
                     projectXML: options.xml, selection: options.selection, dialogueAudio: options.audio,
                     renderContext: context, settings: options.settings, outputDirectory: directory,
-                    outputName: options.outputName ?? "\(baseline.projectName) — Cutdown",
+                    outputName: options.outputName ?? "\(baseline.projectName) — Silent Snip",
                     destinationLibrary: options.destinationLibrary
                 )
                 result = processed.analyzed

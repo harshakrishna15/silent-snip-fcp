@@ -93,8 +93,8 @@ public struct ReviewAnalysisResult: Sendable {
             if previous.task != nil || previous.state.isBusy {
                 job.state = .failed
                 job.message = previous.applyStarted
-                    ? "Cutdown is still applying or stopping cuts. Wait for it to finish, then Analyze again."
-                    : "Another Cutdown analysis is running. Cancel it or wait for it to finish, then Analyze again."
+                    ? "Silent Snip is still applying or stopping cuts. Wait for it to finish, then Analyze again."
+                    : "Another Silent Snip analysis is running. Cancel it or wait for it to finish, then Analyze again."
                 publish(job)
                 prune()
                 return
@@ -206,7 +206,7 @@ public struct ReviewAnalysisResult: Sendable {
                 guard authorizeApply(command) else {
                     job.result = nil
                     job.state = .failed
-                    job.message = "Apply was not confirmed in the selected Cutdown Controls window. Analyze again before applying cuts."
+                    job.message = "Apply was not confirmed in the selected Silent Snip Controls window. Analyze again before applying cuts."
                     if active == job.request.id { active = nil }
                     publish(job)
                     record(job.request, job.state.rawValue, job.message)

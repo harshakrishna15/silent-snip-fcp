@@ -13,7 +13,7 @@
       <media-rep kind="original-media" src="file:///fixtures/dialogue.wav"/>
     </asset>
     <effect id="r5" name="Basic Title" uid="test.title"/>
-    <effect id="r6" name="Cutdown" uid="test.cutdown.controller"/>
+    <effect id="r6" name="Silent Snip" uid="test.cutdown.controller"/>
     <effect id="r7" name="Equalizer" uid="test.equalizer"/>
   </resources>
   <library>
@@ -25,8 +25,8 @@
               <title ref="r5" name="Title" lane="1" offset="107s" start="0s" duration="4s"/>
               <asset-clip ref="r3" name="Music bed" lane="-1" offset="105s" start="0s" duration="10s" audioRole="music"/>
               <asset-clip ref="r4" name="Connected speech" lane="-2" offset="109s" start="20s" duration="2s" audioRole="Dialogue.Voice"/>
-              <marker start="106s" duration="1001/30000s" value="Cutdown Candidate 1" note="job:fixture" completed="0"/>
-              <filter-audio ref="r6" name="Cutdown">
+              <marker start="106s" duration="1001/30000s" value="Silent Snip Candidate 1" note="job:fixture" completed="0"/>
+              <filter-audio ref="r6" name="Silent Snip">
                 <param name="Threshold" key="1" value="-40"/>
               </filter-audio>
               <filter-audio ref="r7" name="Equalizer">

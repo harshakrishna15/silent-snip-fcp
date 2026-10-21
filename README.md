@@ -1,19 +1,19 @@
-# Cutdown
+# Silent Snip
 
 Remove quiet pauses from audio-only clips in Final Cut Pro, with control over which cuts to keep.
 
-Cutdown combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes audio and prepares an editable project that still references your original media.
+Silent Snip combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes audio and prepares an editable project that still references your original media.
 
 > **Integration in progress:** Manual XML replacement has been verified. The full automatic Analyze → Apply workflow, preview, and settings recovery still need live Final Cut verification with matching installed builds. Builds and offline tests alone do not establish that automatic cuts work.
 
 ## How it works
 
-1. Select one audio-only clip in the primary storyline and add **Cutdown Audio**.
+1. Select one audio-only clip in the primary storyline and add **Silent Snip Audio**.
 2. Open **Controls**, adjust silence detection, and click **Analyze**.
 3. Review the proposed cuts and choose which to include.
 4. Click **Apply Cuts** to replace the project in its original event.
 
-Cutdown saves recovery XML before replacement. Your source media stays unchanged.
+Silent Snip saves recovery XML before replacement. Your source media stays unchanged.
 
 See the [full workflow and recovery guide](docs/workflow.md) for detection settings, preview controls, and recovery steps.
 
@@ -43,17 +43,17 @@ No external Swift packages, separate plug-in SDK, Motion installation, or paid s
 
 Clone or download the repository, then open Terminal in its root.
 
-1. Quit Final Cut Pro and the Cutdown helper.
+1. Quit Final Cut Pro and the Silent Snip helper.
 2. Build and register both components:
 
    ```sh
    Scripts/build.sh --release
    ```
 
-3. Complete [first-time setup](docs/setup.md): grant macOS access and create a Share destination named **Cutdown**.
+3. Complete [first-time setup](docs/setup.md): grant macOS access and create a Share destination named **Silent Snip**.
 4. Reopen Final Cut and follow [the workflow](docs/workflow.md).
 
-The build command verifies signatures and registers bundles in place under `build/`. Keep those bundles at their generated paths. Permissions and Share setup are separate, one-time steps.
+The build command verifies signatures and registers bundles in place under `build/`. Keep those bundles at their generated paths. Permissions and Share setup are separate, one-time steps. For an existing setup, rename its Share destination to **Silent Snip**.
 
 <details>
 <summary>Development builds and staging</summary>

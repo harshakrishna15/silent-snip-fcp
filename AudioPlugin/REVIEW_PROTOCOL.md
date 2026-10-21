@@ -5,10 +5,10 @@ channel for status. It sends Apply only from the separate button after a valid
 review response. The helper now dispatches both operations through the analysis
 coordinator. Protocol and unit tests are not proof of a successful live Final Cut import.
 
-The Audio Unit's custom effect window and the Cutdown helper communicate through
+The Audio Unit's custom effect window and the Silent Snip helper communicate through
 `DistributedNotificationCenter` within the current macOS login session. The Audio
 Unit remains sandboxed. No network or shared application-group entitlement is
-needed. Apple allows sandboxed notifications when `userInfo` is nil; Cutdown uses
+needed. Apple allows sandboxed notifications when `userInfo` is nil; Silent Snip uses
 a bounded JSON string as the notification's `object`.
 
 - [Apple: sandboxed distributed notifications](https://developer.apple.com/documentation/foundation/distributednotificationcenter/post(name:object:userinfo:))
@@ -118,7 +118,7 @@ On appearance, a view with no request publishes a bounded string envelope to
 while visible and unedited. The view exposes that UUID in its Cancel button's
 accessibility identifier, `cutdown.review.reconnect.UUID`.
 
-The helper checks the pinned project, original selected clip and sole Cutdown
+The helper checks the pinned project, original selected clip and sole Silent Snip
 Controls window, then locates the exact button identifier in that window. Only
 then does it send a reply to `local.cutdown.review.connected.v1.UUID` containing
 `version`, `view`, `request`, four `settings` values and `output`. The recreated

@@ -60,7 +60,7 @@ final class FinalCutProjectCaptureTests: XCTestCase {
     }
 
     func testOtherEffectEditorsDoNotHidePreviewButModalDialogsStillDo() {
-        for _ in ["Noise Gate", "Limiter", "Third-party Audio Unit", "Cutdown"] {
+        for _ in ["Noise Gate", "Limiter", "Third-party Audio Unit", "Silent Snip"] {
             XCTAssertFalse(FinalCutWindowPolicy.blocksPreview(role: "AXWindow", subrole: "AXDialog", modal: false, containsCutdownReview: false))
         }
         XCTAssertFalse(FinalCutWindowPolicy.blocksPreview(role: "AXWindow", subrole: "AXDialog", modal: true, containsCutdownReview: true))
@@ -112,9 +112,9 @@ final class FinalCutProjectCaptureTests: XCTestCase {
             node(role: "AXCheckBox", description: "other effect check box"),
             node(role: "AXStaticText", value: "Other Effect"),
             node(role: "AXButton", description: "Show effect editor"),
-            node(role: "AXCheckBox", description: "cutdown audio check box"),
-            node(role: "AXStaticText", value: "Cutdown Audio"),
-            node(role: "AXButton", description: "cutdown audio parameter menu"),
+            node(role: "AXCheckBox", description: "silent snip audio check box"),
+            node(role: "AXStaticText", value: "Silent Snip Audio"),
+            node(role: "AXButton", description: "silent snip audio parameter menu"),
             node(role: "AXButton", description: "Show effect editor"),
             node(role: "AXCheckBox", description: "later effect check box"),
             node(role: "AXButton", description: "Show effect editor")
@@ -126,9 +126,24 @@ final class FinalCutProjectCaptureTests: XCTestCase {
         XCTAssertNil(FinalCutReviewInspector.editorIndex(in: controls + Array(controls[3...6])))
     }
 
+    func testReviewRestorationSupportsExistingEffectNamesAndRejectsMixedDuplicates() {
+        let editor = node(role: "AXButton", description: "Show effect editor")
+        let legacy = [node(role: "AXCheckBox", description: "cutdown audio check box"),
+                      node(role: "AXStaticText", value: "Cutdown Audio"), editor]
+        let renamed = [node(role: "AXCheckBox", description: "silent snip audio check box"),
+                       node(role: "AXStaticText", value: "Silent Snip Audio"), editor]
+        XCTAssertEqual(FinalCutReviewInspector.controllerCount(in: legacy), 1)
+        XCTAssertEqual(FinalCutReviewInspector.editorIndex(in: legacy), 2)
+        XCTAssertEqual(FinalCutReviewInspector.editorIndex(in: renamed), 2)
+        XCTAssertEqual(FinalCutReviewInspector.controllerCount(in: legacy + renamed), 2)
+        XCTAssertNil(FinalCutReviewInspector.editorIndex(in: legacy + renamed))
+        XCTAssertFalse(FinalCutReviewInspector.isControllerCheckbox("silent snip audio parameter menu"))
+        XCTAssertFalse(FinalCutReviewInspector.isControllerName("Other Silent Snip Audio"))
+    }
+
     func testReviewRestorationRejectsMissingDisabledOrAmbiguousEditors() {
-        let heading = [node(role: "AXCheckBox", description: "cutdown audio check box"),
-                       node(role: "AXStaticText", value: "Cutdown Audio")]
+        let heading = [node(role: "AXCheckBox", description: "silent snip audio check box"),
+                       node(role: "AXStaticText", value: "Silent Snip Audio")]
         let editor = node(role: "AXButton", description: "Show effect editor")
         XCTAssertNil(FinalCutReviewInspector.editorIndex(in: heading))
         XCTAssertNil(FinalCutReviewInspector.editorIndex(in: [heading[0], editor]))

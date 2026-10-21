@@ -31,8 +31,8 @@ public struct AccessibilityNode: Codable, Sendable {
                 let panel: String
                 if #available(macOS 27.0, *) { panel = "Device Control and Data Access" }
                 else { panel = "Accessibility" }
-                return "Enable Cutdown in System Settings → Privacy & Security → \(panel). After a local rebuild, remove and re-add Cutdown if enabling it does not restore access."
-            case .notRunning: return "Open Final Cut Pro and select the clip carrying Cutdown."
+                return "Enable Silent Snip in System Settings → Privacy & Security → \(panel). After a local rebuild, remove and re-add Silent Snip if enabling it does not restore access."
+            case .notRunning: return "Open Final Cut Pro and select the clip carrying Silent Snip."
             }
         }
     }

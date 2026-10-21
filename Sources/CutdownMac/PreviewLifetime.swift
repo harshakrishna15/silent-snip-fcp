@@ -48,7 +48,7 @@ struct PreviewIdentityLease {
 struct PreviewEffectInspection {
     let viewport: CGRect
     let cutdown: CGRect?
-    /// Unique, non-Cutdown effect/section headers, in screen coordinates.
+    /// Unique, non-Silent Snip effect/section headers, in screen coordinates.
     let anchors: [String: CGRect]
     let scrollPosition: Double?
 
@@ -69,7 +69,7 @@ struct PreviewEffectInspection {
         // Effects is the last section in the Inspector's scroll area. Audio
         // Configuration is a sibling of that area, so it cannot bound a scan
         // of its children. With the section's start visible and the scroll at
-        // its end, no Cutdown row can be virtualized outside the viewport.
+        // its end, no Silent Snip row can be virtualized outside the viewport.
         guard let top = anchors["Effects"] ?? anchors["Pan"] ?? anchors["Audio Enhancements"],
               visible(top) else { return false }
         guard let scrollPosition else { return true }

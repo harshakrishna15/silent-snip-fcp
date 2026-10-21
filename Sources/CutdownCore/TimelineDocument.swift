@@ -57,7 +57,7 @@ public struct TimelineClip: Codable, Hashable, Sendable, Identifiable {
     public let isPrimaryStoryline: Bool
     public let enabled: Bool
     /// Whether this timeline instance includes video. Video items remain part of
-    /// project context, but cannot be selected as Cutdown's audio-only target.
+    /// project context, but cannot be selected as Silent Snip's audio-only target.
     public let hasVideo: Bool
     /// Whether source audio is present and enabled in this timeline instance.
     public let hasAudio: Bool
@@ -95,9 +95,9 @@ public struct TimelineMarker: Codable, Hashable, Sendable, Identifiable {
 }
 
 public struct TimelineFingerprintExclusions: Sendable {
-    /// Exact Audio Unit effect resource UIDs proven to belong to Cutdown.
+    /// Exact Audio Unit effect resource UIDs proven to belong to Silent Snip.
     /// No name matching or inferred Audio Unit identifier is permitted.
-    /// The verified local Cutdown AU also excludes its nonrendering effectState
+    /// The verified local Silent Snip AU also excludes its nonrendering effectState
     /// archive when explicitly present in this allowlist; other data is preserved.
     public let controllerEffectUIDs: Set<String>
     public init(controllerEffectUIDs: Set<String> = []) {
@@ -134,7 +134,7 @@ public struct TimelineDocument: Codable, Sendable {
         guard matches.count == 1 else { throw TimelineError.ambiguousTarget }
         let target = matches[0]
         guard !target.hasVideo else {
-            throw TimelineError.unsupportedTarget(["Cutdown supports audio-only timeline clips; video clips with audio are not supported"])
+            throw TimelineError.unsupportedTarget(["Silent Snip supports audio-only timeline clips; video clips with audio are not supported"])
         }
         guard target.unsupportedReasons.isEmpty else { throw TimelineError.unsupportedTarget(target.unsupportedReasons) }
         guard target.hasAudio else { throw TimelineError.unsupportedTarget(["enabled source audio is required"]) }

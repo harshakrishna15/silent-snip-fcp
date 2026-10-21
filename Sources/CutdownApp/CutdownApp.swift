@@ -37,7 +37,7 @@ import CutdownMac
             try? IntegrationReport(state: "failed", message: error.localizedDescription).save()
         }
         manager.onReceive = { _ in
-            try? IntegrationReport(state: "ready", message: "Share received. Select the clip carrying Cutdown Audio and use Analyze to start a verified review.").save()
+            try? IntegrationReport(state: "ready", message: "Share received. Select the clip carrying Silent Snip Audio and use Analyze to start a verified review.").save()
         }
         transport.onReconnect = { [weak self] view in
             guard let self, let request = reviewRequest,
@@ -56,7 +56,7 @@ import CutdownMac
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // The Audio Unit Controls view is the only Cutdown window.
+        // The Audio Unit Controls view is the only Silent Snip window.
         // URL delivery can also trigger this callback; never open a second UI.
         return false
     }
@@ -68,7 +68,7 @@ import CutdownMac
             if url.host == "verify", let verification = try? ReviewVerificationRequest(url: url) {
                 do {
                     guard !coordinator.isBusy else {
-                        throw FinalCutCaptureError.unavailable("Wait for the current Cutdown operation to finish before verifying another result.")
+                        throw FinalCutCaptureError.unavailable("Wait for the current Silent Snip operation to finish before verifying another result.")
                     }
                     let request = try interactive.loadVerification(verification.result, view: verification.view)
                     reviewRequest = request

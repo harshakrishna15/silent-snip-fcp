@@ -48,10 +48,10 @@ extension FinalCutAXSession {
         try await focusTimeline()
         var ownsPanel = false
         do {
-            try await pressMenu(path: ["File", "Share", "Cutdown…"])
-            try await waitUntil(timeout: 10, context: "Cutdown Share confirmation") {
+            try await pressMenu(path: ["File", "Share", "Silent Snip…"])
+            try await waitUntil(timeout: 10, context: "Silent Snip Share confirmation") {
                 guard let panel = self.currentSheet() else { return false }
-                return self.string(panel, kAXTitleAttribute) == "Cutdown"
+                return self.string(panel, kAXTitleAttribute) == "Silent Snip"
                     && self.find(in: panel, role: kAXButtonRole, title: "Next…") != nil
             }
             ownsPanel = true
@@ -65,7 +65,7 @@ extension FinalCutAXSession {
         } catch {
             if ownsPanel {
                 await Task { @MainActor in
-                    if let panel = self.currentSheet(), self.string(panel, kAXTitleAttribute) == "Cutdown",
+                    if let panel = self.currentSheet(), self.string(panel, kAXTitleAttribute) == "Silent Snip",
                        let cancel = self.find(in: panel, role: kAXButtonRole, title: "Cancel") { _ = try? self.press(cancel) }
                 }.value
             }

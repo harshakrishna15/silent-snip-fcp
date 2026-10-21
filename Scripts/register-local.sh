@@ -114,9 +114,9 @@ for attempt in 1 2 3 4 5; do
   if [[ "$attempt" != 5 ]]; then /bin/sleep 1; fi
 done
 if [[ "$registration" != *"$audio_extension"* ]]; then
-  echo 'Cutdown was not found at the installed path after registration. Keep Final Cut closed and retry Scripts/register-local.sh.' >&2
+  echo 'Silent Snip was not found at the installed path after registration. Keep Final Cut closed and retry Scripts/register-local.sh.' >&2
   exit 1
 fi
-echo 'Registered the Cutdown helper and Audio Unit from their existing build paths.'
+echo 'Registered the Silent Snip helper and Audio Unit from their existing build paths.'
 echo 'Keep these build products in place while testing them in Final Cut Pro.'
 printf '%s\n' "$registration"

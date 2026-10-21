@@ -1,5 +1,5 @@
 #!/bin/bash
-# Development fixtures only; FFmpeg is not linked to or shipped with Cutdown.
+# Development fixtures only; FFmpeg is not linked to or shipped with Silent Snip.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fixture_dir="$PWD/build/Fixtures"

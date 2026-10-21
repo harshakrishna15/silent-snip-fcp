@@ -135,7 +135,7 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         }
         guard matches.count == 1, let clip = matches.first else { throw FinalCutPreviewError.transient("Analyzed clip identity is unavailable") }
         // Inspector children are virtualized and can be offscreen behind other
-        // effects. They cannot prove that Cutdown was removed. Geometry must
+        // effects. They cannot prove that Silent Snip was removed. Geometry must
         // also stay independent of a potentially expensive effect-control tree.
         var ancestors: [AXUIElement] = []
         var ancestor = Self.elementAttribute(timeline, kAXParentAttribute)
@@ -329,7 +329,7 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             if [kAXCheckBoxRole, kAXButtonRole, kAXDisclosureTriangleRole, "AXToggleButton"].contains(role) {
                 let description = string(control, kAXDescriptionAttribute)
                     ?? string(control, kAXHelpAttribute) ?? ""
-                if description.lowercased() == "cutdown audio check box" {
+                if FinalCutReviewInspector.isControllerCheckbox(description) {
                     guard candidate.cutdown == nil, let frame = rect(control) else {
                         effectInspectionProgress = Date() >= nextDeadline ? progress : nil
                         return .incomplete

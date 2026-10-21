@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Cutdown</string>
+	<string>Silent Snip</string>
 	<key>CFBundleDisplayName</key>
-	<string>Cutdown</string>
+	<string>Silent Snip</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.cutdown.helper</string>
 	<key>CFBundleExecutable</key>

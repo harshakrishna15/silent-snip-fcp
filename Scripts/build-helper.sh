@@ -11,12 +11,12 @@ check_helper_stopped() {
   # Staged builds have a separate identity and never replace the live helper.
   if [[ "$stage" == true ]]; then return; fi
   if /usr/bin/pgrep -x Cutdown >/dev/null; then
-    echo 'Quit Cutdown before replacing its installed helper, or build with --stage. The running helper would otherwise continue using the old code.' >&2
+    echo 'Quit Silent Snip before replacing its installed helper, or build with --stage. The running helper would otherwise continue using the old code.' >&2
     exit 1
   else
     local status=$?
     if [[ "$status" != 1 ]]; then
-      echo 'Cannot verify whether Cutdown is running. Build with --stage, or retry with process-list access; the installed helper was not replaced.' >&2
+      echo 'Cannot verify whether Silent Snip is running. Build with --stage, or retry with process-list access; the installed helper was not replaced.' >&2
       exit 1
     fi
   fi
@@ -49,7 +49,7 @@ if [[ "$stage" == true ]]; then
   # Candidates must not compete for the installed helper's URL/share routes.
   expected_identifier=local.cutdown.helper.candidate
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $expected_identifier" "$app/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Cutdown Candidate' "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Silent Snip Candidate' "$app/Contents/Info.plist"
   for key in CFBundleURLTypes CFBundleDocumentTypes com.apple.proapps.MediaAssetProtocol; do
     /usr/libexec/PlistBuddy -c "Delete :$key" "$app/Contents/Info.plist"
   done

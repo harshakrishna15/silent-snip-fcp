@@ -58,7 +58,7 @@ struct IsolatedAudioProject {
         let duration = try target.timelineRange.checkedDuration()
         set(sequence, "duration", "\(duration.numerator)/\(duration.denominator)s")
         set(sequence, "tcStart", "0s")
-        let name = "Cutdown Analysis " + id.uuidString
+        let name = "Silent Snip Analysis " + id.uuidString
         set(project, "name", name); set(project, "uid", id.uuidString)
         // Import a uniquely named temporary project into the source event.
         // Keep the event's identity so Final Cut does not create another event.

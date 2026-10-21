@@ -185,7 +185,7 @@ import Foundation
             if !analyzed.review.selectedCuts.isEmpty {
                 _ = try EditedProjectWriter.write(projectData: projectData,
                     selection: capture.selection, selectedRanges: analyzed.review.selectedCuts.map(\.range),
-                    outputName: capture.projectName + " — Cutdown")
+                    outputName: capture.projectName + " — Silent Snip")
             }
             contexts[request.id] = Context(capture: capture,
                 directory: directory, mediaSnapshot: media)
@@ -221,7 +221,7 @@ import Foundation
             try Task.checkCancellation()
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
-                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply replaces this project in its current event and saves recovery XML before import. Import verification automatically recovers saved Cutdown settings if Final Cut resets them. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "))
+                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply replaces this project in its current event and saves recovery XML before import. Import verification automatically recovers saved Silent Snip settings if Final Cut resets them. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "))
         } catch {
             // A cancellation must not prevent bounded cleanup of a verified,
             // request-owned project after returning to the original timeline.
@@ -346,7 +346,7 @@ import Foundation
                 let url = try await imported.exportProjectXML(to: parent.appendingPathComponent("Verification-\(UUID().uuidString).fcpxmld"))
                 return try Data(contentsOf: url)
             }, restore: { correction, document in
-                progress("Restoring Cutdown settings on ‘\(correction.clip.name)’…", nil)
+                progress("Restoring Silent Snip settings on ‘\(correction.clip.name)’…", nil)
                 // These temporary Controls views are being written by recovery,
                 // not offered for review. A reconnect could disable their fields.
                 self.restoringControllerSettings = true
@@ -354,7 +354,7 @@ import Foundation
                 try await imported.restoreControllerSettings(correction.settings, clip: correction.clip, document: document)
             })
             let disposition = result.replacementTarget == nil ? "Original project unchanged." : "Project replaced in its original event. Recovery XML saved in the result folder."
-            let message = "Verified ‘\(result.projectName)’: timeline, source media, rendering effects, and Cutdown settings match. \(disposition)"
+            let message = "Verified ‘\(result.projectName)’: timeline, source media, rendering effects, and Silent Snip settings match. \(disposition)"
             try Data((message + "\n").utf8).write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             result.markComplete()
             verifications.remove(id)

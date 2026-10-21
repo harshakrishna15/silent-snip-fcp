@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
-<dictionary title="Cutdown Share Terminology">
-  <suite name="Cutdown Asset Management" code="pvam" description="Receive project XML and rendered audio from Final Cut Pro.">
+<dictionary title="Silent Snip Share Terminology">
+  <suite name="Silent Snip Asset Management" code="pvam" description="Receive project XML and rendered audio from Final Cut Pro.">
     <command name="open" code="aevtodoc" description="Complete an exported asset delivery.">
       <cocoa class="CutdownShareOpenCommand"/>
       <access-group identifier="com.apple.proapps.assetmanagement.import" access="rw"/>
@@ -23,7 +23,7 @@
       <parameter name="with properties" code="prdt" type="record" optional="yes"><cocoa key="KeyDictionary"/></parameter>
       <result type="specifier"/>
     </command>
-    <class name="application" code="capp" description="Cutdown application.">
+    <class name="application" code="capp" description="Silent Snip application.">
       <cocoa class="NSApplication"/>
       <access-group identifier="com.apple.proapps.assetmanagement.import" access="rw"/>
       <access-group identifier="com.apple.assetmanagement.import" access="rw"/>

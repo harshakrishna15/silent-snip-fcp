@@ -28,15 +28,15 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     case invalidName, invalidFile, unknownDelivery, duplicateXML, unsupportedMedia, alreadyCompleted, shareInProgress, changedDelivery, scriptingUnavailable
     public var errorDescription: String? {
         switch self {
-        case .invalidName: return "Final Cut supplied an empty or unsafe project name for Share to Cutdown."
+        case .invalidName: return "Final Cut supplied an empty or unsafe project name for Share to Silent Snip."
         case .invalidFile: return "A shared file is missing, empty, or outside the folder reserved for this export. Share the project again."
-        case .unknownDelivery: return "These files do not belong to a pending Share to Cutdown export."
+        case .unknownDelivery: return "These files do not belong to a pending Share to Silent Snip export."
         case .duplicateXML: return "Final Cut supplied more than one project XML file for this export."
-        case .unsupportedMedia: return "Share to Cutdown needs uncompressed audio. Configure the destination for Audio Only with WAV, AIFF, or CAF audio."
-        case .alreadyCompleted: return "This Share to Cutdown export was already received."
-        case .shareInProgress: return "Another Share to Cutdown export or analysis is in progress. Wait for it to finish, or cancel it in Cutdown before sharing again."
-        case .changedDelivery: return "A shared file changed after Final Cut delivered it. Cutdown left that file in place; share the project again."
-        case .scriptingUnavailable: return "Cutdown could not create the scripting reference needed by Final Cut. Rebuild and register the helper with its Cutdown.sdef resource."
+        case .unsupportedMedia: return "Share to Silent Snip needs uncompressed audio. Configure the destination for Audio Only with WAV, AIFF, or CAF audio."
+        case .alreadyCompleted: return "This Share to Silent Snip export was already received."
+        case .shareInProgress: return "Another Share to Silent Snip export or analysis is in progress. Wait for it to finish, or cancel it in Silent Snip before sharing again."
+        case .changedDelivery: return "A shared file changed after Final Cut delivered it. Silent Snip left that file in place; share the project again."
+        case .scriptingUnavailable: return "Silent Snip could not create the scripting reference needed by Final Cut. Rebuild and register the helper with its Cutdown.sdef resource."
         }
     }
 }
@@ -107,7 +107,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
             }
             try await Task.sleep(for: .milliseconds(100))
         }
-        throw FinalCutCaptureError.unavailable("Final Cut did not deliver the requested project XML through Share to Cutdown. No cuts were imported.")
+        throw FinalCutCaptureError.unavailable("Final Cut did not deliver the requested project XML through Share to Silent Snip. No cuts were imported.")
     }
 
     public init(rootURL: URL? = nil) {

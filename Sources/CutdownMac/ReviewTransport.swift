@@ -241,5 +241,5 @@ struct ReviewReconnectReply: Encodable {
 
 public enum ReviewTransportError: LocalizedError {
     case invalidPayload
-    public var errorDescription: String? { "Cutdown received an invalid review message. Analyze again." }
+    public var errorDescription: String? { "Silent Snip received an invalid review message. Analyze again." }
 }

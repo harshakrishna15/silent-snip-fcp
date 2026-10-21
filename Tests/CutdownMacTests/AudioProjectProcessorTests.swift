@@ -158,7 +158,7 @@ final class AudioProjectProcessorTests: XCTestCase {
         do {
             _ = try await AudioProjectProcessor.process(projectXML: fixture.xml, selection: fixture.selection,
                 dialogueAudio: fixture.audio, renderContext: fixture.context, outputDirectory: output,
-                outputName: "Cutdown Test", destinationLibrary: directory.appendingPathComponent("Missing.fcpbundle"))
+                outputName: "Silent Snip Test", destinationLibrary: directory.appendingPathComponent("Missing.fcpbundle"))
             XCTFail("A missing Final Cut destination must reject before creating output.")
         } catch AudioProjectProcessingError.invalidDestinationLibrary { }
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
@@ -170,7 +170,7 @@ final class AudioProjectProcessorTests: XCTestCase {
                          progress: @Sendable (Double) -> Void = { _ in }) async throws -> AudioProjectProcessingResult {
         try await AudioProjectProcessor.process(projectXML: fixture.xml, selection: fixture.selection,
             dialogueAudio: fixture.audio, renderContext: fixture.context, outputDirectory: output,
-            outputName: "Cutdown Test", selectedRanges: selectedRanges, progress: progress)
+            outputName: "Silent Snip Test", selectedRanges: selectedRanges, progress: progress)
     }
 
     private struct Fixture {

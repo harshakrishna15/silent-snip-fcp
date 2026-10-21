@@ -102,18 +102,18 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Candidate cleanup did not complete", result.stderr)
         self.assertTrue(any(line.startswith("pluginkit -a ") for line in calls))
-        self.assertIn("Registered the Cutdown", result.stdout)
+        self.assertIn("Registered the Silent Snip", result.stdout)
 
     def test_zero_exit_without_installed_registry_entry_is_not_success(self):
         result, calls = self.run_registration(missing_registration=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn("Registered the Cutdown", result.stdout)
+        self.assertNotIn("Registered the Silent Snip", result.stdout)
         self.assertEqual(sum(line.startswith("pluginkit -m ") for line in calls), 5)
 
     def test_failed_add_is_not_reported_as_success(self):
         result, calls = self.run_registration(add_failure=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn("Registered the Cutdown", result.stdout)
+        self.assertNotIn("Registered the Silent Snip", result.stdout)
 
 
 if __name__ == "__main__":

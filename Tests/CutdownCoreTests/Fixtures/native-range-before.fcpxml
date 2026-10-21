@@ -12,15 +12,15 @@
 
         </asset>
         <format id="r3" name="FFVideoFormatRateUndefined"/>
-        <effect id="r4" name="Cutdown Audio" uid="AudioUnit: 0x617566786374646e4374646e"/>
+        <effect id="r4" name="Silent Snip Audio" uid="AudioUnit: 0x617566786374646e4374646e"/>
     </resources>
     <library location="file:///fixtures/Cutdown%20Integration.fcpbundle/">
-        <event name="Cutdown Integration Fixtures" uid="88888888-8888-4888-8888-888888888888">
+        <event name="Silent Snip Integration Fixtures" uid="88888888-8888-4888-8888-888888888888">
             <project name="Cutdown Button Verification" uid="99999999-9999-4999-8999-999999999999">
                 <sequence format="r1" duration="10s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
                     <spine>
                         <asset-clip ref="r2" offset="0s" name="Recording" duration="10s" format="r3" audioRole="dialogue">
-                            <filter-audio ref="r4" name="Cutdown Audio"/>
+                            <filter-audio ref="r4" name="Silent Snip Audio"/>
                         </asset-clip>
                     </spine>
                 </sequence>

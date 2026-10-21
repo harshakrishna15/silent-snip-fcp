@@ -14,7 +14,7 @@ struct FinalCutReviewOwnership {
         if var previous = suspended {
             guard selection.clipName == previous.title,
                   previous.selection == nil || previous.selection == selection else {
-                throw FinalCutCaptureError.invalidSelection("The selected timeline clip no longer matches the suspended Cutdown review.")
+                throw FinalCutCaptureError.invalidSelection("The selected timeline clip no longer matches the suspended Silent Snip review.")
             }
             previous.selection = selection
             suspended = previous

@@ -147,7 +147,7 @@ struct PreviewSamplePacer {
                     if case FinalCutPreviewError.effectRemoved = error {
                         self.removedEffectSession = self.session
                         self.hide()
-                        self.record("Dismissed: Cutdown effect removed")
+                        self.record("Dismissed: Silent Snip effect removed")
                     } else if case FinalCutPreviewError.transient = error {
                         self.visibility.transientFailure()
                     } else {
