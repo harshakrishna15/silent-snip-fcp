@@ -1,47 +1,85 @@
 # Cutdown
 
-Cutdown is a local silence-removal tool for audio-only clips in Final Cut Pro. Add **Cutdown Audio** to one selected audio clip in the primary storyline, open **Controls**, and click **Analyze**. Review the proposed cuts, then use **Apply Cuts** to replace the project in its original event. Cutdown saves recovery XML before replacement; source media stays unchanged.
+Remove quiet pauses from audio-only clips in Final Cut Pro, with control over which cuts to keep.
 
-The Audio Unit passes audio through unchanged. A companion macOS helper measures silence, prepares the edited project, and communicates with Final Cut. Both components must be built and installed together.
+Cutdown combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes audio and prepares an editable project that still references your original media.
 
-**Integration status:** Manual XML replacement probes kept one project in the original event; see [evidence and limits](docs/xml-replacement.md). The full automatic Analyze → Apply workflow, preview, and settings recovery still need live Final Cut verification with matching installed builds. Successful builds and offline tests do not establish that automatic timeline cuts work.
+> **Integration in progress:** Manual XML replacement has been verified. The full automatic Analyze → Apply workflow, preview, and settings recovery still need live Final Cut verification with matching installed builds. Builds and offline tests alone do not establish that automatic cuts work.
+
+## How it works
+
+1. Select one audio-only clip in the primary storyline and add **Cutdown Audio**.
+2. Open **Controls**, adjust silence detection, and click **Analyze**.
+3. Review the proposed cuts and choose which to include.
+4. Click **Apply Cuts** to replace the project in its original event.
+
+Cutdown saves recovery XML before replacement. Your source media stays unchanged.
+
+See the [full workflow and recovery guide](docs/workflow.md) for detection settings, preview controls, and recovery steps.
+
+## What it supports
+
+- **Two output modes:** remove selected pauses or replace them with one-second gaps.
+- **Review before applying:** per-cut selection and a timeline preview.
+- **Audio processing:** measure source audio for unprocessed clips or a verified isolated Final Cut render for processed clips.
+- **Faster repeat analysis:** reuse matching verified measurements when only detection settings change.
+
+Detection uses loudness, so quiet breaths can qualify as silence. It does not recognize speech or breaths.
+
+Targets must be normal-speed, audio-only clips. Retimed or nested targets, linked-video cutting, component trims, unsupported connections, and cuts crossing fades are outside scope. See [compatibility details](docs/workflow.md#2-select-the-audio-clip) and [analysis behavior](docs/analysis-speed.md).
 
 ## Requirements
 
-- An Apple Silicon Mac. The audio plug-in build targets `arm64`.
-- macOS 14 or later is the project's deployment target; your Xcode and Final Cut versions may require a newer macOS version.
-- Full Xcode with first-launch setup completed and its command-line tools selected. Recorded builds used Xcode 27.0 / Swift 6.4; older toolchains have not been verified here.
-- Final Cut Pro for the live workflow. Historical integration reports used Final Cut Pro 12.3. Automation currently matches English interface labels.
-- Python 3 for build-script tests; FFmpeg and Python 3 for generated integration media. Neither is needed by the installed effect.
+- **Apple Silicon Mac** — the audio plug-in targets `arm64`.
+- **macOS 14 or later** — the deployment target; Xcode and Final Cut may require a newer version.
+- **Full Xcode** — complete first-launch setup and select its command-line tools.
+- **Final Cut Pro in English** — automation currently matches English interface labels.
 
-The project uses Apple's frameworks and has no external Swift package dependencies. No separate plug-in SDK, Motion installation, or paid signing identity is required for the local ad hoc build.
+Recorded builds used Xcode 27.0 / Swift 6.4; historical integration reports used Final Cut Pro 12.3. Other toolchain and host combinations have not been verified here.
+
+No external Swift packages, separate plug-in SDK, Motion installation, or paid signing identity are required for a local ad hoc build. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
 
 ## Build and install
 
-Clone or download the repository and open Terminal in its root. Quit Final Cut Pro and the Cutdown helper, then run:
+Clone or download the repository, then open Terminal in its root.
+
+1. Quit Final Cut Pro and the Cutdown helper.
+2. Build and register both components:
+
+   ```sh
+   Scripts/build.sh --release
+   ```
+
+3. Complete [first-time setup](docs/setup.md): grant macOS access and create a Share destination named **Cutdown**.
+4. Reopen Final Cut and follow [the workflow](docs/workflow.md).
+
+The build command verifies signatures and registers bundles in place under `build/`. Keep those bundles at their generated paths. Permissions and Share setup are separate, one-time steps.
+
+<details>
+<summary>Development builds and staging</summary>
 
 ```sh
-Scripts/build.sh --release
+Scripts/build.sh                  # Build and register with a Debug helper
+Scripts/build.sh --stage           # Build candidates only
+Scripts/build.sh --stage --release # Build candidates with a Release helper
 ```
 
-This builds both components, verifies their signatures, and registers the generated bundles in place. Keep those bundles at their paths under `build/`. The helper uses Release; the audio plug-in currently uses Xcode's Debug configuration.
+All modes reuse the existing Swift and Xcode caches. The audio plug-in uses Xcode's Debug configuration in every mode. These commands do not launch apps or run tests.
 
-Complete [first-time setup](docs/setup.md) to grant macOS access and create the required **Cutdown** Share destination, then follow [the user workflow](docs/workflow.md). The build command does not configure permissions or Share destinations, launch apps, or run tests.
+Staged helpers have a separate identity and cannot serve the live workflow. Xcode may still register a staged audio candidate; run a normal build before live use.
 
-### Development builds
+See [the setup guide](docs/setup.md#build-and-register-both-apps) for individual component commands, bundle paths, signing options, and troubleshooting.
 
-```sh
-Scripts/build.sh          # Debug helper and audio plug-in; build and register
-Scripts/build.sh --stage  # Build candidates without publishing installed bundles
-```
-
-Both commands reuse the existing Swift and Xcode caches. Add `--release` to a staged build for an optimized helper. Xcode may still register a staged audio candidate, so run a normal build before live use. Staged helpers have a separate identity and cannot serve the live workflow.
-
-For individual component commands, registered bundle paths, signing options, and troubleshooting, see [the setup guide](docs/setup.md#build-and-register-both-apps).
+</details>
 
 ## Tests
 
-Run from the repository root. All Swift builds reuse `build/swift`:
+Offline tests cover the Swift code, Audio Unit rendering and Controls, and build scripts. They do not edit Final Cut projects.
+
+<details>
+<summary>Run the offline tests</summary>
+
+Run from the repository root. Reuse `build/swift` for all Swift builds:
 
 ```sh
 mkdir -p build/module-cache build/swift-cache
@@ -54,46 +92,59 @@ AudioPlugin/test-factory.sh
 python3 -B -m unittest discover -s Tests/BuildScripts -p 'test_*.py'
 ```
 
-These are offline tests and do not edit Final Cut projects. Audio decoding tests require access to macOS media services; Xcode builds may also need process-list and debug-symbol-generation access. Record environment failures separately from test failures when running under an automation sandbox.
+Audio decoding requires access to macOS media services. Xcode builds may also need process-list and debug-symbol-generation access. Record sandbox or environment failures separately from test failures.
 
-Live tests must use small disposable projects only in **Cutdown Integration.fcpbundle** at the repository root, referencing generated media in place with no copied, optimized, or proxy media. A fresh checkout does not include that library. See [integration-test setup](docs/setup.md#integration-test-library) before running any host tests and follow [AGENTS.md](AGENTS.md).
+</details>
+
+**Live Final Cut tests must use `Cutdown Integration.fcpbundle` at the repository root.** A fresh checkout does not include it: create an empty library at that exact path, or reuse the existing one. Use small disposable projects with generated media referenced in place, without copied, optimized, or proxy media.
+
+Follow [integration-test setup](docs/setup.md#integration-test-library) and [AGENTS.md](AGENTS.md) before testing.
 
 ## Verified in this repository copy
 
-These are recorded results, not checks rerun for every commit:
+Recorded validation includes successful builds, offline tests, and manual XML replacement probes. End-to-end automatic editing remains unverified for the current build.
 
-| Date | Recorded validation |
+<details>
+<summary>Recorded results — September 2026</summary>
+
+**September 18**
+
+- Staged Release helper and audio plug-in built and passed signature verification.
+- The audio harness passed 60 mono/stereo render cases and settings-persistence checks.
+- 56 then-current focused Swift tests passed.
+
+**September 22**
+
+- The full Release Swift suite and both Audio Unit harnesses passed after workflow and fixture cleanup.
+- Manual replacement probes kept one project in the original event and verified generated output in Final Cut.
+
+These are historical results, not checks rerun for every commit. See [XML replacement evidence](docs/xml-replacement.md), [the progress record](docs/overhaul-progress.md), and [integration history](docs/integration-history.md) for scope and limitations.
+
+</details>
+
+## Documentation
+
+| Guide | Covers |
 | --- | --- |
-| September 18, 2026 | Staged Release helper and audio plug-in built and passed signature verification. The audio harness passed 60 mono/stereo render cases and settings-persistence checks; 56 then-current focused Swift tests passed. |
-| September 22, 2026 | The full Release Swift suite and both Audio Unit harnesses passed after workflow and fixture cleanup. Manual XML replacement probes verified generated output in Final Cut. |
+| [Setup and troubleshooting](docs/setup.md) | Installation, permissions, Share destination, and test library |
+| [Workflow and recovery](docs/workflow.md) | Detection settings, review, Apply, and settings recovery |
+| [Analysis and caching](docs/analysis-speed.md) | Source versus processed audio and measurement reuse |
+| [Integration evidence](docs/xml-replacement.md) | Manual replacement results and remaining verification |
+| [Audio plug-in](AudioPlugin/README.md) | Implementation and [Controls/helper protocol](AudioPlugin/REVIEW_PROTOCOL.md) |
 
-The manual probes do not verify the full automatic Analyze → Apply workflow. See [XML replacement evidence](docs/xml-replacement.md), [the progress record](docs/overhaul-progress.md), and [integration history](docs/integration-history.md) for scope, counts, and limitations. Generated logs and installed bundles are excluded from Git.
-
-## Capabilities and limits
-
-The implemented workflow supports normal-speed audio-only targets, source trims, per-cut selection, a timeline preview, and either removing silence or replacing selected pauses with one-second gaps. Live verification limits are noted above. Unprocessed clips use source PCM; processed clips use a verified isolated Final Cut render. Matching verified measurements can be reused when only detection settings change. See [analysis and cache behavior](docs/analysis-speed.md).
-
-Detection is based on loudness, not speech or breath recognition. Retimed/nested targets, linked-video cutting, component trims, unsupported connections, and cuts crossing fades remain outside scope. Imported effects and settings are checked separately; the workflow includes recovery when Final Cut discards settings. See [workflow and recovery](docs/workflow.md) for the complete restrictions.
-
-## Project layout and documentation
+<details>
+<summary>Source layout</summary>
 
 | Path | Purpose |
 | --- | --- |
 | `Sources/CutdownCore` | Time, timeline parsing, detection, and review |
-| `Sources/CutdownMac` | Audio analysis, Final Cut integration, XML writing, verification, and preview |
+| `Sources/CutdownMac` | Audio analysis, Final Cut integration, XML, verification, and preview |
 | `Sources/CutdownApp` | Background helper application |
-| `Sources/CutdownVerify` | Offline developer verifier; it does not import projects |
+| `Sources/CutdownVerify` | Offline developer verifier; does not import projects |
 | `AudioPlugin` | Passthrough Audio Unit and Controls window |
 | `Tests` | Swift fixtures, regression tests, and build-script tests |
 | `Scripts` | Build, registration, and generated-media utilities |
 
-- [First-time setup and troubleshooting](docs/setup.md)
-- [User workflow and recovery](docs/workflow.md)
-- [Audio plug-in implementation](AudioPlugin/README.md)
-- [Controls/helper protocol](AudioPlugin/REVIEW_PROTOCOL.md)
-- [Analysis and cache behavior](docs/analysis-speed.md)
-- [XML replacement evidence and limits](docs/xml-replacement.md)
-- [Implementation progress](docs/overhaul-progress.md)
-- [Historical integration evidence](docs/integration-history.md)
+Sanitized XML fixtures are included. Build products, generated media, local settings, Final Cut libraries, and validation logs are excluded from Git.
 
-Sanitized XML fixtures are included for offline tests. Build products, generated source media, local settings, and Final Cut libraries are not distributed with the repository.
+</details>
