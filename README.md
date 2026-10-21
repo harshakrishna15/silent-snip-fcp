@@ -72,6 +72,18 @@ See [the setup guide](docs/setup.md#build-and-register-both-apps) for individual
 
 </details>
 
+## Uninstall
+
+Quit Final Cut Pro and Silent Snip, then run:
+
+```sh
+Scripts/uninstall-local.sh
+```
+
+This unregisters and removes this checkout’s app bundles, including staged copies. Saved settings and results are kept. Use `--dry-run` to preview, or `--remove-data` to also erase settings, saved results, and recovery XML.
+
+Follow [the complete removal steps](docs/setup.md#uninstall) to remove the Share destination and macOS privacy entries.
+
 ## Tests
 
 Offline tests cover the Swift code, Audio Unit rendering and Controls, and build scripts. They do not edit Final Cut projects.

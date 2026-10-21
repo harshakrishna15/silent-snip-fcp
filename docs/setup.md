@@ -83,6 +83,42 @@ With the integration library open, import `build/Fixtures/Silent Snip Audio Only
 
 Follow [the workflow](workflow.md) to add Silent Snip Audio, open Controls, Analyze, review, and Apply. Check the resulting project's editable segments, source references, effects/settings, and total duration, as well as whether preview and recovery work. Merely seeing the effect or passing analysis is not evidence that automatic cuts work. Preserve exported evidence separately from build caches.
 
+## Uninstall
+
+1. In projects you intend to keep using, remove **Silent Snip Audio** (or its older **Cutdown Audio** label) from the Audio Inspector. Uninstalling does not remove effects from existing projects or undo cuts already applied.
+2. In **Final Cut Pro → Settings → Destinations**, delete the **Silent Snip** Share destination. Remove the old **Cutdown** destination too if it is still present.
+3. Quit Final Cut Pro and the Silent Snip helper. From the repository root, preview and run removal:
+
+   ```sh
+   Scripts/uninstall-local.sh --dry-run
+   Scripts/uninstall-local.sh
+   ```
+
+The command unregisters verified Silent Snip app bundles from Launch Services and PlugInKit, then deletes those bundles from this checkout’s `build/` directory. It includes installed, staged, and diagnostic app copies. It checks for running apps and stops on an unreadable process list; it never quits apps automatically. If an unregistration step fails, app bundles are kept for a retry. You can also rebuild and rerun `Scripts/register-local.sh` to restore registration.
+
+### Remove saved app data
+
+The default keeps settings and recovery files. To erase them as well, use:
+
+```sh
+Scripts/uninstall-local.sh --dry-run --remove-data
+Scripts/uninstall-local.sh --remove-data
+```
+
+**`--remove-data` permanently deletes saved results and recovery XML.** Copy anything you want to retain before running it. The flag removes:
+
+- `~/Library/Application Support/Cutdown` — saved results, recovery XML, shared deliveries, temporary analysis files, and diagnostics.
+- `~/Library/Application Support/Cutdown Audio` — saved detection defaults, when stored outside the sandbox.
+- The app’s `local.cutdown.*` preference domains, sandbox containers, caches, saved window state, and application-script folders, using the exact helper, candidate, wrapper, and extension identifiers.
+
+These settings are shared by checkouts using the same app identities. App bundles outside this checkout are left in place; uninstall those copies separately. Source code, developer build caches, original media, Final Cut libraries (including `Cutdown Integration.fcpbundle`), and exported integration evidence under `build/` are preserved. No shared Final Cut or Audio Unit cache is reset.
+
+### Finish removal
+
+In **System Settings → Privacy & Security**, remove Silent Snip’s entries from Accessibility or the control-access pane named by your macOS version, and Automation if listed. Older entries may still use the Cutdown name. The script does not change macOS privacy settings or Final Cut’s saved preferences.
+
+After preserving any libraries, media, or evidence you need, you can delete the repository folder to remove the source and remaining developer build caches. Removal is validated with disposable bundles and stubbed macOS services; a live uninstall/reinstall round trip has not been verified.
+
 ## Troubleshooting
 
 | Symptom | What to check |
