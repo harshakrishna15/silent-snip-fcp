@@ -14,7 +14,7 @@ No custom installer, repair app, package installer, or notarization work is incl
 
 - One containing app runs the existing background helper executable and includes the sandboxed Audio Unit at `Contents/PlugIns/SilentSnipAudio.appex`.
 - The containing app uses `local.silentsnip.app`; the extension keeps `local.silentsnip.app.audio`, its component identifiers, parameters, and saved-state format.
-- The containing app keeps the helper's URL routes, Share scripting definitions, document handling, libraries, previews, analysis, verification, and recovery. Its process remains outside the extension sandbox. A scissors menu bar icon makes the running app visible and offers status, saved results, and Quit.
+- The containing app keeps the helper's URL routes, Share scripting definitions, document handling, libraries, previews, analysis, verification, and recovery. Its process remains outside the extension sandbox. A scissors menu bar icon makes the running app visible and offers status, saved results, Clear Cache, and Quit.
 - Output: `build/App/Silent Snip.app`; downloadable archive: `dist/Silent Snip.zip`. Developer verification tools remain separate from the distributed app.
 - Existing saved-data locations stay unchanged. Migrating users may need to grant control access again and reselect the combined app as the Share action.
 
@@ -56,6 +56,10 @@ Build 8 keeps Controls inside Final Cut, as requested. It adds matching, stable 
 Build 9 removes the literal `Apply Cuts` title requirement that rejected the redesigned counted button. Exact fresh gesture, disabled-button, view, clip, project, and revision checks remain. See [confirmation contract and regression checks](apply-confirmation.md). On October 23, after the user confirmed both apps were closed, build 9 replaced the installed copy. The app matches the published bundle and ZIP, the extension is registered, Apple’s Audio Unit validation passes, and the copied app reports `ready` after refreshing its existing control-access grant. Build 8 is preserved in a backup ZIP. No live Apply success is claimed.
 
 ## Live handoff checklist
+
+### Safe cache cleanup — 2026-10-23
+
+Build 10 adds idle cleanup of inventoried temporary audio, bounded Share logs, and **Clear Cache…** in the scissors menu. Recovery XML, results, settings, original media, libraries, manual exports, unknown files, and modified files are preserved. The installed app matches the published app and ZIP; signatures, sandbox, and Audio Unit validation passed. Startup cleanup removed a synthetic disposable cache file while all 142 saved/library files and one referenced source file retained their original hashes. The suite passed 352 Swift tests (one skipped) and 53 build-script tests. See [cleanup policy and verification](storage-cleanup.md). This filesystem verification does not establish automatic Apply success.
 
 ### Compact Controls startup fix — 2026-10-22
 

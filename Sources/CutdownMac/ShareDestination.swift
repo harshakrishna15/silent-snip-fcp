@@ -50,6 +50,8 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     public var canBeginShare: (() -> Bool)?
     public private(set) var assets: [ShareDestinationAsset] = []
     public let rootURL: URL
+    private let cleanupStorage: StorageCleanup
+    private let mayWriteLogs: Bool
 
     private struct XMLRequest {
         let token: UUID
@@ -70,7 +72,14 @@ public enum ShareDestinationError: LocalizedError, Equatable {
 
     public func captureMedia(projectName: String, timeout: TimeInterval = 3600,
                              trigger: () async throws -> Void) async throws -> ShareDestinationReceipt {
-        try await capture(projectName: projectName, requiresMedia: true, timeout: timeout, trigger: trigger)
+        let receipt = try await capture(projectName: projectName, requiresMedia: true, timeout: timeout, trigger: trigger)
+        // Register only verified, request-owned renders. Manual Share exports,
+        // unknown/incomplete files and original media are never cleanup inputs.
+        let storage = cleanupStorage
+        await Task.detached(priority: .utility) {
+            for url in receipt.mediaURLs { _ = try? storage.register(url) }
+        }.value
+        return receipt
     }
 
     private func capture(projectName: String, requiresMedia: Bool, timeout: TimeInterval,
@@ -111,9 +120,15 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     }
 
     public init(rootURL: URL? = nil) {
-        self.rootURL = (rootURL ?? FileManager.default.urls(for: .applicationSupportDirectory,
-            in: .userDomainMask)[0].appendingPathComponent("Silent Snip/Share Inbox", isDirectory: true))
-            .standardizedFileURL.resolvingSymlinksInPath()
+        let requested = (rootURL ?? FileManager.default.urls(for: .applicationSupportDirectory,
+            in: .userDomainMask)[0].appendingPathComponent("Silent Snip/Share Inbox", isDirectory: true)).standardizedFileURL
+        // Custom test roots may use the system /var alias. Production cleanup
+        // must remain anchored to the original application-support location.
+        let logRoot = rootURL == nil ? requested : StorageCleanup.canonicalLocation(requested.deletingLastPathComponent())
+            .appendingPathComponent(requested.lastPathComponent, isDirectory: true)
+        self.rootURL = StorageCleanup.canonicalLocation(requested)
+        mayWriteLogs = StorageCleanup.canonicalLocation(logRoot) == logRoot
+        cleanupStorage = rootURL == nil ? StorageCleanup() : StorageCleanup(root: logRoot.deletingLastPathComponent())
         restorePendingAssets()
     }
 
@@ -271,6 +286,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     }
 
     func record(_ event: String, asset: ShareDestinationAsset?, details: [String: Any] = [:]) {
+        guard mayWriteLogs else { return }
         try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         var record = details
         record["event"] = event
@@ -280,12 +296,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         guard JSONSerialization.isValidJSONObject(record),
               var data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
         data.append(0x0a)
-        let file = rootURL.appendingPathComponent("events.jsonl")
-        if !FileManager.default.fileExists(atPath: file.path) { FileManager.default.createFile(atPath: file.path, contents: nil) }
-        guard let handle = try? FileHandle(forWritingTo: file) else { return }
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: data)
+        BoundedShareLog.append(data, root: rootURL)
     }
 
     private func persist(_ asset: ShareDestinationAsset) throws {

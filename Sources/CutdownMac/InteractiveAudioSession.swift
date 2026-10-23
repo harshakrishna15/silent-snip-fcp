@@ -38,6 +38,13 @@ import Foundation
     private var contexts: [UUID: Context] = [:]
     public init() {}
 
+    public var storageProtectedURLs: Set<URL> {
+        Set(analysisCache.protectedAudio.map { [$0] } ?? [])
+    }
+
+    /// Cached analysis is optional; existing review/recovery state stays intact.
+    public func clearAnalysisCache() { analysisCache.discardForCleanup() }
+
     public func discard(_ requestID: UUID) {
         contexts.removeValue(forKey: requestID)
     }

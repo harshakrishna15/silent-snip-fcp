@@ -3,6 +3,43 @@ import AppKit
 @testable import CutdownMac
 
 final class ShareDestinationTests: XCTestCase {
+    @MainActor func testSymlinkedShareRootCannotRotateAnExternalLog() throws {
+        let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("LinkedShareTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let outside = base.appendingPathComponent("External")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let original = try write("events.jsonl", in: outside, contents: "User file")
+        let alias = base.appendingPathComponent("Share Inbox")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: outside)
+        let manager = ShareDestinationManager(rootURL: alias)
+        _ = try manager.createAsset(name: "Project")
+        XCTAssertEqual(try String(contentsOf: original), "User file")
+    }
+
+    @MainActor func testOnlyRequestOwnedCompletedRendersEnterTheCleanupInventory() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("StorageShareTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = ShareDestinationManager(rootURL: root.appendingPathComponent("Share Inbox"))
+        let receipt = try await manager.captureMedia(projectName: "Processed") {
+            let asset = try manager.createAsset(name: "Processed")
+            let xml = try self.write("Processed.fcpxml", in: asset.directoryURL)
+            let audio = try self.write("Processed.wav", in: asset.directoryURL)
+            XCTAssertTrue(manager.handleOpen(urls: [xml, audio]))
+        }
+        let manual = try manager.createAsset(name: "User Export")
+        let manualXML = try write("User Export.fcpxml", in: manual.directoryURL)
+        let manualAudio = try write("User Export.wav", in: manual.directoryURL)
+        XCTAssertTrue(manager.handleOpen(urls: [manualXML, manualAudio]))
+        let report = StorageCleanup(root: root).clean(manual: true)
+        XCTAssertEqual(report.removedFiles, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: receipt.mediaURLs[0].path))
+        for file in [receipt.xmlURL, manualXML, manualAudio] {
+            XCTAssertEqual(try String(contentsOf: file), "fixture")
+        }
+    }
+
     @MainActor private func manager() throws -> ShareDestinationManager {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CutdownShareTests-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

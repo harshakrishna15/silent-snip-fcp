@@ -6,9 +6,12 @@ import XCTest
 @MainActor final class AnalysisCacheTests: XCTestCase {
     private var directory: URL!
     private var source: URL!
+    private var cacheDirectory: URL!
     override func setUpWithError() throws {
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent("CacheTests-\(UUID())")
+        directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("CacheTests-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        cacheDirectory = directory.appendingPathComponent("Temporary/\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         source = directory.appendingPathComponent("Source.wav")
         try Data([1, 2, 3, 4]).write(to: source)
     }
@@ -53,9 +56,9 @@ import XCTest
     }
     func testSettingsOnlyHitRecalculatesAndCreatesFreshJobPlan() async throws {
         let data = xml(), original = try await analysis(data, rendered: false)
-        let cache = AnalysisCache(); defer { cache.clear() }
+        let cache = AnalysisCache(storage: StorageCleanup(root: directory)); defer { cache.clear() }
         let baseline = try await key(data)
-        try await cache.store(key: baseline, analysis: original, directory: directory)
+        try await cache.store(key: baseline, analysis: original, directory: cacheDirectory)
         let changed = Data(String(decoding: data, as: UTF8.self).replacingOccurrences(of: "value=\"-40\"", with: "value=\"-30\"").utf8)
         let changedKey = try await key(changed)
         XCTAssertEqual(baseline, changedKey)
@@ -130,9 +133,9 @@ import XCTest
     func testRenderedCopySurvivesShareCleanupButTamperingCausesMiss() async throws {
         let data = xml(secondGate), original = try await analysis(data, rendered: true)
         let baseline = try await key(data)
-        let cache = AnalysisCache(); defer { cache.clear() }
-        try await cache.store(key: baseline, analysis: original, directory: directory)
-        let copy = directory.appendingPathComponent("Cached-Processed-Audio.wav")
+        let cache = AnalysisCache(storage: StorageCleanup(root: directory)); defer { cache.clear() }
+        try await cache.store(key: baseline, analysis: original, directory: cacheDirectory)
+        let copy = cacheDirectory.appendingPathComponent("Cached-Processed-Audio.wav")
         XCTAssertEqual(try Data(contentsOf: copy), try Data(contentsOf: source))
         let reused = try await cache.reuse(key: baseline, document: original.document, target: original.target, settings: .defaults, jobID: UUID())
         XCTAssertNotNil(reused)
@@ -140,16 +143,44 @@ import XCTest
         try Data([4, 3, 2, 1]).write(to: copy)
         let stale = try await cache.reuse(key: baseline, document: original.document, target: original.target, settings: .defaults, jobID: UUID())
         XCTAssertNil(stale); XCTAssertFalse(cache.hasEntry)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path), "A changed file must be preserved rather than treated as disposable cache.")
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
     func testCacheMissEvictsItsOwnedCopy() async throws {
         let data = xml(secondGate), original = try await analysis(data, rendered: true)
-        let cache = AnalysisCache(); defer { cache.clear() }
-        try await cache.store(key: key(data), analysis: original, directory: directory)
+        let cache = AnalysisCache(storage: StorageCleanup(root: directory)); defer { cache.clear() }
+        try await cache.store(key: key(data), analysis: original, directory: cacheDirectory)
         let miss = try await cache.reuse(key: nil, document: original.document, target: original.target, settings: .defaults, jobID: UUID())
         XCTAssertNil(miss); XCTAssertFalse(cache.hasEntry)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Cached-Processed-Audio.wav").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheDirectory.appendingPathComponent("Cached-Processed-Audio.wav").path))
+    }
+    func testFailedCopyKeepsTheFileAlreadyAtItsDestination() async throws {
+        let data = xml(secondGate), original = try await analysis(data, rendered: true)
+        let destination = cacheDirectory.appendingPathComponent("Cached-Processed-Audio.wav")
+        let important = Data("User-provided file already here".utf8)
+        try important.write(to: destination)
+        let cache = AnalysisCache(storage: StorageCleanup(root: directory))
+        do {
+            try await cache.store(key: key(data), analysis: original, directory: cacheDirectory)
+            XCTFail("A cache copy cannot replace an existing file")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: destination), important)
+        XCTAssertEqual(try Data(contentsOf: source), Data([1, 2, 3, 4]))
+        XCTAssertFalse(cache.hasEntry)
+    }
+
+    func testManualCleanupDropsOnlyTheOptionalAnalysisCache() async throws {
+        let data = xml(secondGate), original = try await analysis(data, rendered: true)
+        let storage = StorageCleanup(root: directory), cache = AnalysisCache(storage: StorageCleanup(root: directory))
+        let baseline = try await key(data)
+        try await cache.store(key: baseline, analysis: original, directory: cacheDirectory)
+        XCTAssertEqual(cache.protectedAudio, cacheDirectory.appendingPathComponent("Cached-Processed-Audio.wav"))
+        cache.discardForCleanup()
+        XCTAssertFalse(cache.hasEntry); XCTAssertNil(cache.protectedAudio)
+        let report = await Task.detached { storage.clean(manual: true) }.value
+        XCTAssertEqual(report.removedFiles, 1)
+        XCTAssertEqual(try Data(contentsOf: source), Data([1, 2, 3, 4]))
+        XCTAssertFalse(original.review.selectedCuts.isEmpty, "Clearing cache must not discard a reviewed edit plan.")
     }
     func testStageTimingIncludesRepeatedStagesFailureAndPreviewLatency() {
         var now = 10.0

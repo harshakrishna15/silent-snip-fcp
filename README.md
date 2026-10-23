@@ -68,6 +68,12 @@ For development, `Scripts/build.sh` builds a Debug app and registers it in place
 
 </details>
 
+## Storage and cleanup
+
+Silent Snip checks its recorded disposable audio at launch and every 10 minutes while idle. It removes old copies after seven days and targets a **256 MiB** cache limit, while preserving active or changed files. Share event logs are capped at **2 MiB total**.
+
+Choose **Clear Cache…** from the scissors menu to discard reusable analysis audio. **Recovery XML, saved results, settings, Final Cut libraries, original media, and manual Share exports are preserved.** Unknown or older unregistered files are kept. Recovery and result history can therefore continue to grow until you remove it yourself. See [storage and cleanup details](docs/storage-cleanup.md).
+
 ## Uninstall
 
 Quit Final Cut and Silent Snip, then move the copied **Silent Snip.app** to Trash. Settings and saved results are kept. Remove its Final Cut Share destination and macOS control-access entry as described in [complete removal](docs/setup.md#uninstall).

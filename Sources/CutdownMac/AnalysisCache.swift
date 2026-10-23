@@ -63,19 +63,27 @@ struct AnalysisCacheKey: Equatable {
         let key: AnalysisCacheKey
         let analysis: AnalyzedAudioProject
         let ownedAudio: URL?
+        let record: UUID?
     }
     private var entry: Entry?
+    private let storage: StorageCleanup
+    init(storage: StorageCleanup = StorageCleanup()) { self.storage = storage }
     var hasEntry: Bool { entry != nil }
-    func clear() {
-        if let url = entry?.ownedAudio { try? FileManager.default.removeItem(at: url) }
+    var protectedAudio: URL? { entry?.ownedAudio }
+    func discardForCleanup() { entry = nil }
+    @discardableResult func clear() -> Task<Void, Never>? {
+        let record = entry?.record
         entry = nil
+        guard let record else { return nil }
+        let storage = storage
+        return Task.detached(priority: .utility) { _ = storage.remove(record) }
     }
     func reuse(key: AnalysisCacheKey?, document: TimelineDocument, target: TimelineClip,
                settings: AnalysisSettings, jobID: UUID) async throws -> AnalyzedAudioProject? {
-        guard let key, let entry, key == entry.key else { clear(); return nil }
+        guard let key, let entry, key == entry.key else { await clear()?.value; return nil }
         if let audio = entry.ownedAudio {
             let snapshot = try? await MediaContentSnapshot.capture([audio])
-            guard snapshot?.hashes[audio] == entry.analysis.dialogueContext.audioSHA256 else { clear(); return nil }
+            guard snapshot?.hashes[audio] == entry.analysis.dialogueContext.audioSHA256 else { await clear()?.value; return nil }
         }
         try Task.checkCancellation()
         var refreshed = entry.analysis
@@ -87,33 +95,41 @@ struct AnalysisCacheKey: Equatable {
             settings: settings, analysis: refreshed.analysis, review: review)
     }
     func store(key: AnalysisCacheKey?, analysis: AnalyzedAudioProject, directory: URL) async throws {
-        clear()
+        await clear()?.value
         guard let key, analysis.audio.windows.count <= 360_000,
               analysis.audio.channelCount <= 8 else { return }
         var retained = analysis
         var owned: URL?
+        var record: UUID?
         if analysis.dialogueContext.isolatedTargetID != nil {
             let destination = directory.appendingPathComponent("Cached-Processed-Audio.wav")
             let source = analysis.dialogueContext.audioURL
             let expected = analysis.dialogueContext.audioSHA256
             // Copy and content-check off the main actor. A cache miss/failure
             // must not invalidate an otherwise successful analysis.
-            let copied = try await Self.copyRender(source, to: destination, expected: expected)
-            guard copied else { return }
+            guard let registered = try await Self.copyRender(source, to: destination, expected: expected, storage: storage) else { return }
+            record = registered
             owned = destination
             retained = analysis.retainingAudio(at: destination)
         }
-        entry = Entry(key: key, analysis: retained, ownedAudio: owned)
+        entry = Entry(key: key, analysis: retained, ownedAudio: owned, record: record)
     }
-    private nonisolated static func copyRender(_ source: URL, to destination: URL, expected: String) async throws -> Bool {
+    private nonisolated static func copyRender(_ source: URL, to destination: URL, expected: String,
+                                              storage: StorageCleanup) async throws -> UUID? {
         let size = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
-        guard size <= 256 * 1_024 * 1_024 else { return false }
-        var keep = false
-        defer { if !keep { try? FileManager.default.removeItem(at: destination) } }
+        guard size <= 256 * 1_024 * 1_024 else { return nil }
         try Task.checkCancellation()
+        try storage.validateDisposableLocation(destination)
+        // A failed copy must never remove a file already at the destination.
         try FileManager.default.copyItem(at: source, to: destination)
-        guard try MediaContentSnapshot.contentHash(at: destination) == expected else { return false }
-        try Task.checkCancellation()
-        keep = true; return true
+        let record = try storage.register(destination, expectedHash: expected)
+        do {
+            guard try MediaContentSnapshot.contentHash(at: destination) == expected else { return nil }
+            try Task.checkCancellation()
+            return record
+        } catch {
+            _ = storage.remove(record) // A canceled hash leaves the record for a later idle sweep.
+            throw error
+        }
     }
 }

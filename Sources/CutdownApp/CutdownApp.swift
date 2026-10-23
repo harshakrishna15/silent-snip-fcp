@@ -6,18 +6,27 @@ import CutdownMac
     private let interactive = InteractiveAudioSession()
     private var reviewRequest: AnalyzeRequest?
     private var menuBar: MenuBarController?
+    private var storageTimer: Timer?
+    private lazy var storageCleanup = StorageCleanupController(isBusy: { [unowned self] in
+        coordinator.isBusy || ShareDestinationManager.shared.hasActiveRequest
+    }, protectedURLs: { [unowned self] in interactive.storageProtectedURLs },
+    clearMemory: { [unowned self] in interactive.clearAnalysisCache() })
     private lazy var coordinator = AnalysisReviewCoordinator(
         operation: { [unowned self] request, progress in
+            await waitForStorageCleanup()
             reviewRequest = request
             return try await interactive.analyze(request, progress: progress)
         }, applyOperation: { [unowned self] request, result, progress in
+            await waitForStorageCleanup()
             try await interactive.apply(request, result: result, progress: progress)
         }, authorizeApply: { [unowned self] command in
             guard let view = command.view, let gesture = command.applyGesture else { return false }
             return interactive.canAuthorizeApply(view: view, gesture: gesture)
         }, highlightOperation: { [unowned self] request, result, cutID in
+            await waitForStorageCleanup()
             try await interactive.highlight(request, result: result, cutID: cutID)
         }, verificationOperation: { [unowned self] request, progress in
+            await waitForStorageCleanup()
             try await interactive.retryVerification(request.id, progress: progress)
         }, canRetryVerification: { [unowned self] id in
             interactive.canRetryVerification(id)
@@ -32,7 +41,7 @@ import CutdownMac
         }
         let manager = ShareDestinationManager.shared
         manager.canBeginShare = { [weak self, weak manager] in
-            manager?.hasActiveRequest == true || self?.coordinator.isBusy == false
+            self?.storageCleanup.isRunning != true && (manager?.hasActiveRequest == true || self?.coordinator.isBusy == false)
         }
         manager.onFailure = { error in
             try? IntegrationReport(state: "failed", message: error.localizedDescription).save()
@@ -52,7 +61,17 @@ import CutdownMac
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        menuBar = MenuBarController(isBusy: { [weak self] in self?.coordinator.isBusy == true })
+        menuBar = MenuBarController(isBusy: { [weak self] in
+            self?.coordinator.isBusy == true || self?.storageCleanup.isRunning == true || ShareDestinationManager.shared.hasActiveRequest
+        }, clearCache: { [weak self] in
+            guard let self else { return nil }
+            return await self.cleanStorage(manual: true)
+        })
+        Task { _ = await cleanStorage(manual: false) }
+        storageTimer = Timer(timeInterval: 600, repeats: true) { [weak self] _ in
+            Task { @MainActor in _ = await self?.cleanStorage(manual: false) }
+        }
+        RunLoop.main.add(storageTimer!, forMode: .common)
         let trusted = FinalCutAccessibility.isTrusted
         if !trusted { FinalCutAccessibility.requestAccess() }
         try? IntegrationReport(state: trusted ? "ready" : "permission-required", message: trusted
@@ -93,10 +112,19 @@ import CutdownMac
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        storageTimer?.invalidate()
         coordinator.stop()
         interactive.stop()
         transport.stop()
         menuBar?.stop()
+    }
+
+    private func waitForStorageCleanup() async {
+        await storageCleanup.waitUntilIdle()
+    }
+
+    private func cleanStorage(manual: Bool) async -> StorageCleanupReport? {
+        await storageCleanup.clean(manual: manual)
     }
 }
 
