@@ -4,13 +4,13 @@ Remove quiet pauses from audio-only clips in Final Cut Pro, with control over wh
 
 Silent Snip combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes audio and prepares an editable project that still references your original media.
 
-> **Integration in progress:** Manual XML replacement has been verified. The full automatic Analyze → Apply workflow, preview, and settings recovery still need live Final Cut verification with matching installed builds. Builds and offline tests alone do not establish that automatic cuts work.
+> **Integration in progress:** Manual XML replacement, live Analyze, and settings-preview verification have passed on test fixtures. The full automatic Apply, import verification, and settings-recovery flow still needs a complete live editing pass. Builds and analysis alone do not establish that automatic cuts work.
 
 ## How it works
 
 1. Select one audio-only clip in the primary storyline and add **Silent Snip Audio**.
 2. Open **Controls**, adjust silence detection, and click **Analyze**.
-3. Review the proposed cuts and choose which to include.
+3. Review the proposed cuts and choose which to include. Detection or output edits update the current review; finish editing a field or press Return to start verification before Apply becomes available.
 4. Click **Apply Cuts** to replace the project in its original event.
 
 Silent Snip saves recovery XML before replacement. Your source media stays unchanged.
@@ -22,7 +22,7 @@ See the [full workflow and recovery guide](docs/workflow.md) for detection setti
 - **Two output modes:** remove selected pauses or replace them with one-second gaps.
 - **Review before applying:** per-cut selection and a timeline preview.
 - **Audio processing:** measure source audio for unprocessed clips or a verified isolated Final Cut render for processed clips.
-- **Faster repeat analysis:** reuse matching verified measurements when only detection settings change.
+- **Faster tuning:** update cuts from the current review's retained measurements, with Apply disabled until fresh checks pass. A new Analyze can also reuse matching verified measurements.
 
 Detection uses loudness, so quiet breaths can qualify as silence. It does not recognize speech or breaths.
 
@@ -67,6 +67,10 @@ This produces **`build/App/Silent Snip.app`** and **`dist/Silent Snip.zip`**, wi
 For development, `Scripts/build.sh` builds a Debug app and registers it in place. Add `--release` for Release, or `--stage` to create an inert candidate without changing the published app, ZIP, or registrations. `Scripts/register-local.sh --check-only` checks the combined build without changing registrations. Keep registered build products in place. See [developer setup](docs/setup.md#build-from-source).
 
 </details>
+
+The app also reduces repeated Final Cut control searches while keeping fresh project and selection checks. See [lookup changes and performance verification](docs/accessibility-speed.md).
+
+XML-only exports can finish as soon as a complete, unchanged document is closed by its producer; unsupported systems retain the stability fallback. See [faster exports and settings previews](docs/fast-review.md) for behavior, measurements, and verification limits.
 
 ## Storage and cleanup
 

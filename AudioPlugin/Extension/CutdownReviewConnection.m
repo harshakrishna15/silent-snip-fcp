@@ -34,7 +34,7 @@ static BOOL booleanValue(id value) {
     NSMutableArray *commands = [NSMutableArray array];
     if (self.applying && !self.applyAcknowledged && self.pendingApply)
         [commands addObject:self.pendingApply];
-    for (id pending in @[self.pendingSelection ?: NSNull.null, self.pendingRetry ?: NSNull.null, self.pendingPreview ?: NSNull.null])
+    for (id pending in @[self.pendingSelection ?: NSNull.null, self.pendingRetry ?: NSNull.null, self.pendingPreview ?: NSNull.null, self.pendingSettings ?: NSNull.null])
         if (pending != NSNull.null) [commands addObject:pending];
     return commands;
 }
@@ -43,7 +43,7 @@ static BOOL booleanValue(id value) {
     // A completed/failed job needs no heartbeat. Do not erase the actual
     // failure with "helper not responding" when its host view was hidden.
     if (CutdownReviewStateIsTerminal(self.state) && !self.awaitingResponse && !self.applying &&
-        !self.operationBusy && !self.pendingRetry && !self.pendingSelection && !self.pendingPreview) return NO;
+        !self.operationBusy && !self.pendingRetry && !self.pendingSelection && !self.pendingPreview && !self.pendingSettings) return NO;
     return self.lastResponse && [now timeIntervalSinceDate:self.lastResponse] > 15;
 }
 - (NSDictionary *)acceptNotification:(NSNotification *)notification {
@@ -52,7 +52,7 @@ static BOOL booleanValue(id value) {
     // alive without decoding/rebuilding its rows. An unacknowledged Apply must
     // still time out if the helper only replays the preceding review.
     if ([notification.object isEqual:self.lastResponseObject]) {
-        if (!self.applying || self.applyAcknowledged) self.lastResponse = NSDate.date;
+        if ((!self.applying || self.applyAcknowledged) && !self.pendingSettings) self.lastResponse = NSDate.date;
         return nil;
     }
     NSData *data = [notification.object dataUsingEncoding:NSUTF8StringEncoding];
@@ -71,6 +71,10 @@ static BOOL booleanValue(id value) {
         if ([value[@"revision"] compare:self.applyRevision] != NSOrderedDescending ||
             (!terminal && ![value[@"state"] isEqual:CutdownReviewStateApplying])) return nil;
     }
+    // A previous settings response cannot replace the newest local edit.
+    if (self.pendingSettings && ![value[@"settingsEdit"] isEqual:self.pendingSettings[@"settingsEdit"]]) {
+        return nil;
+    }
 
     for (id row in value[@"cuts"]) {
         if (![row isKindOfClass:NSDictionary.class] || ![row[@"id"] isKindOfClass:NSString.class] || ![row[@"id"] length] || ![row[@"start"] isKindOfClass:NSString.class] ||
@@ -86,6 +90,7 @@ static BOOL booleanValue(id value) {
     self.lastResponseObject = notification.object;
     self.revision = value[@"revision"];
     self.state = value[@"state"];
+    if (self.pendingSettings && [value[@"settingsEdit"] isEqual:self.pendingSettings[@"settingsEdit"]]) self.pendingSettings = nil;
     if (self.pendingRetry && [self.revision compare:self.pendingRetry[@"expectedRevision"]] == NSOrderedDescending) self.pendingRetry = nil;
     if (self.pendingPreview && [self.revision compare:self.previewRevision] == NSOrderedDescending &&
         (![value[@"state"] isEqual:CutdownReviewStateReview] || [value[@"previewVisible"] isEqual:self.pendingPreview[@"included"]])) self.pendingPreview = nil;

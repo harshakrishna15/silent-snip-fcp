@@ -32,7 +32,7 @@ extension FinalCutAXSession {
         if let shortcut {
             // The command is non-destructive. Callers verify its result; a
             // timeout must stop preparation rather than issue it a second time.
-            guard hasTimelineFocus() else {
+            guard try hasTimelineFocus() else {
                 throw FinalCutCaptureError.invalidSelection("The timeline lost keyboard focus before selecting a range.")
             }
             try key(code: shortcut.keyCode, flags: shortcut.flags)
@@ -54,6 +54,7 @@ extension FinalCutAXSession {
 
     private func hasTimelineRanges() throws -> Bool {
         try assertInputFocus()
+        try refreshTimeline()
         // Unlike children(), a failed AX read must not become an empty list:
         // that could silently export only a selected range of the clip.
         guard string(timeline, kAXRoleAttribute) == kAXLayoutAreaRole,
@@ -65,7 +66,8 @@ extension FinalCutAXSession {
         return items.contains { string($0, kAXDescriptionAttribute) == "Range Selection" }
     }
 
-    private func hasTimelineFocus() -> Bool {
+    private func hasTimelineFocus() throws -> Bool {
+        try refreshTimeline()
         if (attribute(timeline, kAXFocusedAttribute) as? NSNumber)?.boolValue == true { return true }
         var element = Self.elementAttribute(root, kAXFocusedUIElementAttribute)
         for _ in 0..<12 {
@@ -78,14 +80,14 @@ extension FinalCutAXSession {
 
     func focusTimeline() async throws {
         try assertInputFocus()
-        if hasTimelineFocus() { return }
+        if try hasTimelineFocus() { return }
         if AXUIElementSetAttributeValue(timeline, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success {
-            try await waitUntil(timeout: 2, context: "direct timeline focus") { hasTimelineFocus() }
+            try await waitUntil(timeout: 2, context: "direct timeline focus") { (try? hasTimelineFocus()) == true }
             return
         }
         try await pressMenu(path: ["Window", "Go To", "Timeline"])
         // Verify the fallback too; elapsed time alone does not establish focus.
-        try await waitUntil(timeout: 2, context: "timeline focus") { hasTimelineFocus() }
+        try await waitUntil(timeout: 2, context: "timeline focus") { (try? hasTimelineFocus()) == true }
     }
 
     /// Move only the playhead, using Apple's timecode-entry command. No timeline

@@ -9,7 +9,7 @@ The extension resolves its exact containing `Silent Snip.app` and explicitly
 targets that application for Analyze and saved-result verification. A competing
 legacy helper cannot receive these requests through the default URL association.
 The extension remains a separate sandboxed process; the containing app runs the
-existing background workflow. The wire protocol is unchanged.
+existing background workflow. Matching builds are required for settings previews.
 
 The Audio Unit's custom effect window and the Silent Snip helper communicate through
 `DistributedNotificationCenter` within the current macOS login session. The Audio
@@ -34,7 +34,7 @@ monotonic `revision`. Payloads are limited to 256 KiB and at most 2,000 cut rows
 Project XML, source paths, and audio samples are not sent through this channel.
 
 The view subscribes before launching the helper and polls the latest revision to
-recover lost notifications. Unacknowledged Apply, selection, preview, and verification-retry commands resend the same pending request. The helper applies a job at most once. An acknowledged Apply is only polled. After 15 seconds without an accepted response, the window invalidates the review, warns of any uncertain import, and re-enables Analyze.
+recover lost notifications. Unacknowledged Apply, selection, settings, preview, and verification-retry commands resend the same pending request. The helper applies a job at most once. An acknowledged Apply is only polled. After 15 seconds without an accepted response, the window invalidates the review, warns of any uncertain import, and re-enables Analyze.
 
 The helper validates and serializes each revision once. Identical responses only
 refresh the connection heartbeat; they do not decode again or rebuild the table.
@@ -53,9 +53,9 @@ another running helper from overwriting the owner's response. If the owner exits
 the existing 15-second timeout enables Analyze again.
 
 Commands are `status`, `cancel`, `include`, `selectAll`, `deselectAll`, `highlight`,
-`apply`, `retryVerification`, and `preview`. Changing settings requires Analyze
-again so the helper validates fresh project and source state before reusing
-measurements. An `analyzing` response can contain verified cut rows while cleanup
+`apply`, `retryVerification`, `preview`, and `recalculate`. Detection and output
+edits recalculate the current retained review while fresh verification gates Apply.
+An `analyzing` response can contain verified cut rows while cleanup
 runs, but `canApply`, `canChangeSelection`, and `canHighlight` remain false until
 `review`. Capability flags from the helper enable each implemented operation.
 `canApply` and `canHighlight` default to false. Defining a command does not
@@ -66,8 +66,8 @@ The helper accepts them only while that review revision is current, so a delayed
 retransmission cannot undo a newer choice. Apply also includes the Controls view
 UUID and a fresh `applyGesture` UUID. The Apply button exposes that gesture in
 its accessibility identifier only after a click and while disabled awaiting
-acknowledgment. The helper checks the button in the sole selected clip's Controls
-window before starting the edit. Apply retries carry the same gesture and
+acknowledgment. The helper checks the button in the sole selected clip's focused
+Controls window before starting the edit. Apply retries carry the same gesture and
 revision; acknowledgment or timeout clears the identifier.
 
 Distributed notifications are untrusted. The helper must require an existing
@@ -99,6 +99,42 @@ Visibility does not alter cut inclusion or Apply eligibility. The checkbox is en
 for an idle review response that advertises this field. Closing the window does
 not cancel analysis or hide the overlay. Apply and cancellation clear it.
 
+## Settings previews
+
+Controls coalesces valid detection/output edits for 180 ms. A `recalculate`
+command contains `expectedRevision`, the native `view` UUID, a new `settingsEdit`
+UUID, an increasing per-view `settingsSequence`, typed `settings` and `output`,
+and the boolean `verifySettings`. Invalid partial input is kept locally with
+Apply disabled. Recalculation requires the existing job and its retained
+measurements, the original selected clip/project, and the unique view ID in the
+focused native Controls window. Hidden or stale editors in Final Cut's window
+list cannot stand in for that focused window.
+Numeric values use the same shortest Float decimal representation as Analyze's
+URL, so unchanged padding cannot gain a frame from JSON's Float-to-Double
+promotion. Host-induced duplicate editor-end events retain the current edit
+identity and cannot restart a completed check.
+
+The helper enters `recalculating`, publishes provisional cut rows immediately,
+and echoes `settingsEdit`, `settings`, `output`, and `provisional`. Apply,
+selection, and navigation stay disabled. Detection fields and output remain
+editable. Older or repeated edit sequences cannot replace the latest edit;
+the exact pending payload is retried until its edit UUID is acknowledged.
+Old responses cannot postpone an unacknowledged settings timeout.
+
+While a detection field is being edited, `verifySettings: false` requests only
+the preview. Host verification starts after Return or after editing ends, to
+avoid moving keyboard focus into Final Cut while the user types. It exports
+fresh XML, checks the project baseline, selected occurrence, controller
+settings, source media, and cut representability without rerendering audio.
+Rapid edits cancel an older check; its cleanup finishes before the latest check
+starts. Only the latest successful check returns to `review`. Failure or
+cancellation cannot enable Apply, and the final Apply checks still run.
+
+A recreated view reconnects using the coordinator's current settings rather
+than the original Analyze values. A new Analyze is required after changing
+timeline content, source media, or audio processing. This retained-review path
+does not make unknown processing eligible for the repeat-analysis cache.
+
 ## Navigation and verification
 
 `highlight` requires the exact current `cutID` and `canHighlight`; it moves the playhead to the range start after baseline verification, without changing inclusion. The transient `navigating` state blocks Apply, settings, and selection mutations until navigation finishes. Helpers without a navigation implementation leave the capability disabled.
@@ -124,7 +160,7 @@ On appearance, a view with no request publishes a bounded string envelope to
 while visible and unedited. The view exposes that UUID in its Cancel button's
 accessibility identifier, `cutdown.review.reconnect.UUID`.
 
-The helper checks the pinned project, original selected clip and sole Silent Snip
+The helper checks the pinned project, original selected clip and focused Silent Snip
 Controls window, then locates the exact button identifier in that window. Only
 then does it send a reply to `local.silentsnip.review.connected.v1.UUID` containing
 `version`, `view`, `request`, four `settings` values and `output`. The recreated

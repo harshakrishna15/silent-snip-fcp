@@ -108,6 +108,13 @@ static BOOL booleanValue(id value) {
 @property(nonatomic) BOOL retryAvailable;
 @property(nonatomic) NSArray<NSNumber *> *submittedSettings;
 @property(nonatomic) NSTimer *pollTimer;
+@property(nonatomic) NSTimer *settingsTimer;
+@property(nonatomic) NSInteger settingsSequence;
+@property(nonatomic) NSString *settingsEditID;
+@property(nonatomic) BOOL settingsNeedsVerification;
+@property(nonatomic) BOOL settingsReturnCommitted;
+@property(nonatomic) BOOL settingsVerificationStarted;
+@property(nonatomic) NSInteger settingsOutputIndex;
 @property(nonatomic) BOOL canApply;
 @property(nonatomic) BOOL settingsDirty;
 @property(nonatomic) NSProgressIndicator *progressBar;
@@ -391,7 +398,9 @@ static BOOL booleanValue(id value) {
 }
 
 - (void)updatePrimaryAction {
-    BOOL reviewing = [self.connection.state isEqual:CutdownReviewStateReview] && !self.settingsDirty && !self.connection.applying;
+    BOOL reviewing = ([self.connection.state isEqual:CutdownReviewStateReview] && !self.settingsDirty) ||
+        [self.connection.state isEqual:CutdownReviewStateRecalculating];
+    reviewing = reviewing && !self.connection.applying;
     BOOL hasEligibleCut = NO;
     for (NSDictionary *cut in self.cutRows) if ([cut[@"eligible"] boolValue]) { hasEligibleCut = YES; break; }
     BOOL showApply = self.connection.applying || (reviewing && hasEligibleCut);
@@ -542,17 +551,27 @@ static BOOL booleanValue(id value) {
 }
 
 - (void)controlTextDidChange:(NSNotification *)notification {
+    self.settingsReturnCommitted = NO;
     self.settingsDirty = YES;
     self.lengthLabel.stringValue = @"";
     self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
     self.canApply = NO; self.applyButton.enabled = NO;
     [self updatePrimaryAction];
-    self.summaryLabel.stringValue = @"Settings changed. Analyze updates the preview and reuses audio when unchanged.";
+    self.summaryLabel.stringValue = self.connection.requestID && !self.connection.timedOut
+        ? @"Updating the proposed cuts…" : @"Settings changed. Choose Analyze to update the cuts.";
+    [self scheduleSettingsPreview];
 }
+- (void)controlTextDidBeginEditing:(NSNotification *)notification { self.settingsReturnCommitted = NO; }
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
+    if (!self.settingsDirty && !self.settingsNeedsVerification) return;
     if (self.settingsDirty) [self commitSettings];
+    self.settingsReturnCommitted = [notification.userInfo[@"NSTextMovement"] integerValue] == NSReturnTextMovement;
+    [self scheduleSettingsPreview];
 }
 - (NSArray<NSNumber *> *)readFields {
+    return [self readFieldsReportingErrors:YES];
+}
+- (NSArray<NSNumber *> *)readFieldsReportingErrors:(BOOL)report {
     NSMutableArray *values = [NSMutableArray array];
     NSNumberFormatter *formatter = [[NSNumberFormatter alloc] init];
     formatter.numberStyle = NSNumberFormatterDecimalStyle;
@@ -568,12 +587,75 @@ static BOOL booleanValue(id value) {
         // rounds back to the exact minimum (e.g. 0.1f) must not fail a Double comparison.
         float stored = (float)value;
         if (!parsed || !text.length || range.length != text.length || !parameter || !isfinite(value) || !isfinite(stored) || stored < parameter.minValue || stored > parameter.maxValue) {
-            [self setErrorMessage:[NSString stringWithFormat:@"Enter a valid %@ between %g and %g.", parameter.displayName ?: @"setting", parameter.minValue, parameter.maxValue]];
+            if (report) [self setErrorMessage:[NSString stringWithFormat:@"Enter a valid %@ between %g and %g.", parameter.displayName ?: @"setting", parameter.minValue, parameter.maxValue]];
             return nil;
         }
         [values addObject:@(stored)];
     }
     return values;
+}
+- (void)scheduleSettingsPreview {
+    [self.settingsTimer invalidate]; self.settingsTimer = nil;
+    if (!self.connection.requestID || !self.connection.revision || self.connection.applying || self.connection.timedOut ||
+        (![self.connection.state isEqual:CutdownReviewStateReview] && ![self.connection.state isEqual:CutdownReviewStateRecalculating])) return;
+    __weak typeof(self) weakSelf = self;
+    self.settingsTimer = [NSTimer timerWithTimeInterval:0.18 repeats:NO block:^(NSTimer *timer) {
+        [weakSelf sendSettingsPreview];
+    }];
+    [NSRunLoop.mainRunLoop addTimer:self.settingsTimer forMode:NSRunLoopCommonModes];
+}
+- (void)sendSettingsPreview {
+    [self.settingsTimer invalidate]; self.settingsTimer = nil;
+    if (!self.connection.requestID || !self.connection.revision || self.connection.applying || self.connection.timedOut ||
+        (![self.connection.state isEqual:CutdownReviewStateReview] && ![self.connection.state isEqual:CutdownReviewStateRecalculating])) return;
+    NSArray *values = [self readFieldsReportingErrors:NO];
+    if (!values || ![self.audioUnit setAnalysisSettings:values error:nil]) return;
+    BOOL editing = NO;
+    for (NSTextField *field in self.fields) if (field.currentEditor) { editing = YES; break; }
+    BOOL verify = self.settingsReturnCommitted || !editing;
+    // Export can end the field editor a second time. Do not replace the edit
+    // identity already being verified merely because focus moved to the host.
+    if ([self.connection.state isEqual:CutdownReviewStateRecalculating] && self.settingsEditID &&
+        [self.submittedSettings isEqual:values] && self.settingsOutputIndex == self.outputMode.indexOfSelectedItem &&
+        (self.settingsVerificationStarted || !verify)) return;
+    self.submittedSettings = values; self.settingsSequence += 1;
+    self.settingsVerificationStarted = verify;
+    self.settingsOutputIndex = self.outputMode.indexOfSelectedItem;
+    self.settingsNeedsVerification = !verify;
+    self.settingsEditID = NSUUID.UUID.UUIDString;
+    NSMutableDictionary *wireSettings = [NSMutableDictionary dictionary];
+    NSArray *wireKeys = @[@"threshold", @"minimum", @"before", @"after"];
+    for (NSUInteger i=0; i<4; i++) {
+        // Analyze uses NSNumber(Float).stringValue in its URL. JSON otherwise
+        // promotes the Float's binary approximation to Double, which can move
+        // padding across a frame boundary despite unchanged displayed values.
+        NSNumber *value = values[i];
+        wireSettings[wireKeys[i]] = @([value.stringValue doubleValue]);
+    }
+    self.connection.pendingSettings = @{@"command":@"recalculate", @"request":self.connection.requestID, @"version":@1,
+        @"view":self.viewID, @"expectedRevision":self.connection.revision, @"settingsEdit":self.settingsEditID,
+        @"settingsSequence":@(self.settingsSequence), @"verifySettings":@(verify), @"output":self.outputMode.indexOfSelectedItem == 1 ? @"gaps" : @"remove",
+        @"settings":wireSettings};
+    self.connection.pendingSelection = nil; self.canApply = NO; self.applyButton.enabled = NO;
+    self.connection.state = CutdownReviewStateRecalculating; self.connection.operationBusy = YES;
+    self.operationStarted = NSDate.date;
+    self.connection.lastResponse = NSDate.date;
+    [self updatePrimaryAction];
+    [self setStatusMessage:@"Updating preview and verifying the project…"];
+    [self sendPreviewCommand:self.connection.pendingSettings];
+}
+- (BOOL)responseMatchesCurrentSettings:(NSDictionary *)response {
+    if (!self.settingsEditID || ![response[@"settingsEdit"] isEqual:self.settingsEditID] ||
+        ![response[@"settings"] isKindOfClass:NSDictionary.class] ||
+        ![response[@"output"] isEqual:(self.outputMode.indexOfSelectedItem == 1 ? @"gaps" : @"remove")]) return NO;
+    NSArray *values = [self readFieldsReportingErrors:NO];
+    if (!values) return NO;
+    NSArray *keys = @[@"threshold", @"minimum", @"before", @"after"];
+    for (NSUInteger i=0; i<4; i++) {
+        id value = response[@"settings"][keys[i]];
+        if (![value isKindOfClass:NSNumber.class] || booleanValue(value) || [value floatValue] != [values[i] floatValue]) return NO;
+    }
+    return YES;
 }
 - (BOOL)commitSettings {
     NSArray *values = [self readFields];
@@ -589,6 +671,7 @@ static BOOL booleanValue(id value) {
     self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
     [self refreshSettings];
     [self setStatusMessage:@"Settings saved."];
+    self.settingsReturnCommitted = YES; [self scheduleSettingsPreview];
 }
 
 - (BOOL)restoreSettingsData:(NSData *)data {
@@ -609,6 +692,7 @@ static BOOL booleanValue(id value) {
     self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
     [self refreshSettings];
     [self setStatusMessage:@"Saved detection settings restored. Analyze again before applying cuts."];
+    self.settingsReturnCommitted = YES; [self scheduleSettingsPreview];
     return YES;
 }
 - (void)restoreSavedSettings:(id)sender {
@@ -626,12 +710,14 @@ static BOOL booleanValue(id value) {
 }
 
 - (void)outputChanged:(id)sender {
+    self.settingsReturnCommitted = YES;
     self.settingsDirty = YES;
     self.lengthLabel.stringValue = @"";
     self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
     self.canApply = NO; self.applyButton.enabled = NO;
     [self updatePrimaryAction];
     self.summaryLabel.stringValue = @"Output changed. Analyze again before applying.";
+    [self scheduleSettingsPreview];
 }
 
 // Kept as a separate method so the UI harness can test clicks without launching apps.
@@ -670,6 +756,7 @@ static BOOL booleanValue(id value) {
     NSError *error = nil;
     CutdownAudioAnalysisRequest *request = [self.audioUnit analysisRequestWithError:&error];
     if (!request) { [self setErrorMessage:error.localizedDescription]; return; }
+    [self.settingsTimer invalidate]; self.settingsTimer = nil; self.settingsEditID = nil;
     if (self.connection.requestID) {
         [self sendCommand:@"cancel"];
         [NSDistributedNotificationCenter.defaultCenter removeObserver:self name:responseName(self.connection.requestID) object:nil];
@@ -723,6 +810,11 @@ static BOOL booleanValue(id value) {
 // Commands are idempotent for one helper-owned job. Retry an unacknowledged
 // request with that SAME identity; never create another import on a timeout.
 - (void)pollStatus {
+    if (self.settingsNeedsVerification && !self.connection.pendingSettings && [self.connection.state isEqual:CutdownReviewStateRecalculating]) {
+        BOOL editing = NO;
+        for (NSTextField *field in self.fields) if (field.currentEditor) { editing = YES; break; }
+        if (!editing) [self sendSettingsPreview];
+    }
     [self presentPendingError];
     if (!self.connection.requestID) {
         if (self.verificationPending) {
@@ -755,6 +847,7 @@ static BOOL booleanValue(id value) {
         [self updatePrimaryAction];
         self.connection.pendingSelection = nil; self.canChangeSelection = NO;
         self.connection.pendingRetry = nil; self.connection.pendingPreview = nil;
+        self.connection.pendingSettings = nil; [self.settingsTimer invalidate]; self.settingsTimer = nil;
         self.connection.pendingApply = nil; self.applyButton.identifier = @"cutdown.apply";
         self.cancelButton.enabled = NO;
         self.cancelButton.hidden = YES;
@@ -854,6 +947,7 @@ static BOOL booleanValue(id value) {
 }
 - (void)cancel:(id)sender {
     if (!self.cancelButton.enabled) return;
+    [self.settingsTimer invalidate]; self.settingsTimer = nil; self.connection.pendingSettings = nil;
     self.cancelButton.enabled = NO; self.cancelButton.hidden = YES;
     [self sendCommand:@"cancel"];
 }
@@ -933,6 +1027,7 @@ static BOOL booleanValue(id value) {
 - (void)receive:(NSNotification *)notification {
     NSDictionary *value = [self.connection acceptNotification:notification];
     if (!value) return;
+    if ([value[@"state"] isEqual:CutdownReviewStateReview] && [self responseMatchesCurrentSettings:value]) self.settingsDirty = NO;
     self.cancelButton.enabled = [value[@"canCancel"] isEqual:@YES];
     self.cancelButton.hidden = !self.cancelButton.enabled;
     if ([value[@"state"] isEqual:CutdownReviewStateFailed] || [value[@"state"] isEqual:CutdownReviewStateUnavailable])
@@ -972,7 +1067,8 @@ static BOOL booleanValue(id value) {
     self.summaryLabel.toolTip = value[@"summary"] ?: self.summaryLabel.stringValue;
     BOOL busy = CutdownReviewStateIsBusy(value[@"state"]);
     self.connection.operationBusy = busy;
-    self.outputMode.enabled = !busy;
+    BOOL tuning = [value[@"state"] isEqual:CutdownReviewStateRecalculating];
+    self.outputMode.enabled = !busy || tuning;
     self.progressBar.hidden = !busy;
     self.progressLabel.hidden = !busy;
     id fraction = value[@"progress"];
@@ -982,8 +1078,9 @@ static BOOL booleanValue(id value) {
     else { [self.progressBar stopAnimation:nil]; self.progressBar.doubleValue = measured ? [fraction doubleValue] * 100 : 0; }
     if (!busy) self.progressLabel.stringValue = @"";
     self.analyzeButton.enabled = !busy;
-    for (NSTextField *field in self.fields) field.enabled = !busy;
-    self.canApply = !self.connection.pendingSelection && !self.connection.applying && !self.settingsDirty && included > 0 && [value[@"state"] isEqual:CutdownReviewStateReview] && [value[@"canApply"] boolValue];
+    for (NSTextField *field in self.fields) field.enabled = !busy || tuning;
+    self.canApply = !self.connection.pendingSelection && !self.connection.pendingSettings && !self.connection.applying && !self.settingsDirty &&
+        ![value[@"provisional"] boolValue] && included > 0 && [value[@"state"] isEqual:CutdownReviewStateReview] && [value[@"canApply"] boolValue];
     self.applyButton.enabled = self.canApply;
     if (self.connection.applying && !busy) {
         self.connection.applying = NO;
@@ -1037,6 +1134,7 @@ static BOOL booleanValue(id value) {
     [self sendPreviewCommand:self.connection.pendingApply];
 }
 - (void)dealloc {
+    [_settingsTimer invalidate];
     [_pollTimer invalidate];
     [NSDistributedNotificationCenter.defaultCenter removeObserver:self];
 }

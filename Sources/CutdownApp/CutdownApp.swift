@@ -22,6 +22,12 @@ import CutdownMac
         }, authorizeApply: { [unowned self] command in
             guard let view = command.view, let gesture = command.applyGesture else { return false }
             return interactive.canAuthorizeApply(view: view, gesture: gesture)
+        }, recalculationOperation: { [unowned self] request, result, progress in
+            await waitForStorageCleanup()
+            try await interactive.verifySettingsPreview(request, result: result, progress: progress)
+        }, authorizeRecalculation: { [unowned self] command in
+            guard let view = command.view else { return false }
+            return interactive.canReconnectReview(view: view)
         }, highlightOperation: { [unowned self] request, result, cutID in
             await waitForStorageCleanup()
             try await interactive.highlight(request, result: result, cutID: cutID)
@@ -46,11 +52,19 @@ import CutdownMac
         manager.onFailure = { error in
             try? IntegrationReport(state: "failed", message: error.localizedDescription).save()
         }
+        manager.onLateXMLCompletion = { [weak self] in
+            // Only undo this helper's own activation during a live operation.
+            // Never reclaim focus from another app the user switched to.
+            guard self?.coordinator.isBusy == true, NSApp.isActive else { return }
+            let hosts = NSRunningApplication.runningApplications(withBundleIdentifier: FinalCutAccessibility.bundleIdentifier)
+            guard hosts.count == 1, let host = hosts.first else { return }
+            host.activate(options: [])
+        }
         manager.onReceive = { _ in
             try? IntegrationReport(state: "ready", message: "Share received. Select the clip carrying Silent Snip Audio and use Analyze to start a verified review.").save()
         }
         transport.onReconnect = { [weak self] view in
-            guard let self, let request = reviewRequest,
+            guard let self, let request = coordinator.currentRequest ?? reviewRequest,
                   interactive.canReconnectReview(view: view) else { return nil }
             return request
         }

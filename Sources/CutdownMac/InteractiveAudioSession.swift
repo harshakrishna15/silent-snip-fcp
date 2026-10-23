@@ -15,9 +15,20 @@ import Foundation
     public var onPreviewReady: ((UUID, ReviewAnalysisResult) -> Void)?
     private var reviewSession: FinalCutAXSession?
     private var restoringControllerSettings = false
+    private var lastReviewAuthorizationFailure: String?
 
     public func canReconnectReview(view: UUID) -> Bool {
-        !restoringControllerSettings && reviewSession?.canReconnectReview(view: view) == true
+        guard !restoringControllerSettings, let session = reviewSession else { return false }
+        let reason = session.reviewReconnectFailure(view: view)
+        if let reason, reason != lastReviewAuthorizationFailure,
+           let context = contexts.values.first(where: { $0.capture.session === session }) {
+            let report = ["reason": reason, "view": view.uuidString]
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: context.directory.appendingPathComponent("Review-Authorization.json"), options: .atomic)
+            }
+        }
+        lastReviewAuthorizationFailure = reason
+        return reason == nil
     }
 
     public func canAuthorizeApply(view: UUID, gesture: UUID) -> Bool {
@@ -73,6 +84,7 @@ import Foundation
         do {
             capture = try await FinalCutProjectCapture.capture(to: directory,
                 controllerEffectUIDs: [AudioControllerSettings.effectUID],
+                timing: timing,
                 onSession: { self.reviewSession = $0 }) { progress($0, nil) }
         } catch {
             try? Data(error.localizedDescription.utf8).write(
@@ -256,6 +268,47 @@ import Foundation
             try? Data(failure.localizedDescription.utf8).write(
                 to: directory.appendingPathComponent("Analysis-Failure.txt"), options: .atomic)
             throw failure
+        }
+    }
+
+    /// Recalculate only the currently retained review. A fresh XML/media and
+    /// selection check gates Apply; this is not a cross-analysis effects cache.
+    public func verifySettingsPreview(_ request: AnalyzeRequest, result: ReviewAnalysisResult,
+                                      progress: @escaping AnalysisReviewCoordinator.Progress) async throws {
+        guard let context = contexts[request.id], let selection = context.capture.session.reviewOwnership.active,
+              result.analyzed.settings == request.settings else { throw AudioProjectProcessingError.changedProject }
+        let session = context.capture.session
+        let timing = AnalysisTiming(request: request.id)
+        var outcome = "failed"
+        let attempt = UUID()
+        defer { timing.save(to: context.directory.appendingPathComponent("Settings-Timing-\(attempt).json"),
+            outcome: Task.isCancelled ? "cancelled" : outcome) }
+        do {
+            timing.begin("projectVerification")
+            progress("Preview updated. Verifying the current project…", nil)
+            try await session.activate()
+            let url = try await session.exportProjectXML(to: context.directory.appendingPathComponent("Settings-Check-\(attempt).fcpxmld"))
+            let data = try Data(contentsOf: url)
+            let current = try TimelineParser.parse(data: data, exclusions: result.analyzed.dialogueContext.fingerprintExclusions)
+            try XMLProjectApply.verifyBaseline(current, analyzed: context.capture.document)
+            guard try session.selectionSnapshot() == selection else { throw AudioControllerSettingsError.targetChanged }
+            try AudioControllerSettings.validateForApply(projectData: data, target: current.selectedTarget(context.capture.selection),
+                requested: request.settings)
+            timing.begin("mediaVerification")
+            guard try await Self.mediaSnapshot(current) == context.mediaSnapshot else { throw AudioProjectProcessingError.changedProject }
+            try Task.checkCancellation()
+            timing.begin("editValidation")
+            if !result.analyzed.review.selectedCuts.isEmpty {
+                _ = try EditedProjectWriter.write(projectData: data, selection: context.capture.selection,
+                    selectedRanges: result.analyzed.review.selectedCuts.map(\.range), outputName: context.capture.projectName + " — Silent Snip")
+            }
+            try Task.checkCancellation()
+            timing.begin("restoreControls")
+            _ = await context.capture.restoreReviewWindow()
+            outcome = "verified"
+        } catch {
+            _ = await context.capture.restoreReviewWindow()
+            throw error
         }
     }
 

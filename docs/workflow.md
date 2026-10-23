@@ -39,7 +39,7 @@ Minimum Silence accepts 0.0001–10 seconds. Analysis measures audio in 0.01-sec
 
 Choose **Remove Silence** to close the selected pauses, or **Replace with 1-Second Gaps** to replace each selected pause with an editable gap. One second is rounded to the nearest project frame. Gap mode can lengthen a pause that was shorter than one second.
 
-Use **Save Settings** to commit the four values without starting analysis. New effect instances use last-used detection settings saved when Analyze is submitted. Existing instances restore their own saved state. Changing settings or output mode disables Apply until Analyze runs again.
+Use **Save Settings** to commit the four values without starting analysis. New effect instances use last-used detection settings saved when Analyze is submitted. Existing instances restore their own saved state. During a retained review, valid detection or output edits update the proposed cuts after a short pause. Press Return or finish editing the field to start fresh project, selection, and media verification. Apply stays disabled until the latest edit passes those checks. A failed check requires Analyze again; see [settings-preview behavior](fast-review.md).
 
 ## 4. Analyze
 
@@ -86,7 +86,7 @@ Closing Controls leaves the preview active. Turn off the checkbox to hide it. Ap
 
 Select a row in Controls and click **Go to Selected Cut** to move the playhead to that cut’s start. The helper first re-exports and checks the original project against the analysis baseline; navigation cannot run alongside Apply. It uses [Final Cut’s timecode navigation](https://support.apple.com/guide/final-cut-pro/ver1632d762/mac), including project start timecode and drop-frame formatting. It does not change cut inclusion or make edits.
 
-Use the checkbox beside each eligible range, or Select All / Select None, to choose cuts. Apply waits for the helper to acknowledge inclusion changes. Unavailable rows explain their restriction in a tooltip. A settings or output-mode change still requires Analyze again.
+Use the checkbox beside each eligible range, or Select All / Select None, to choose cuts. Apply waits for the helper to acknowledge inclusion changes. Unavailable rows explain their restriction in a tooltip. A settings or output-mode change temporarily disables selection and Apply while the provisional preview is checked. Changing timeline content, source media, or audio processing requires Analyze again.
 
 Apply requires a valid review, at least one eligible included cut, unchanged submitted settings, and a plan that has not already been consumed. Changing timeline content, processing effects, or source media requires fresh analysis; Apply checks for stale project state before generating output.
 

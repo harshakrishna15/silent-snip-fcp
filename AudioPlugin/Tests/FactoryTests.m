@@ -20,6 +20,7 @@
 - (void)updateMoreMenuVisibility;
 - (void)retryVerification:(id)sender;
 - (BOOL)restoreSettingsData:(NSData *)data;
+- (void)sendSettingsPreview;
 @end
 
 @interface TestFactory : CutdownAudioUnitFactory
@@ -580,6 +581,98 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         response(f.factory, 4, @"failed", @{@"message":failure, @"canApply":@NO});
         require([[f.factory valueForKey:@"lastErrorKey"] isEqual:key] && ![f.factory valueForKey:@"pendingErrorMessage"],
             @"Repeated failure status cannot queue the same alert again");
+    });
+
+    run(@"settings preview keeps controls editable and Apply blocked until matching verification", ^(Fixture *f) {
+        [f review];
+        f.fields[0].stringValue = @"-35";
+        [f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
+        [f.factory sendSettingsPreview];
+        NSDictionary *command = f.factory.previewCommand;
+        require([command[@"command"] isEqual:@"recalculate"] && command[@"settingsEdit"] && [command[@"settingsSequence"] isEqual:@1], @"New settings command carries ordering and identity");
+        require(!f.apply.enabled, @"Changing settings immediately disables Apply");
+        response(f.factory, 2, @"recalculating", @{@"canApply":@NO, @"provisional":@YES,
+            @"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
+        require(!f.apply.enabled && f.fields[0].enabled, @"Provisional rows cannot apply and detection stays editable");
+        response(f.factory, 3, @"review", @{@"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
+        require(f.apply.enabled, @"Matching fresh verification enables Apply");
+    });
+    run(@"new settings edits reject old acknowledgments and retry their exact payload", ^(Fixture *f) {
+        [f review];
+        f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
+        NSDictionary *old = f.factory.previewCommand;
+        f.fields[0].stringValue = @"-38"; [f.factory sendSettingsPreview];
+        NSDictionary *newest = f.factory.previewCommand;
+        require([newest[@"settingsSequence"] isEqual:@2], @"Edits use increasing sequence numbers");
+        response(f.factory, 2, @"review", @{@"settingsEdit":old[@"settingsEdit"], @"settings":old[@"settings"], @"output":old[@"output"]});
+        require(!f.apply.enabled, @"An old verified result cannot enable new settings");
+        CutdownReviewConnection *connection = [f.factory valueForKey:@"connection"];
+        require([[connection commandsToRetry] containsObject:newest], @"Dropped settings request retries unchanged");
+        response(f.factory, 3, @"review", @{@"settingsEdit":newest[@"settingsEdit"], @"settings":newest[@"settings"], @"output":newest[@"output"]});
+        require(f.apply.enabled && !connection.pendingSettings, @"Newest settings acknowledgment clears retry");
+    });
+    run(@"host focus changes keep the current settings identity and Analyze numeric values", ^(Fixture *f) {
+        [f review];
+        f.fields[2].stringValue = @"0.1";
+        [f.factory sendSettingsPreview];
+        NSDictionary *command = f.factory.previewCommand;
+        NSUInteger count = f.factory.packets.count;
+        response(f.factory, 2, @"recalculating", @{@"canApply":@NO, @"provisional":@YES,
+            @"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
+        [f.factory controlTextDidEndEditing:[NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:f.fields[2]]];
+        [f.factory sendSettingsPreview];
+        require(f.factory.packets.count == count && [f.factory.previewCommand[@"settingsEdit"] isEqual:command[@"settingsEdit"]], @"Ending the editor during host verification cannot replace its acknowledgment identity");
+        CutdownAudioAnalysisRequest *request = [f.unit analysisRequestWithError:nil];
+        for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO].queryItems) {
+            NSNumber *wire = command[@"settings"][item.name];
+            if (wire) require(wire.doubleValue == item.value.doubleValue, @"Preview and Analyze use identical numeric settings at frame boundaries");
+        }
+        response(f.factory, 3, @"review", @{@"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
+        require(f.apply.enabled, @"The original latest verification can still enable Apply after focus changes");
+        [f.factory controlTextDidEndEditing:[NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:f.fields[2]]];
+        require(![f.factory valueForKey:@"settingsTimer"], @"A late editor-end event cannot restart an already verified edit");
+    });
+    run(@"incomplete typing and mismatched verified values cannot enable Apply", ^(Fixture *f) {
+        [f review];
+        f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
+        NSDictionary *command = f.factory.previewCommand;
+        f.fields[0].stringValue = @"-";
+        [f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
+        [f.factory sendSettingsPreview];
+        response(f.factory, 2, @"review", @{@"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
+        require(!f.apply.enabled, @"Unfinished local text cannot inherit an older settings check");
+        require(![f.factory valueForKey:@"pendingErrorMessage"], @"Intermediate typing does not pop up validation errors");
+    });
+    run(@"typing updates preview without starting host verification until editing ends", ^(Fixture *f) {
+        [f review];
+        NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 680, 500)
+            styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+        window.contentView = f.factory.view;
+        [window makeFirstResponder:f.fields[0]];
+        [f.fields[0] selectText:nil];
+        require(f.fields[0].currentEditor != nil, @"Fixture owns an active field editor");
+        f.fields[0].stringValue = @"-35";
+        [f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
+        [f.factory sendSettingsPreview];
+        NSDictionary *first = f.factory.previewCommand;
+        require([first[@"verifySettings"] isEqual:@NO], @"Typing requests preview only, preserving keyboard focus");
+        response(f.factory, 2, @"recalculating", @{@"canApply":@NO, @"provisional":@YES,
+            @"settingsEdit":first[@"settingsEdit"], @"settings":first[@"settings"], @"output":first[@"output"]});
+        [window endEditingFor:nil]; [window makeFirstResponder:nil];
+        [f.factory pollStatus];
+        require([f.factory.previewCommand[@"verifySettings"] isEqual:@YES], @"Finishing field edit permits one background host check");
+        window.contentView = nil;
+    });
+    run(@"unacknowledged settings edits time out despite replayed review heartbeat", ^(Fixture *f) {
+        [f review];
+        f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
+        CutdownReviewConnection *connection = [f.factory valueForKey:@"connection"];
+        connection.lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16];
+        response(f.factory, 1, @"review", nil);
+        [f.factory pollStatus];
+        require(connection.timedOut && !f.apply.enabled && !connection.pendingSettings, @"Stale heartbeat cannot suppress settings timeout");
+        [f.factory sendSettingsPreview];
+        require(!connection.pendingSettings && !connection.operationBusy, @"Typing after timeout cannot start an untracked settings request; Analyze reconnects");
     });
 
     NSArray *states = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:@"AudioPlugin/Tests/review-states.json"] options:0 error:nil];

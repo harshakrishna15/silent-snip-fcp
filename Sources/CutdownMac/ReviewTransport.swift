@@ -26,6 +26,14 @@ public enum ReviewWire {
         let command = try JSONDecoder().decode(ReviewCommand.self, from: data)
         guard command.version == version else { throw ReviewTransportError.invalidPayload }
         switch command.command {
+        case .recalculate:
+            guard command.expectedRevision.map({ $0 >= 0 }) == true, command.view != nil,
+                  command.settingsEdit != nil, command.settingsSequence.map({ $0 > 0 }) == true,
+                  command.verifySettings != nil,
+                  let settings = command.settings, (try? settings.analysisSettings()) != nil,
+                  let output = command.output, CutdownOutputMode(rawValue: output) != nil else {
+                throw ReviewTransportError.invalidPayload
+            }
         case .retryVerification:
             guard command.expectedRevision.map({ $0 >= 0 }) ?? true else { throw ReviewTransportError.invalidPayload }
         case .include:
@@ -63,11 +71,16 @@ public struct ReviewWireSettings: Codable, Equatable, Sendable {
         self.threshold = threshold; self.minimum = minimum; self.before = before; self.after = after
     }
 
+    public func analysisSettings() throws -> AnalysisSettings {
+        try AnalysisSettings(thresholdDBFS: threshold, minimumSilenceDuration: minimum,
+            beforeSpeechPadding: before, afterSpeechPadding: after, windowDuration: 0.01)
+    }
+
 }
 
 public struct ReviewCommand: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
-        case status, cancel, include, selectAll, deselectAll, highlight, apply, retryVerification, preview
+        case status, cancel, include, selectAll, deselectAll, highlight, apply, retryVerification, preview, recalculate
     }
     public let version: Int
     public let request: UUID
@@ -80,13 +93,22 @@ public struct ReviewCommand: Codable, Equatable, Sendable {
     /// Apply also requires a fresh gesture exposed by the actual Controls view.
     public let view: UUID?
     public let applyGesture: UUID?
+    public let settings: ReviewWireSettings?
+    public let output: String?
+    public let settingsEdit: UUID?
+    public let settingsSequence: Int?
+    public let verifySettings: Bool?
 
     public init(request: UUID, command: Kind, cutID: String? = nil, included: Bool? = nil,
-                expectedRevision: Int? = nil, view: UUID? = nil, applyGesture: UUID? = nil) {
+                expectedRevision: Int? = nil, view: UUID? = nil, applyGesture: UUID? = nil,
+                settings: ReviewWireSettings? = nil, output: String? = nil,
+                settingsEdit: UUID? = nil, settingsSequence: Int? = nil, verifySettings: Bool? = nil) {
         version = ReviewWire.version; self.request = request; self.command = command
         self.cutID = cutID; self.included = included
         self.expectedRevision = expectedRevision
         self.view = view; self.applyGesture = applyGesture
+        self.settings = settings; self.output = output; self.settingsEdit = settingsEdit; self.settingsSequence = settingsSequence
+        self.verifySettings = verifySettings
     }
 }
 
@@ -121,11 +143,16 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     public let canHighlight: Bool
     public let previewVisible: Bool?
     public let canRetryVerification: Bool?
+    public let settingsEdit: UUID?
+    public let settings: ReviewWireSettings?
+    public let output: String?
+    public let provisional: Bool?
 
     public init(request: UUID, revision: Int, state: String, message: String,
                 progress: Double? = nil,
                 summary: String? = nil, cuts: [ReviewCutResponse] = [], canApply: Bool = false,
-                canChangeSelection: Bool = false, canCancel: Bool = false, canHighlight: Bool = false, previewVisible: Bool? = nil, canRetryVerification: Bool? = nil) {
+                canChangeSelection: Bool = false, canCancel: Bool = false, canHighlight: Bool = false, previewVisible: Bool? = nil, canRetryVerification: Bool? = nil,
+                settingsEdit: UUID? = nil, settings: ReviewWireSettings? = nil, output: String? = nil, provisional: Bool? = nil) {
         version = ReviewWire.version; self.request = request; self.revision = revision
         self.state = state; self.message = message; self.progress = progress
         self.summary = summary; self.cuts = cuts
@@ -133,6 +160,7 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
         self.canCancel = canCancel; self.canHighlight = canHighlight
         self.previewVisible = previewVisible
         self.canRetryVerification = canRetryVerification
+        self.settingsEdit = settingsEdit; self.settings = settings; self.output = output; self.provisional = provisional
     }
 }
 

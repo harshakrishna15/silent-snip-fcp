@@ -2,6 +2,23 @@ import XCTest
 @testable import CutdownMac
 
 final class ReviewTransportTests: XCTestCase {
+    func testSettingsPreviewRequiresViewOrderingTokenValidSettingsAndOutput() throws {
+        let request = UUID(), view = UUID(), edit = UUID()
+        let settings = ReviewWireSettings(threshold: -35, minimum: 0.5, before: 0.1, after: 0.2)
+        let command = ReviewCommand(request: request, command: .recalculate, expectedRevision: 4, view: view,
+            settings: settings, output: "remove", settingsEdit: edit, settingsSequence: 1, verifySettings: true)
+        XCTAssertEqual(try ReviewWire.decodeCommand(ReviewWire.encode(command)), command)
+        for invalid in [
+            ReviewCommand(request: request, command: .recalculate),
+            ReviewCommand(request: request, command: .recalculate, expectedRevision: 4, view: view,
+                settings: settings, output: "remove", settingsEdit: edit, settingsSequence: 0, verifySettings: true),
+            ReviewCommand(request: request, command: .recalculate, expectedRevision: 4, view: view,
+                settings: .init(threshold: -35, minimum: -1, before: 0.1, after: 0.2), output: "remove", settingsEdit: edit, settingsSequence: 1, verifySettings: true),
+            ReviewCommand(request: request, command: .recalculate, expectedRevision: 4, view: view,
+                settings: settings, output: "unknown", settingsEdit: edit, settingsSequence: 1, verifySettings: true)
+        ] { XCTAssertThrowsError(try ReviewWire.decodeCommand(ReviewWire.encode(invalid))) }
+    }
+
     func testRecreatedViewHandshakeIsBoundedAndCarriesExactSettings() throws {
         let view = UUID()
         let query = try ReviewWire.encode(ReviewReconnectQuery(version: 1, view: view))

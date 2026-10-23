@@ -13,6 +13,7 @@ public struct ShareDestinationReceipt {
     public let metadata: [String: Any]
     public let dataOptions: [String: Any]
     public let mediaRoleSuffixes: [URL: String]
+    var completedXML: Data?
 
     public init(id: UUID, name: String, directoryURL: URL, xmlURL: URL,
                 mediaURLs: [URL], metadata: [String: Any] = [:],
@@ -47,11 +48,17 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     public static let shared = ShareDestinationManager()
     public var onReceive: ((ShareDestinationReceipt) -> Void)?
     public var onFailure: ((Error) -> Void)?
+    /// An XML-only delivery accepted from a closed snapshot later received the
+    /// host's real Open Document. The app may return its own activation to FCP.
+    public var onLateXMLCompletion: (() -> Void)?
     public var canBeginShare: (() -> Bool)?
     public private(set) var assets: [ShareDestinationAsset] = []
     public let rootURL: URL
     private let cleanupStorage: StorageCleanup
     private let mayWriteLogs: Bool
+    var xmlSnapshotReader: @Sendable (URL) -> CompletedXMLSnapshot.Observation = { url in
+        CompletedXMLSnapshot.read(url) { (try? TimelineParser.parse(data: $0)) != nil }
+    }
 
     private struct XMLRequest {
         let token: UUID
@@ -59,6 +66,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         var assetID: UUID?
         let requiresMedia: Bool
         var result: Result<ShareDestinationReceipt, Error>?
+        var completedXML: Data?
     }
     private var xmlRequest: XMLRequest?
     public var hasActiveRequest: Bool { xmlRequest != nil }
@@ -67,7 +75,12 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     /// travels through Apple's Media Asset Protocol, with no rendered media.
     public func captureXML(projectName: String, timeout: TimeInterval = 30,
                            trigger: () async throws -> Void) async throws -> URL {
-        return try await capture(projectName: projectName, requiresMedia: false, timeout: timeout, trigger: trigger).xmlURL
+        let receipt = try await capture(projectName: projectName, requiresMedia: false, timeout: timeout, trigger: trigger)
+        guard let data = receipt.completedXML else { return receipt.xmlURL }
+        // Later host writes cannot mutate the bytes that passed completion checks.
+        let snapshot = receipt.directoryURL.appendingPathComponent("Completed-\(UUID()).fcpxml")
+        try data.write(to: snapshot, options: .withoutOverwriting)
+        return snapshot
     }
 
     public func captureMedia(projectName: String, timeout: TimeInterval = 3600,
@@ -94,7 +107,10 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         var delivery = StableXMLDelivery()
         while Date() < deadline {
             try Task.checkCancellation()
-            if let result = xmlRequest?.result { return try result.get() }
+            if let result = xmlRequest?.result {
+                var receipt = try result.get(); receipt.completedXML = xmlRequest?.completedXML
+                return receipt
+            }
             // Some host versions write XML but omit Open Document for XML-only
             // shares. Inspect only the exact fresh job's two permitted XML names.
             if let id = xmlRequest?.assetID, let asset = assets.first(where: { $0.id == id }), !asset.requiresMedia {
@@ -104,11 +120,29 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                 if candidates.count > 1 { throw ShareDestinationError.duplicateXML }
                 if let candidate = candidates.first {
                     let file = candidate.pathExtension == "fcpxmld" ? candidate.appendingPathComponent("Info.fcpxml") : candidate
-                    if delivery.observe(try? Data(contentsOf: file), validate: {
-                        (try? TimelineParser.parse(data: $0)) != nil
-                    }) {
-                        _ = handleOpen(urls: [candidate])
-                        if let result = xmlRequest?.result { return try result.get() }
+                    let reader = xmlSnapshotReader
+                    let observation = await Task.detached(priority: .userInitiated) { reader(file) }.value
+                    try Task.checkCancellation()
+                    // An Open Document may arrive while the off-main check runs.
+                    if xmlRequest?.result != nil { continue }
+                    switch observation {
+                    case .snapshot(let snapshot):
+                        guard snapshot.isCurrent(at: file) else { delivery = StableXMLDelivery(); continue }
+                        guard handleOpen(urls: [candidate]), xmlRequest?.result != nil else { throw ShareDestinationError.invalidFile }
+                        guard snapshot.isCurrent(at: file) else { throw ShareDestinationError.changedDelivery }
+                        xmlRequest?.completedXML = snapshot.data
+                        asset.awaitingHostXMLCompletion = true
+                        record("xml-closed-snapshot", asset: asset)
+                        continue
+                    case .inUse, .incomplete:
+                        delivery = StableXMLDelivery()
+                    case .unavailable:
+                        if delivery.observe(try? Data(contentsOf: file), validate: {
+                            (try? TimelineParser.parse(data: $0)) != nil
+                        }) {
+                            _ = handleOpen(urls: [candidate])
+                            record("xml-stability-fallback", asset: asset)
+                        }
                     }
                 } else {
                     delivery = StableXMLDelivery()
@@ -169,6 +203,10 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                       let xml = asset.receivedURLs.first else { throw ShareDestinationError.changedDelivery }
                 try validateReceipt(ShareDestinationReceipt(id: asset.id, name: asset.name,
                     directoryURL: asset.directoryURL, xmlURL: xml, mediaURLs: []))
+                if asset.awaitingHostXMLCompletion {
+                    asset.awaitingHostXMLCompletion = false
+                    onLateXMLCompletion?()
+                }
                 return true // Late Open Document after validated file readiness.
             }
             guard !asset.completed else { throw ShareDestinationError.alreadyCompleted }
@@ -344,6 +382,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     public let requestOwned: Bool
     fileprivate var receivedURLs = Set<URL>()
     fileprivate var completed = false
+    fileprivate var awaitingHostXMLCompletion = false
     fileprivate var fileIdentities: [URL: ShareDestinationFileIdentity] = [:]
     private weak var manager: ShareDestinationManager?
 

@@ -4,6 +4,125 @@ import XCTest
 @testable import CutdownMac
 
 @MainActor final class AnalysisReviewCoordinatorTests: XCTestCase {
+    private func settingsCommand(_ request: AnalyzeRequest, revision: Int, view: UUID, sequence: Int,
+                                 minimum: Double = 0.7, edit: UUID = UUID()) -> ReviewCommand {
+        ReviewCommand(request: request.id, command: .recalculate, expectedRevision: revision, view: view,
+            settings: .init(threshold: -35, minimum: minimum, before: 0.05, after: 0.15), output: "gaps",
+            settingsEdit: edit, settingsSequence: sequence, verifySettings: true)
+    }
+
+    func testSettingsPreviewPublishesImmediatelyAndCannotApplyUntilFreshVerification() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest(), gate = OperationGate()
+        var latest: ReviewResponse?, applied: AnalyzeRequest?
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            applyOperation: { request, result, _ in applied = request; XCTAssertEqual(result.analyzed.settings, request.settings) },
+            authorizeApply: { _ in true }, recalculationOperation: { _, _, _ in _ = try await gate.wait() },
+            authorizeRecalculation: { _ in true }, emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let edit = settingsCommand(request, revision: try XCTUnwrap(latest).revision, view: UUID(), sequence: 1)
+        let started = ProcessInfo.processInfo.systemUptime
+        coordinator.handle(edit)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.1)
+        XCTAssertEqual(latest?.state, "recalculating"); XCTAssertEqual(latest?.provisional, true)
+        XCTAssertEqual(latest?.settingsEdit, edit.settingsEdit); XCTAssertFalse(latest?.canApply ?? true)
+        XCTAssertFalse(latest?.canChangeSelection ?? true); XCTAssertFalse(latest?.canHighlight ?? true)
+        XCTAssertFalse(try XCTUnwrap(latest).cuts.isEmpty)
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: latest?.revision, view: UUID(), applyGesture: UUID()))
+        XCTAssertNil(applied)
+        try await waitUntil { gate.isWaiting }; gate.finish(fixture.result)
+        try await waitUntil { latest?.state == "review" }
+        XCTAssertEqual(latest?.provisional, false); XCTAssertTrue(latest?.canApply ?? false)
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: latest?.revision, view: UUID(), applyGesture: UUID()))
+        try await waitUntil { applied != nil }
+        XCTAssertEqual(applied?.settings.minimumSilenceDuration, 0.7); XCTAssertEqual(applied?.outputMode, .gaps)
+    }
+
+    func testRapidSettingsChangesCoalesceWithoutOverlappingHostChecksOrAcceptingOldEdits() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest(), view = UUID(), first = OperationGate(), second = OperationGate()
+        var latest: ReviewResponse?, checks: [Double] = []
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            recalculationOperation: { request, _, _ in
+                checks.append(request.settings.minimumSilenceDuration)
+                _ = try await (checks.count == 1 ? first : second).wait()
+            }, authorizeRecalculation: { _ in true }, emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let revision = try XCTUnwrap(latest).revision
+        let old = settingsCommand(request, revision: revision, view: view, sequence: 1)
+        coordinator.handle(old); try await waitUntil { first.isWaiting }
+        let newest = settingsCommand(request, revision: revision, view: view, sequence: 3, minimum: 0.9)
+        coordinator.handle(newest)
+        coordinator.handle(old)
+        coordinator.handle(settingsCommand(request, revision: revision, view: view, sequence: 2, minimum: 0.8))
+        XCTAssertEqual(latest?.settingsEdit, newest.settingsEdit)
+        XCTAssertEqual(checks, [0.7]); XCTAssertFalse(latest?.canApply ?? true)
+        first.finish(fixture.result); try await waitUntil { second.isWaiting }
+        XCTAssertEqual(checks, [0.7, 0.9]); XCTAssertEqual(latest?.state, "recalculating")
+        second.finish(fixture.result); try await waitUntil { latest?.state == "review" }
+        XCTAssertEqual(latest?.settings?.minimum, 0.9)
+    }
+
+    func testSettingsCheckFailureAndCancellationDiscardProvisionalEligibility() async throws {
+        for cancel in [false, true] {
+            let fixture = try makeFixture(); defer { fixture.remove() }
+            let request = try makeRequest(), gate = OperationGate()
+            var latest: ReviewResponse?
+            let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+                recalculationOperation: { _, _, _ in
+                    _ = try await gate.wait(); if !cancel { throw FinalCutCaptureError.changedProject }
+                }, authorizeRecalculation: { _ in true }, emit: { latest = $0.response }, record: { _, _, _ in })
+            defer { coordinator.stop() }
+            coordinator.start(request); try await waitUntil { latest?.state == "review" }
+            coordinator.handle(settingsCommand(request, revision: try XCTUnwrap(latest).revision, view: UUID(), sequence: 1))
+            try await waitUntil { gate.isWaiting }
+            if cancel { coordinator.handle(.init(request: request.id, command: .cancel)) }
+            gate.finish(fixture.result)
+            try await waitUntil { latest?.state == (cancel ? "cancelled" : "failed") }
+            XCTAssertFalse(latest?.canApply ?? true); XCTAssertTrue(try XCTUnwrap(latest).cuts.isEmpty)
+        }
+    }
+
+    func testSettingsCommandsRequireRetainedReviewAuthorizedViewAndValidSettings() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest()
+        var latest: ReviewResponse?, checks = 0
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            recalculationOperation: { _, _, _ in checks += 1 }, authorizeRecalculation: { _ in false },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let revision = try XCTUnwrap(latest).revision
+        coordinator.handle(settingsCommand(request, revision: revision, view: UUID(), sequence: 1))
+        coordinator.handle(settingsCommand(request, revision: revision, view: UUID(), sequence: 2, minimum: -1))
+        XCTAssertEqual(latest?.revision, revision); XCTAssertEqual(checks, 0)
+        XCTAssertNil(latest?.settingsEdit)
+    }
+
+    func testTypingPublishesPreviewWithoutStartingHostWorkUntilEditingFinishes() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest(), view = UUID()
+        var latest: ReviewResponse?, checks = 0
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            recalculationOperation: { _, _, _ in checks += 1 }, authorizeRecalculation: { _ in true },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let editing = ReviewCommand(request: request.id, command: .recalculate, expectedRevision: latest?.revision, view: view,
+            settings: .init(threshold: -35, minimum: 0.7, before: 0.1, after: 0.1), output: "remove",
+            settingsEdit: UUID(), settingsSequence: 1, verifySettings: false)
+        coordinator.handle(editing)
+        await Task.yield()
+        XCTAssertEqual(latest?.state, "recalculating"); XCTAssertFalse(latest?.canApply ?? true)
+        XCTAssertEqual(checks, 0); XCTAssertTrue(coordinator.isBusy)
+        XCTAssertEqual(coordinator.currentRequest?.settings.thresholdDBFS, -35)
+        coordinator.handle(settingsCommand(request, revision: try XCTUnwrap(latest).revision, view: view, sequence: 2))
+        try await waitUntil { latest?.state == "review" }
+        XCTAssertEqual(checks, 1)
+    }
+
     func testPreviewNumbersMatchReviewRowsAfterExcludingEarlierCuts() throws {
         let fixture = try makeFixture(); defer { fixture.remove() }
         var review = fixture.result.analyzed.review

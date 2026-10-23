@@ -23,22 +23,25 @@ import Foundation
 
 @MainActor public enum FinalCutProjectCapture {
     static func capture(to directory: URL, controllerEffectUIDs: Set<String> = [],
+                               timing: AnalysisTiming? = nil,
                                onSession: (FinalCutAXSession) -> Void = { _ in },
                                progress: (String) -> Void = { _ in }) async throws -> CapturedFinalCutProject {
-        let session = try FinalCutAXSession()
+        let timing = timing ?? AnalysisTiming(request: UUID())
+        let session = try timing.measure("capture.sessionDiscovery") { try FinalCutAXSession() }
+        defer { timing.recordCounters(session.projectLookupCounters) }
         do {
-        try await session.activate()
+        try await timing.measure("capture.activation") { try await session.activate() }
         progress("Preparing Final Cut for export…")
         // Keep the effect window open; only move input focus to the project.
         // Opening an AU view can leave the Inspector focused, making Final
         // Cut omit the timeline's active selection until the timeline regains
         // focus. Direct AX focus preserves the existing clip/range selection;
         // the menu command is only a compatibility fallback.
-        let selectionBeforeFocus = try? session.selectionSnapshot()
+        let selectionBeforeFocus = try? timing.measure("capture.selectionBeforeFocus") { try session.selectionSnapshot() }
         progress("Focusing the project timeline…")
-        try await session.focusTimeline()
+        try await timing.measure("capture.focusBeforeExport") { try await session.focusTimeline() }
         progress("Reading the selected audio-only timeline clip…")
-        let selected = try session.selectionSnapshot()
+        let selected = try timing.measure("capture.selection") { try session.selectionSnapshot() }
         try session.rememberReviewSelection(selected)
         onSession(session)
         if let selectionBeforeFocus, selectionBeforeFocus != selected {
@@ -47,28 +50,29 @@ import Foundation
         // The Inspector can expose an obvious duplicate before Share displaces
         // the AU window. XML validation remains authoritative if it is hidden.
         if controllerEffectUIDs.contains(AudioControllerSettings.effectUID),
-           session.hasMultipleCutdownEffectsInInspector() {
+           timing.measure("capture.inspector", operation: { session.hasMultipleCutdownEffectsInInspector() }) {
             throw AudioControllerSettingsError.ambiguousController
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         progress("Exporting the active project XML…")
         let destination = directory.appendingPathComponent("Project-\(UUID()).fcpxmld")
-        let xml = try await session.exportProjectXML(to: destination)
+        let xml = try await timing.measure("capture.xmlExchange") { try await session.exportProjectXML(to: destination) }
         // The exporter has confirmed this unique output is complete. Until the
         // caller receives it, capture owns cleanup if validation subsequently fails.
         var delivered = false
         defer { if !delivered { try? FileManager.default.removeItem(at: destination) } }
         let data = try Data(contentsOf: xml)
-        let document = try TimelineParser.parse(data: data,
-            exclusions: .init(controllerEffectUIDs: controllerEffectUIDs))
+        let document = try timing.measure("capture.parse") {
+            try TimelineParser.parse(data: data, exclusions: .init(controllerEffectUIDs: controllerEffectUIDs))
+        }
         let structure = try XMLDocument(data: data, options: [.nodeLoadExternalEntitiesNever])
         let formats = try structure.nodes(forXPath: "//project/sequence/@tcFormat").compactMap(\.stringValue)
         guard formats.count <= 1, formats.allSatisfy({ $0 == "NDF" || $0 == "DF" }) else {
             throw FinalCutCaptureError.unsupportedTimecode("unknown project timecode format")
         }
-        try session.assertCurrentProject()
-        try await session.focusTimeline()
-        guard try session.selectionSnapshot() == selected else {
+        try timing.measure("capture.finalProjectCheck") { try session.assertCurrentProject() }
+        try await timing.measure("capture.focusAfterExport") { try await session.focusTimeline() }
+        guard try timing.measure("capture.selectionAfterExport", operation: { try session.selectionSnapshot() }) == selected else {
             throw FinalCutCaptureError.invalidSelection("The selected timeline clip changed during export.")
         }
         let (selection, target) = try selected.resolve(in: document)

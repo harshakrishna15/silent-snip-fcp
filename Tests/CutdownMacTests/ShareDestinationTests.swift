@@ -3,6 +3,80 @@ import AppKit
 @testable import CutdownMac
 
 final class ShareDestinationTests: XCTestCase {
+    private var completeXML: String {
+        """
+        <fcpxml version="1.14"><resources><format id="f" frameDuration="1/30s"/>
+        <asset id="a" start="0s" duration="10s" hasAudio="1"><media-rep kind="original-media" src="file:///fixture.wav"/></asset>
+        </resources><library><event><project name="Project"><sequence format="f" duration="10s" tcStart="0s">
+        <spine><asset-clip ref="a" offset="0s" start="0s" duration="10s" audioRole="dialogue"/></spine>
+        </sequence></project></event></library></fcpxml>
+        """
+    }
+
+    @MainActor func testClosedXMLDeliveryAvoidsThreeSecondWaitAndPreservesImmutableBytes() async throws {
+        let manager = try manager(), xml = completeXML
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = try await manager.captureXML(projectName: "Project") {
+            let asset = try manager.createAsset(name: "Project")
+            _ = try self.write("Project.fcpxml", in: asset.directoryURL, contents: xml)
+        }
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        XCTAssertLessThan(elapsed, 1, "A complete closed XML does not need three seconds of guessed stability")
+        let original = manager.assets[0].directoryURL.appendingPathComponent("Project.fcpxml")
+        XCTAssertNotEqual(result, original)
+        try Data("later producer write".utf8).write(to: original)
+        XCTAssertEqual(try String(contentsOf: result), xml)
+        print("Closed XML capture fixture: \(elapsed) seconds; includes parse, completion and immutable snapshot.")
+    }
+
+    @MainActor func testXMLFastPathWaitsForActualProducerClose() async throws {
+        let manager = try manager()
+        var closer: Task<Void, Error>?
+        let started = ProcessInfo.processInfo.systemUptime
+        _ = try await manager.captureXML(projectName: "Project", timeout: 2) {
+            let asset = try manager.createAsset(name: "Project")
+            let original = try self.write("Project.fcpxml", in: asset.directoryURL, contents: self.completeXML)
+            let writer = try FileHandle(forWritingTo: original)
+            closer = Task { try await Task.sleep(for: .milliseconds(250)); try writer.close() }
+        }
+        try await closer?.value
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - started, 0.24)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1)
+    }
+
+    @MainActor func testLateHostCompletionIsReportedOnceOnlyForAnUnchangedFastSnapshot() async throws {
+        let manager = try manager()
+        manager.xmlSnapshotReader = { url in
+            CompletedXMLSnapshot.read(url, probe: { _ in .exclusive }) { _ in true }
+        }
+        var callbacks = 0
+        manager.onLateXMLCompletion = { callbacks += 1 }
+        _ = try await manager.captureXML(projectName: "Project") {
+            let asset = try manager.createAsset(name: "Project")
+            _ = try self.write("Project.fcpxml", in: asset.directoryURL, contents: self.completeXML)
+        }
+        XCTAssertEqual(callbacks, 0, "The snapshot is not a host activation event")
+        let original = manager.assets[0].directoryURL.appendingPathComponent("Project.fcpxml")
+        XCTAssertFalse(manager.handleOpen(urls: [manager.rootURL.appendingPathComponent("Other.fcpxml")]))
+        XCTAssertEqual(callbacks, 0)
+        XCTAssertTrue(manager.handleOpen(urls: [original]))
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertTrue(manager.handleOpen(urls: [original]))
+        XCTAssertEqual(callbacks, 1, "A duplicate cannot reclaim focus again")
+    }
+
+    @MainActor func testUnsupportedXMLCompletionCheckRetainsLegacyStabilityFallback() async throws {
+        let manager = try manager()
+        manager.xmlSnapshotReader = { _ in .unavailable }
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = try await manager.captureXML(projectName: "Project", timeout: 5) {
+            let asset = try manager.createAsset(name: "Project")
+            _ = try self.write("Project.fcpxml", in: asset.directoryURL, contents: self.completeXML)
+        }
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - started, 2.9)
+        XCTAssertEqual(result.lastPathComponent, "Project.fcpxml")
+    }
+
     @MainActor func testSymlinkedShareRootCannotRotateAnExternalLog() throws {
         let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("LinkedShareTests-\(UUID())")
@@ -115,10 +189,11 @@ final class ShareDestinationTests: XCTestCase {
         XCTAssertFalse(manager.assets[0].requiresMedia)
         var lateError: Error?
         manager.onFailure = { lateError = $0 }
-        XCTAssertTrue(manager.handleOpen(urls: [result]))
+        let original = manager.assets[0].directoryURL.appendingPathComponent("Project.fcpxml")
+        XCTAssertTrue(manager.handleOpen(urls: [original]))
         XCTAssertNil(lateError)
-        try Data("changed".utf8).write(to: result)
-        XCTAssertTrue(manager.handleOpen(urls: [result]))
+        try Data("changed".utf8).write(to: original)
+        XCTAssertTrue(manager.handleOpen(urls: [original]))
         XCTAssertEqual(lateError as? ShareDestinationError, .changedDelivery)
     }
 

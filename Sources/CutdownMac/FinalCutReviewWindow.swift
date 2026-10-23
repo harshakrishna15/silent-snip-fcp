@@ -116,21 +116,37 @@ extension FinalCutAXSession {
     /// A UUID alone does not establish ownership. Require its native control
     /// inside the sole Silent Snip view on the pinned project and selected clip.
     func canReconnectReview(view: UUID) -> Bool {
-        guard let expected = activeReviewSelection,
-              (try? assertCurrentProject()) != nil, currentSheet() == nil,
-              (try? selectionSnapshot()) == expected else { return false }
-        let windows = cutdownReviewWindows()
-        guard windows.count == 1, let window = windows.first,
-              string(window, kAXTitleAttribute) == expected.clipName else { return false }
-        return find(in: window, role: kAXButtonRole,
-            identifier: "cutdown.review.reconnect.\(view.uuidString)", maxDepth: 16, maxNodes: 250) != nil
+        reviewReconnectFailure(view: view) == nil
+    }
+
+    func reviewReconnectFailure(view: UUID) -> String? {
+        guard let expected = activeReviewSelection else { return "No retained review selection." }
+        do { try assertCurrentProject() } catch { return "The original project is no longer active: \(error.localizedDescription)" }
+        guard currentSheet() == nil else { return "A Final Cut dialog is blocking the review." }
+        guard (try? selectionSnapshot()) == expected else { return "The original audio clip selection is not available." }
+        guard let window = focusedReviewWindow(),
+              string(window, kAXTitleAttribute) == expected.clipName else { return "The original clip's focused Controls window is not available." }
+        guard find(in: window, role: kAXButtonRole,
+            identifier: "cutdown.review.reconnect.\(view.uuidString)", maxDepth: 16, maxNodes: 250) != nil else {
+            return "The requesting Controls view could not be verified."
+        }
+        return nil
+    }
+
+    private func focusedReviewWindow() -> AXUIElement? {
+        // Final Cut can retain hidden AU editors or omit a reopened remote
+        // editor from AXWindows after Share. AXFocusedWindow directly names
+        // the native window receiving this user's edit or button gesture.
+        guard let window = Self.elementAttribute(root, kAXFocusedWindowAttribute),
+              !CFEqual(window, mainWindow), isCutdownReviewWindow(window) else { return nil }
+        return window
     }
 
     /// The request UUID travels over a broadcast channel. An Apply message is
     /// accepted only while the selected clip's sole Controls view exposes the
     /// fresh gesture identifier set by its Apply button action.
     func canAuthorizeApply(view: UUID, gesture: UUID) -> Bool {
-        guard canReconnectReview(view: view), let window = cutdownReviewWindows().first,
+        guard canReconnectReview(view: view), let window = focusedReviewWindow(),
               let button = find(in: window, role: kAXButtonRole,
                   identifier: "cutdown.apply.requested.\(gesture.uuidString)", maxDepth: 16, maxNodes: 250) else { return false }
         return FinalCutApplyGesture.isPending(identifier: string(button, kAXIdentifierAttribute),

@@ -24,7 +24,7 @@ public struct ReviewAnalysisResult: Sendable {
     public typealias VerificationOperation = @MainActor (AnalyzeRequest, @escaping Progress) async throws -> Void
 
     private final class Job {
-        let request: AnalyzeRequest
+        var request: AnalyzeRequest
         var revision = 0
         var state: ReviewState = .analyzing
         var message = "Starting analysis…"
@@ -34,12 +34,18 @@ public struct ReviewAnalysisResult: Sendable {
         var publication: ReviewPublication?
         var cancelled = false
         var applyStarted = false
+        var settingsEdit: UUID?
+        var settingsView: UUID?
+        var settingsSequence = 0
+        var verifySettings = false
         init(_ request: AnalyzeRequest) { self.request = request }
     }
 
     private let operation: Operation
     private let applyOperation: ApplyOperation?
     private let authorizeApply: @MainActor (ReviewCommand) -> Bool
+    private let recalculationOperation: ApplyOperation?
+    private let authorizeRecalculation: @MainActor (ReviewCommand) -> Bool
     private let highlightOperation: HighlightOperation?
     private let verificationOperation: VerificationOperation?
     private let canRetryVerification: (UUID) -> Bool
@@ -52,6 +58,8 @@ public struct ReviewAnalysisResult: Sendable {
 
     public init(operation: @escaping Operation, applyOperation: ApplyOperation? = nil,
                 authorizeApply: @escaping @MainActor (ReviewCommand) -> Bool = { _ in false },
+                recalculationOperation: ApplyOperation? = nil,
+                authorizeRecalculation: @escaping @MainActor (ReviewCommand) -> Bool = { _ in false },
                 highlightOperation: HighlightOperation? = nil,
                 verificationOperation: VerificationOperation? = nil,
                 canRetryVerification: @escaping (UUID) -> Bool = { _ in false },
@@ -63,6 +71,7 @@ public struct ReviewAnalysisResult: Sendable {
         self.operation = operation
         self.applyOperation = applyOperation
         self.authorizeApply = authorizeApply
+        self.recalculationOperation = recalculationOperation; self.authorizeRecalculation = authorizeRecalculation
         self.highlightOperation = highlightOperation
         self.verificationOperation = verificationOperation
         self.canRetryVerification = canRetryVerification
@@ -71,7 +80,8 @@ public struct ReviewAnalysisResult: Sendable {
         self.record = record
     }
 
-    public var isBusy: Bool { jobs.values.contains { $0.task != nil } }
+    public var isBusy: Bool { jobs.values.contains { $0.task != nil || $0.state.isBusy } }
+    public var currentRequest: AnalyzeRequest? { active.flatMap { jobs[$0]?.request } }
 
     /// A verified plan may be displayed while the operation still owns cleanup.
     /// No review mutations or Apply are accepted until the operation completes.
@@ -147,6 +157,7 @@ public struct ReviewAnalysisResult: Sendable {
         // or poison its revision. A lost owner is handled by the view's timeout.
         guard let job = jobs[command.request] else { return }
         if command.command == .status { resend(job); return }
+        if command.command == .recalculate { recalculate(job, command: command); return }
         if command.command == .retryVerification {
             if let expected = command.expectedRevision, expected != job.revision {
                 resend(job)
@@ -214,7 +225,7 @@ public struct ReviewAnalysisResult: Sendable {
                 }
                 beginApply(job, result: result)
                 return
-            case .status, .cancel, .retryVerification: return
+            case .status, .cancel, .retryVerification, .recalculate: return
             }
             job.result = result
             job.message = self.reviewMessage(result)
@@ -224,6 +235,66 @@ public struct ReviewAnalysisResult: Sendable {
             // candidates or silently reset the user's inclusion choices.
             job.message = error.localizedDescription
             publish(job)
+        }
+    }
+
+    private func recalculate(_ job: Job, command: ReviewCommand) {
+        guard active == command.request, !job.cancelled, !job.applyStarted,
+              job.state == .review || job.state == .recalculating,
+              recalculationOperation != nil, var result = job.result,
+              let view = command.view, let edit = command.settingsEdit,
+              let sequence = command.settingsSequence, sequence > 0,
+              let verify = command.verifySettings,
+              let expected = command.expectedRevision, expected >= 0, expected <= job.revision,
+              let values = command.settings, let settings = try? values.analysisSettings(),
+              let output = command.output.flatMap(CutdownOutputMode.init(rawValue:)) else { resend(job); return }
+        if job.settingsView == view && sequence <= job.settingsSequence { resend(job); return }
+        guard authorizeRecalculation(command) else { resend(job); return }
+        do {
+            _ = try result.analyzed.recalculate(settings: settings)
+            job.request = AnalyzeRequest(id: job.request.id, settings: settings, outputMode: output)
+            job.result = result; job.settingsEdit = edit; job.settingsView = view; job.settingsSequence = sequence
+            job.verifySettings = verify
+            job.state = .recalculating; job.progress = nil
+            job.message = verify ? "Preview updated. Checking the current project before enabling Apply…"
+                : "Preview updated. Finish editing a field to verify the project and enable Apply."
+            publish(job)
+            // One host check owns Share/UI cleanup until it stops. Rapid edits
+            // replace the pending settings, never start concurrent exports.
+            if let task = job.task { task.cancel() }
+            else { verifyRecalculation(job) }
+        } catch { job.message = error.localizedDescription; publish(job) }
+    }
+
+    private func verifyRecalculation(_ job: Job) {
+        guard let operation = recalculationOperation, let result = job.result,
+              let edit = job.settingsEdit, !job.cancelled, job.verifySettings else { return }
+        let request = job.request
+        job.task = Task { [weak self, weak job] in
+            guard let self, let job else { return }
+            var failure: Error?
+            do {
+                try Task.checkCancellation()
+                try await operation(request, result) { [weak self, weak job] message, progress in
+                    guard let self, let job, !job.cancelled, job.settingsEdit == edit else { return }
+                    job.message = message; job.progress = progress; self.publish(job)
+                }
+                try Task.checkCancellation()
+            } catch { failure = error }
+            job.task = nil
+            if job.cancelled {
+                job.result = nil; job.state = .cancelled; job.message = "Preview cancelled. No timeline edits were made."
+                if self.active == request.id { self.active = nil }
+            } else if job.settingsEdit != edit {
+                self.verifyRecalculation(job)
+                return
+            } else if let failure {
+                job.result = nil; job.state = .failed; job.message = failure.localizedDescription
+                if self.active == request.id { self.active = nil }
+            } else {
+                job.state = .review; job.progress = 1; job.message = self.reviewMessage(result)
+            }
+            self.publish(job); self.record(job.request, job.state.rawValue, job.message)
         }
     }
 
@@ -379,7 +450,7 @@ public struct ReviewAnalysisResult: Sendable {
         // channel. Local observers do not depend on the plugin transport.
         defer {
             if active == nil || active == job.request.id {
-                let retainsPreview = job.state == .review || job.state == .analyzing || job.state == .navigating
+                let retainsPreview = job.state == .review || job.state == .analyzing || job.state == .navigating || job.state == .recalculating
                 onReviewChange?(job.request.id, active == job.request.id && retainsPreview ? job.result?.analyzed.review : nil)
             }
         }
@@ -419,11 +490,11 @@ public struct ReviewAnalysisResult: Sendable {
     }
 
     private func makeResponse(_ job: Job) throws -> ReviewResponse {
-        guard let result = job.result, job.state == .review || job.state == .analyzing else {
+        guard let result = job.result, job.state == .review || job.state == .analyzing || job.state == .recalculating else {
             return ReviewResponse(request: job.request.id, revision: job.revision,
                 state: job.state.rawValue, message: job.message, progress: job.progress,
                 canCancel: job.state.canCancel,
-                canRetryVerification: verificationOperation != nil && job.state.canRetryVerification && canRetryVerification(job.request.id))
+                canRetryVerification: verificationOperation != nil && job.state.canRetryVerification && canRetryVerification(job.request.id), settingsEdit: job.settingsEdit)
         }
         let analysis = result.analyzed
         let review = analysis.review
@@ -445,9 +516,13 @@ public struct ReviewAnalysisResult: Sendable {
             : "\(review.selectedCuts.count) gaps × \(Self.seconds(gap!)) · \(Self.seconds(duration)) → \(Self.seconds(after))"
         let ready = job.state == .review
         return ReviewResponse(request: job.request.id, revision: job.revision, state: job.state.rawValue,
-            message: job.message, progress: 1, summary: summary, cuts: cuts,
+            message: job.message, progress: job.state == .recalculating ? job.progress : 1, summary: summary, cuts: cuts,
             canApply: ready && applyOperation != nil && Self.applyUnavailableReason(result) == nil,
-            canChangeSelection: ready, canCancel: true, canHighlight: ready && highlightOperation != nil, previewVisible: true)
+            canChangeSelection: ready, canCancel: true, canHighlight: ready && highlightOperation != nil, previewVisible: true,
+            settingsEdit: job.settingsEdit,
+            settings: ReviewWireSettings(threshold: job.request.settings.thresholdDBFS, minimum: job.request.settings.minimumSilenceDuration,
+                before: job.request.settings.beforeSpeechPadding, after: job.request.settings.afterSpeechPadding),
+            output: job.request.outputMode.rawValue, provisional: job.state == .recalculating)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {

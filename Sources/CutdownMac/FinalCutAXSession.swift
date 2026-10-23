@@ -11,7 +11,9 @@ import Foundation
     let mainWindow: AXUIElement
     let projectName: String
     private let permitsEmptyTimeline: Bool
-    let timeline: AXUIElement
+    private(set) var timeline: AXUIElement
+    private let projectLookup: FinalCutAXLookup<AXUIElement>
+    private let timelineLookup: FinalCutAXLookup<AXUIElement>
     private let windowTitle: String
     var operationStage = "Reading the selected audio-only timeline clip"
     typealias SuspendedReview = FinalCutReviewOwnership.Suspended
@@ -34,9 +36,12 @@ import Foundation
         }
         mainWindow = window
         windowTitle = Self.rawAttribute(window, kAXTitleAttribute) as? String ?? ""
-        let project = Self.search(window, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true)
-        let name = project.flatMap { Self.rawAttribute($0, kAXTitleAttribute) as? String } ?? ""
-        let timeline = Self.search(window, role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true)
+        projectLookup = Self.lookup(window, query: .init(identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton",
+            containersOnly: true, additionalAttributes: [kAXTitleAttribute]))
+        timelineLookup = Self.lookup(window, query: .init(role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true))
+        let project = Self.resolve(projectLookup)
+        let name = project?.values[kAXTitleAttribute] as? String ?? ""
+        let timeline = Self.resolve(timelineLookup)?.element
         guard !windowTitle.isEmpty, allowEmptyTimeline || (!name.isEmpty && timeline != nil) else {
             throw FinalCutCaptureError.unavailable("The active project timeline could not be identified in this Final Cut layout.")
         }
@@ -76,38 +81,46 @@ import Foundation
     static func search(_ root: AXUIElement, role: String? = nil, identifier: String? = nil,
                                title: String? = nil, description: String? = nil,
                                maxDepth: Int = 24, maxNodes: Int = 600, containersOnly: Bool = false) -> AXUIElement? {
-        var queue: [(AXUIElement, Int)] = [(root, 0)]
-        var cursor = 0
-        let deadline = Date().addingTimeInterval(5)
-        let containers: Set<String> = [kAXWindowRole, kAXGroupRole, kAXSplitGroupRole, kAXScrollAreaRole]
-        while cursor < queue.count && cursor < maxNodes && Date() < deadline {
-            let (element, depth) = queue[cursor]
-            cursor += 1
-            let actualRole = rawAttribute(element, kAXRoleAttribute) as? String
-            let actualIdentifier = rawAttribute(element, kAXIdentifierAttribute) as? String
-            if (role == nil || actualRole == role), (identifier == nil || actualIdentifier == identifier),
-               (title == nil || rawAttribute(element, kAXTitleAttribute) as? String == title),
-               (description == nil || rawAttribute(element, kAXDescriptionAttribute) as? String == description) {
-                return element
-            }
-            guard depth < maxDepth else { continue }
-            if containersOnly {
-                guard containers.contains(actualRole ?? ""), !(actualIdentifier?.lowercased().contains("inspector") ?? false) else { continue }
-            }
-            for child in (rawAttribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(maxNodes - cursor) {
-                if queue.count < maxNodes { queue.append((child, depth + 1)) }
-            }
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        return FinalCutAXSearch.find(root: root,
+            query: .init(role: role, identifier: identifier, title: title, description: description, containersOnly: containersOnly),
+            maxDepth: maxDepth, maxNodes: maxNodes, read: { FinalCutAXAttributes.read($0, names: $1) },
+            children: { Self.rawAttribute($0, kAXChildrenAttribute) as? [AXUIElement] ?? [] }, equals: { CFEqual($0, $1) },
+            shouldContinue: { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline })?.element
+    }
+
+    private static func lookup(_ window: AXUIElement, query: FinalCutAXQuery) -> FinalCutAXLookup<AXUIElement> {
+        FinalCutAXLookup(root: window, query: query, read: { FinalCutAXAttributes.read($0, names: $1) },
+            children: { Self.rawAttribute($0, kAXChildrenAttribute) as? [AXUIElement] ?? [] }, equals: { CFEqual($0, $1) })
+    }
+
+    private static func resolve(_ lookup: FinalCutAXLookup<AXUIElement>) -> FinalCutAXMatch<AXUIElement>? {
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        return lookup.resolve { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline }
+    }
+
+    func currentProjectTitle() -> String? { Self.resolve(projectLookup)?.values[kAXTitleAttribute] as? String }
+
+    func refreshTimeline() throws {
+        guard let current = Self.resolve(timelineLookup)?.element else {
+            throw FinalCutCaptureError.unavailable("The active project timeline is no longer accessible.")
         }
-        return nil
+        timeline = current
+    }
+
+    var projectLookupCounters: [String: Int] {
+        let stats = projectLookup.statistics
+        return ["capture.projectLookup.searches": stats.searches, "capture.projectLookup.cacheHits": stats.cacheHits,
+            "capture.projectLookup.invalidations": stats.invalidations, "capture.projectLookup.visitedNodes": stats.visitedNodes,
+            "capture.projectLookup.pathChecks": stats.pathChecks]
     }
 
     func assertCurrentProject() throws {
         try Task.checkCancellation()
         guard !application.isTerminated else { throw FinalCutCaptureError.unavailable("Final Cut exited during \(operationStage).") }
-        // Opening a native panel can rebuild the project toolbar's AX objects.
-        // Resolve its current control from the pinned project window each time.
-        let current = Self.search(mainWindow, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true)
-        let name = current.flatMap { string($0, kAXTitleAttribute) } ?? ""
+        // Read a fresh title only after verifying every edge from the pinned
+        // window to this control. A rebuilt path falls back to bounded discovery.
+        let name = currentProjectTitle() ?? ""
         guard name == projectName, permitsEmptyTimeline || !name.isEmpty else {
             throw FinalCutCaptureError.changedProject
         }
@@ -197,9 +210,10 @@ import Foundation
         var roots = [mainWindow]
         let windows = (attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? []).prefix(32)
         for window in windows where !CFEqual(window, mainWindow) {
-            let role = string(window, kAXRoleAttribute)
-            let modal = (attribute(window, kAXModalAttribute) as? NSNumber)?.boolValue
-            let subrole = string(window, kAXSubroleAttribute)
+            let values = FinalCutAXAttributes.read(window, names: [kAXRoleAttribute, kAXModalAttribute, kAXSubroleAttribute])
+            let role = values[kAXRoleAttribute] as? String
+            let modal = (values[kAXModalAttribute] as? NSNumber)?.boolValue
+            let subrole = values[kAXSubroleAttribute] as? String
             guard role == kAXSheetRole || modal == true || subrole == kAXDialogSubrole else { continue }
             roots.append(window)
             // The AU review window remains nonblocking. Its actual child sheets
@@ -251,11 +265,15 @@ import Foundation
 
     func selectionSnapshot() throws -> FinalCutSelectionSnapshot {
         try assertCurrentProject()
+        try refreshTimeline()
         func node(_ element: AXUIElement, children childNodes: [AccessibilityNode] = []) -> AccessibilityNode {
-            AccessibilityNode(role: string(element, kAXRoleAttribute), identifier: nil,
-                title: nil, description: string(element, kAXDescriptionAttribute), value: string(element, kAXValueAttribute),
-                selected: (attribute(element, kAXSelectedAttribute) as? NSNumber)?.boolValue,
-                enabled: (attribute(element, kAXEnabledAttribute) as? NSNumber)?.boolValue, children: childNodes)
+            let values = FinalCutAXAttributes.read(element, names: [kAXRoleAttribute, kAXDescriptionAttribute,
+                kAXValueAttribute, kAXSelectedAttribute, kAXEnabledAttribute])
+            func text(_ name: String) -> String? { (values[name] as? String) ?? (values[name] as? NSNumber)?.stringValue }
+            return AccessibilityNode(role: text(kAXRoleAttribute), identifier: nil,
+                title: nil, description: text(kAXDescriptionAttribute), value: text(kAXValueAttribute),
+                selected: (values[kAXSelectedAttribute] as? NSNumber)?.boolValue,
+                enabled: (values[kAXEnabledAttribute] as? NSNumber)?.boolValue, children: childNodes)
         }
         let items = children(timeline)
         guard items.count <= 10_000 else { throw FinalCutCaptureError.invalidSelection("This timeline has too many accessible items.") }
@@ -264,8 +282,9 @@ import Foundation
         for item in items {
             try Task.checkCancellation()
             guard Date() < deadline else { throw FinalCutCaptureError.unavailable("Reading the timeline selection took too long.") }
-            guard string(item, kAXRoleAttribute) == kAXLayoutItemRole,
-                  (attribute(item, kAXSelectedAttribute) as? NSNumber)?.boolValue == true else { continue }
+            let values = FinalCutAXAttributes.read(item, names: [kAXRoleAttribute, kAXSelectedAttribute])
+            guard values[kAXRoleAttribute] as? String == kAXLayoutItemRole,
+                  (values[kAXSelectedAttribute] as? NSNumber)?.boolValue == true else { continue }
             clips.append(node(item, children: children(item).prefix(100).map { node($0) }))
         }
         return try FinalCutSelectionSnapshot(projectName: projectName, timeline: node(timeline, children: clips))

@@ -57,6 +57,27 @@ Build 9 removes the literal `Apply Cuts` title requirement that rejected the red
 
 ## Live handoff checklist
 
+### Faster XML handoffs and immediate settings previews — 2026-10-23
+
+Build 15 accepts complete, unchanged XML-only exports from a verified closed-file
+snapshot, retaining the stability fallback. Detection and output edits update the
+current review from retained measurements, with Apply disabled until fresh checks
+pass. The copied app matches the bundle and ZIP; signatures, sandbox, registration,
+and Audio Unit validation passed. Its existing control-access grant was refreshed.
+
+In the generated effects project inside the required integration library, Analyze
+took 16.449 seconds versus an 18.609-second build 11 baseline. Two consecutive
+detection edits and both output modes passed fresh verification in 2.772–4.268
+seconds without another render. Native Controls kept typing focus and enabled Apply
+only after verification; Cancel cleared the review. Saved files, original media,
+and last-used settings were preserved. Final Cut can still leave Controls behind
+its main window after Share. These checks establish analysis and tuning, not an
+automatic editing pass. See [behavior, evidence, and limitations](fast-review.md).
+
+### Validated Final Cut control reuse — 2026-10-23
+
+Build 11 reduces repeated project-control searches using validated parent paths, fresh attribute snapshots, and bounded fallback discovery. Selection, project, dialog, Apply, media, and recovery checks remain. It adds capture timing details and lookup counters. The suite passed 366 Swift tests (one skipped) and 53 build-script tests. The installed copy matches the published app and ZIP, Audio Unit validation passed, and the app reports `ready` after refreshing its existing control-access grant. All 156 checked saved/library and source-media files retained their hashes. Live Final Cut latency and automatic editing remain unverified. See [lookup behavior and measurement steps](accessibility-speed.md).
+
 ### Safe cache cleanup — 2026-10-23
 
 Build 10 adds idle cleanup of inventoried temporary audio, bounded Share logs, and **Clear Cache…** in the scissors menu. Recovery XML, results, settings, original media, libraries, manual exports, unknown files, and modified files are preserved. The installed app matches the published app and ZIP; signatures, sandbox, and Audio Unit validation passed. Startup cleanup removed a synthetic disposable cache file while all 142 saved/library files and one referenced source file retained their original hashes. The suite passed 352 Swift tests (one skipped) and 53 build-script tests. See [cleanup policy and verification](storage-cleanup.md). This filesystem verification does not establish automatic Apply success.

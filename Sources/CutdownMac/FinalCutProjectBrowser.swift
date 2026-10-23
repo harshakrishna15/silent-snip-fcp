@@ -60,8 +60,7 @@ extension FinalCutAXSession {
             guard !application.isTerminated else { throw FinalCutCaptureError.changedProject }
             // Import may itself open the result. Permit only the original or
             // our exact generated project; don't repin to another user project.
-            let control = Self.search(mainWindow, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true)
-            let currentName = control.flatMap { string($0, kAXTitleAttribute) }
+            let currentName = currentProjectTitle()
             if replacement == nil,
                !FinalCutImportTimeline.permits(currentName, original: projectName, imported: name) {
                 throw FinalCutCaptureError.changedProject
@@ -141,8 +140,7 @@ extension FinalCutAXSession {
                     try await activate()
                     try await pressMenu(path: ["Window", "Go To", "Libraries"])
                 } catch FinalCutCaptureError.changedProject {
-                    let now = Self.search(mainWindow, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true)
-                        .flatMap { string($0, kAXTitleAttribute) }
+                    let now = currentProjectTitle()
                     guard now == name else { throw FinalCutCaptureError.changedProject }
                     continue
                 }
