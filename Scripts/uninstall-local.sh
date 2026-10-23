@@ -44,10 +44,21 @@ run() {
     "$@"
   fi
 }
+delete_preferences() {
+  local identity="$1" output status
+  if [[ "$dry_run" == true ]]; then run /usr/bin/defaults delete "$identity"; return; fi
+  if output=$(/usr/bin/defaults delete "$identity" 2>&1); then return; else status=$?; fi
+  # A domain may disappear after preflight, or read may have seen cached values.
+  # Only the exact missing-domain error is harmless; keep other failures visible.
+  if [[ "$status" == 1 && "$output" == *"Error: Domain '$identity' not found."* ]]; then return 0; fi
+  printf 'Could not remove preferences for %s (defaults exit %s).\n%s\n' "$identity" "$status" "$output" >&2
+  return "$status"
+}
+
 require_stopped() {
   local name
   [[ "$dry_run" == false ]] || return 0
-  for name in 'Final Cut Pro' Cutdown CutdownAudio CutdownAudioExtension; do
+  for name in 'Final Cut Pro' SilentSnip SilentSnipAudio Cutdown CutdownAudio CutdownAudioExtension; do
     if /usr/bin/pgrep -x "$name" >/dev/null; then
       fail 'Quit Final Cut Pro, Silent Snip, and its Audio Unit before uninstalling. No process was stopped.'
     else
@@ -78,14 +89,14 @@ if [[ -d "$build_dir" ]]; then
     identity=$("$plistbuddy" -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist") || fail "Cannot inspect bundle: $app"
     extension=''
     case "$identity" in
-      local.cutdown.helper|local.cutdown.helper.candidate) ;;
-      local.cutdown.audio)
+      local.silentsnip.helper|local.silentsnip.helper.candidate) ;;
+      local.silentsnip.app)
         [[ ! -L "$app/Contents" && ! -L "$app/Contents/PlugIns" ]] || fail "Audio bundle contains a symlinked extension parent; nothing was removed: $app"
-        extension="$app/Contents/PlugIns/CutdownAudioExtension.appex"
+        extension="$app/Contents/PlugIns/SilentSnipAudio.appex"
         if [[ -e "$extension" || -L "$extension" ]]; then
           [[ ! -L "$extension" && -d "$extension" ]] || fail "Cannot safely inspect extension: $extension"
           extension_identity=$("$plistbuddy" -c 'Print :CFBundleIdentifier' "$extension/Contents/Info.plist") || fail "Cannot inspect extension: $extension"
-          [[ "$extension_identity" == local.cutdown.audio.extension ]] || fail "Unexpected extension identity at $extension; nothing was removed."
+          [[ "$extension_identity" == local.silentsnip.app.audio ]] || fail "Unexpected extension identity at $extension; nothing was removed."
         else
           extension=''
         fi
@@ -108,7 +119,7 @@ if [[ "$remove_data" == true ]]; then
     "$user_library/Application Scripts"; do
     [[ ! -L "$parent" ]] || fail "Data directory is a symlink; remove its app data manually: $parent"
   done
-  for identity in local.cutdown.helper local.cutdown.helper.candidate local.cutdown.audio local.cutdown.audio.extension; do
+  for identity in local.silentsnip.helper local.silentsnip.helper.candidate local.silentsnip.app local.silentsnip.app.audio; do
     if /usr/bin/defaults read "$identity" >/dev/null 2>&1; then
       preference_domains+=("$identity")
     elif [[ -e "$user_library/Preferences/$identity.plist" || -L "$user_library/Preferences/$identity.plist" ]]; then
@@ -130,7 +141,7 @@ for ((index=0; index<${#apps[@]}; index++)); do
   extension="${extensions[$index]}"
   if [[ -n "$extension" ]]; then
     if ! run "$pluginkit" -r "$extension"; then
-      registry=$("$pluginkit" -m -A -D -v -i local.cutdown.audio.extension) || fail 'Cannot verify Audio Unit removal; app bundles were kept.'
+      registry=$("$pluginkit" -m -A -D -v -i local.silentsnip.app.audio) || fail 'Cannot verify Audio Unit removal; app bundles were kept.'
       [[ -z "${registry//[[:space:]]/}" ]] || fail "Audio Unit removal failed and registrations remain; app bundles were kept: $extension"
     fi
   fi
@@ -143,13 +154,13 @@ done
 
 if [[ "$remove_data" == true ]]; then
   require_stopped
-  for path in "$user_library/Application Support/Cutdown" "$user_library/Application Support/Cutdown Audio"; do
+  for path in "$user_library/Application Support/Silent Snip" "$user_library/Application Support/Silent Snip Audio"; do
     if [[ -e "$path" || -L "$path" ]]; then run /bin/rm -rf -- "$path"; fi
   done
   for identity in ${preference_domains[@]+"${preference_domains[@]}"}; do
-    run /usr/bin/defaults delete "$identity"
+    delete_preferences "$identity"
   done
-  for identity in local.cutdown.helper local.cutdown.helper.candidate local.cutdown.audio local.cutdown.audio.extension; do
+  for identity in local.silentsnip.helper local.silentsnip.helper.candidate local.silentsnip.app local.silentsnip.app.audio; do
     for path in "$user_library/Containers/$identity" "$user_library/Caches/$identity" \
       "$user_library/Saved Application State/$identity.savedState" "$user_library/Application Scripts/$identity"; do
       if [[ -e "$path" || -L "$path" ]]; then run /bin/rm -rf -- "$path"; fi

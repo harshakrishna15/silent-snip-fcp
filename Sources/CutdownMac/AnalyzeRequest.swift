@@ -13,7 +13,7 @@ public struct AnalyzeRequest: Equatable, Sendable {
 
     public init(url: URL) throws {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              parts.scheme == "cutdown", parts.host == "analyze",
+              parts.scheme == "silentsnip", parts.host == "analyze",
               parts.path.isEmpty, parts.fragment == nil,
               parts.user == nil, parts.password == nil, parts.port == nil else {
             throw RequestError.invalidURL
@@ -66,7 +66,7 @@ public struct ReviewVerificationRequest {
     public let result: URL
     public init(url: URL) throws {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              parts.scheme == "cutdown", parts.host == "verify", parts.path.isEmpty,
+              parts.scheme == "silentsnip", parts.host == "verify", parts.path.isEmpty,
               parts.fragment == nil, parts.user == nil, parts.password == nil, parts.port == nil,
               parts.queryItems?.count == 2,
               let viewText = parts.queryItems?.first(where: { $0.name == "view" })?.value,
@@ -74,7 +74,7 @@ public struct ReviewVerificationRequest {
               let path = parts.queryItems?.first(where: { $0.name == "result" })?.value,
               let result = URL(string: path), result.isFileURL,
               result.host == nil || result.host == "" || result.host == "localhost",
-              result.lastPathComponent == "Cutdown.fcpxml" else { throw AnalyzeRequest.RequestError.invalidURL }
+              result.lastPathComponent == "Silent Snip.fcpxml" else { throw AnalyzeRequest.RequestError.invalidURL }
         self.view = view; self.result = result
     }
 }

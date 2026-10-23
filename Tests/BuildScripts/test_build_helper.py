@@ -16,8 +16,8 @@ class HelperBuildTests(unittest.TestCase):
             (root / "scripts").mkdir()
             (root / "Config").mkdir()
             (root / "Config/Info.plist").write_text("fixture")
-            (root / "Config/Cutdown.sdef").write_text("fixture")
-            installed = root / "build/Cutdown.app"
+            (root / "Config/SilentSnip.sdef").write_text("fixture")
+            installed = root / "build/SilentSnipHelper.app"
             installed.mkdir(parents=True)
             (installed / "old-marker").write_text("previous helper")
             bin_dir = root / "tools"
@@ -56,12 +56,12 @@ fi
             (root / "scripts/build-helper.sh").write_text(script)
             env = dict(os.environ, PATH=f"{bin_dir}:/usr/bin:/bin", STUB_ROOT=str(root),
                        STUB_FIRST=str(statuses[0]), STUB_SECOND=str(statuses[1]), STUB_CONFIGURATION="release" if release else "debug",
-                       STUB_IDENTIFIER="local.cutdown.helper" + (".candidate" if stage else ""))
+                       STUB_IDENTIFIER="local.silentsnip.helper" + (".candidate" if stage else ""))
             result = subprocess.run(["/bin/bash", str(root / "scripts/build-helper.sh")]
                                     + (["--release"] if release else []) + (["--stage"] if stage else []), env=env,
                                     capture_output=True, text=True)
             return (result, (installed / "old-marker").exists(),
-                    (root / "build/Candidate/Cutdown.app/Contents/MacOS/Cutdown").exists(),
+                    (root / "build/Candidate/SilentSnipHelper.app/Contents/MacOS/SilentSnip").exists(),
                     (root / "calls").exists())
 
     def test_release_build_and_binary_lookup_use_same_configuration(self):

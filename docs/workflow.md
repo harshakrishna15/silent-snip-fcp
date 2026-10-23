@@ -6,18 +6,9 @@ Silent Snip is a local, audio-only silence-removal tool for Final Cut Pro. The u
 
 ## 1. Install and prepare
 
-For a local development installation, quit Final Cut and the Silent Snip helper, then run these commands from the workspace:
+Copy **Silent Snip.app** into Applications, open it once, then follow [first-time setup](setup.md) to grant macOS control access and create a **Silent Snip** Share destination with that copied app as its action. The app contains the background workflow and audio extension. The scissors menu bar icon shows that Silent Snip is running and provides status, saved results, and Quit. Controls is the main interface; a separate app window is not expected.
 
-```sh
-./Scripts/build-helper.sh --release
-./Scripts/build-audio-plugin.sh
-./Scripts/register-local.sh --check-only
-./Scripts/register-local.sh
-```
-
-Keep the registered bundles at their build locations. Complete [first-time setup](setup.md) to grant the helper macOS control access and create a Share destination named **Silent Snip** targeting `build/Cutdown.app`. Neither step is performed by registration. Reopen Final Cut after registration. The helper has no separate application window; the Audio Unit's Controls window is its interface.
-
-After an ad hoc rebuild, quit and relaunch the helper if an existing permission grant is not recognized. If that does not restore access, refresh its entry in the macOS control-access settings. Changed ad hoc builds can require a new grant; an existing consistent signing identity can be used for development.
+For source development, quit Final Cut and Silent Snip and run `Scripts/build.sh --release`. It builds and registers `build/App/Silent Snip.app` in place. Keep that bundle there while using it, or copy it into Applications and update the Share action. Ad hoc rebuilds can require a fresh control-access grant.
 
 Share is part of the helper's implementation. The normal user interaction does not require manually exporting XML, choosing an export method, or sending a project to Silent Snip.
 
@@ -123,11 +114,11 @@ Generated segments include the exact submitted settings as native AU state and s
 
 Listen around cut boundaries and continue editing in the replaced project. To recover the pre-Apply edit, import that run’s `Before-Cuts.fcpxml`; it has a distinct recovery name and identity. Recovery history stays in the result folders until explicitly imported.
 
-Result artifacts live under `~/Library/Application Support/Cutdown/Results/<request UUID>/`:
+Result artifacts live under `~/Library/Application Support/Silent Snip/Results/<request UUID>/`:
 
 | Artifact | Purpose |
 |---|---|
-| `Cutdown.fcpxml` | Generated edited project. |
+| `Silent Snip.fcpxml` | Generated edited project. |
 | `Before-Cuts.fcpxml` | Separately named recovery project referencing existing source media. |
 | `Edit-Report.json` | Details of the generated edits. |
 | `Analysis-Settings.json` | Exact detection settings used. |
@@ -141,7 +132,7 @@ If Apply stops before delivery, no result import was requested. If delivery was 
 
 The helper retains progress and review state independently of the view. Controls polls the latest cached response and reconnects after host view recreation. Returning to a hidden view grants a fresh response interval. Terminal errors remain visible without a heartbeat; after a timeout, read-only polling continues so a delayed error can replace the provisional message. Apply remains disabled for that expired review. Invalid or oversized review payloads still stop the review; there is no separate fallback review window. See the [missing-preview correction](preview-connection.md) for the confirmed Noise Gate/Limiter render mismatch and current installation steps.
 
-After an import or verification failure, use **Retry Verification** in Controls. It opens the existing result, exports it again, and performs the comparisons; it has no import step. After a helper restart, select a clip in the replacement project, open its Controls, and use **Verify Existing Result…**, choosing the result folder’s `Cutdown.fcpxml`. Older results can be adopted from their matching `Edit-Report.json` and `Analysis-Settings.json`. Altered/mismatched artifacts are rejected. Once a host project identity has been verified, later retries must match that identity as well as the complete expected timeline. The helper keeps at most 24 pending receipt locations in memory and releases completed verification data. Older pending results remain on disk and can be reopened with **Verify Existing Result…**.
+After an import or verification failure, use **Retry Verification** in Controls. It opens the existing result, exports it again, and performs the comparisons; it has no import step. After a helper restart, select a clip in the replacement project, open its Controls, and use **Verify Existing Result…**, choosing the result folder’s `Silent Snip.fcpxml`. Older results can be adopted from their matching `Edit-Report.json` and `Analysis-Settings.json`. Altered/mismatched artifacts are rejected. Once a host project identity has been verified, later retries must match that identity as well as the complete expected timeline. The helper keeps at most 24 pending receipt locations in memory and releases completed verification data. Older pending results remain on disk and can be reopened with **Verify Existing Result…**.
 
 Controls disables Retry Verification while waiting for acknowledgment and resends a lost request safely. A later failed attempt permits another explicit retry. If another review prevents verification from starting, the helper explains that and releases the button. Use both matching builds from the [current cleanup update](cleanup-fixes.md).
 

@@ -260,7 +260,7 @@ import Foundation
         let capture = context.capture
         let session = capture.session
         let parent = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Cutdown/Results", isDirectory: true)
+            .appendingPathComponent("Silent Snip/Results", isDirectory: true)
             .appendingPathComponent(request.id.uuidString, isDirectory: true)
         var prepared: PreparedXMLProject?
         var importAttempted = false

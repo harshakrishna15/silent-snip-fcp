@@ -3,27 +3,36 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-case "${1:-}" in
-  "") check_only=false ;;
-  --check-only) check_only=true ;;
-  --help|-h)
-    echo 'Usage: Scripts/register-local.sh [--check-only]'
-    echo 'Checks the helper and audio app signatures, then registers their'
-    echo 'existing build paths with Launch Services and PlugInKit for this user.'
-    echo 'Does not move/delete installed packages, change permissions, or open apps.'
-    exit 0 ;;
-  *) echo 'Usage: Scripts/register-local.sh [--check-only]' >&2; exit 2 ;;
-esac
-if [[ $# -gt 1 ]]; then
-  echo 'Usage: Scripts/register-local.sh [--check-only]' >&2
-  exit 2
-fi
+check_only=false
+app_path=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check-only) check_only=true; shift ;;
+    --app)
+      [[ $# -ge 2 && "$2" == /* ]] || { echo '--app requires an absolute app path.' >&2; exit 2; }
+      app_path="$2"; shift 2 ;;
+    --help|-h)
+      echo 'Usage: Scripts/register-local.sh [--check-only] [--app /absolute/Silent Snip.app]'
+      echo 'Verifies and registers the combined app, or legacy developer builds if absent.'
+      echo 'No app copies, launches, deletions, or permission changes are performed.'
+      exit 0 ;;
+    *) echo 'Usage: Scripts/register-local.sh [--check-only] [--app /absolute/Silent Snip.app]' >&2; exit 2 ;;
+  esac
+done
 
 lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 pluginkit=/usr/bin/pluginkit
-helper="$PWD/build/Cutdown.app"
-audio="$PWD/build/AudioPlugin/Build/Products/Debug/CutdownAudio.app"
-audio_extension="$audio/Contents/PlugIns/CutdownAudioExtension.appex"
+combined=false
+if [[ -z "$app_path" && -d "$PWD/build/App/Silent Snip.app" ]]; then app_path="$PWD/build/App/Silent Snip.app"; fi
+if [[ -n "$app_path" ]]; then
+  combined=true
+  helper="$app_path"
+  audio="$app_path"
+else
+  helper="$PWD/build/SilentSnipHelper.app"
+  audio="$PWD/build/AudioPlugin/Build/Products/Debug/CutdownAudio.app"
+fi
+audio_extension="$audio/Contents/PlugIns/SilentSnipAudio.appex"
 
 for tool in "$lsregister" "$pluginkit" /usr/bin/codesign /usr/libexec/PlistBuddy; do
   if [[ ! -x "$tool" ]]; then
@@ -34,7 +43,7 @@ done
 
 check_bundle() {
   local path="$1" expected_identifier="$2" actual_identifier
-  if [[ ! -d "$path" || ! -f "$path/Contents/Info.plist" ]]; then
+  if [[ ! -d "$path" || -L "$path" || -L "$path/Contents" || ! -f "$path/Contents/Info.plist" ]]; then
     printf 'Build product is missing: %s\nRun build-helper.sh and build-audio-plugin.sh first.\n' "$path" >&2
     exit 1
   fi
@@ -47,9 +56,16 @@ check_bundle() {
 }
 
 # Complete every check before modifying either macOS registration database.
-check_bundle "$helper" local.cutdown.helper
-check_bundle "$audio" local.cutdown.audio
-check_bundle "$audio_extension" local.cutdown.audio.extension
+if [[ "$combined" == true ]]; then
+  check_bundle "$helper" local.silentsnip.app
+  executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$helper/Contents/Info.plist")
+  [[ "$executable" == SilentSnip && -x "$helper/Contents/MacOS/SilentSnip" && -f "$helper/Contents/Resources/SilentSnip.sdef" ]] || { echo 'The combined app is missing its helper or Share definitions.' >&2; exit 1; }
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' "$helper/Contents/Info.plist" >/dev/null || { echo 'This is an inert candidate, not a complete app.' >&2; exit 1; }
+else
+  check_bundle "$helper" local.silentsnip.helper
+  check_bundle "$audio" local.silentsnip.app
+fi
+check_bundle "$audio_extension" local.silentsnip.app.audio
 extension_point=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$audio_extension/Contents/Info.plist")
 factory_class=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$audio_extension/Contents/Info.plist")
 if [[ "$extension_point" != com.apple.AudioUnit-UI || "$factory_class" != CutdownAudioUnitFactory ]]; then
@@ -83,33 +99,33 @@ remove_candidate_registration() {
     printf 'Candidate cleanup did not complete; continuing to register the installed app: %s\n' "$*" >&2
   fi
 }
-candidate="$PWD/build/Candidate/Cutdown.app"
+candidate="$PWD/build/Candidate/SilentSnipHelper.app"
 if [[ -f "$candidate/Contents/Info.plist" ]]; then
   candidate_identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Contents/Info.plist")
-  if [[ "$candidate_identifier" == local.cutdown.helper || "$candidate_identifier" == local.cutdown.helper.candidate ]]; then
+  if [[ "$candidate_identifier" == local.silentsnip.helper || "$candidate_identifier" == local.silentsnip.helper.candidate ]]; then
     remove_candidate_registration "$lsregister" -u "$candidate"
   fi
 fi
 # Xcode registers staged Audio Units too. Remove competing standard and isolated
 # diagnostic candidates while the host is stopped, then select the installed copy.
 # Only our audio bundle identity qualifies; preserve every bundle on disk.
-for audio_candidate in "$PWD/build/Candidate/AudioPlugin/CutdownAudio.app" "$PWD"/build/*/Candidate/CutdownAudio.app; do
+for audio_candidate in "$PWD/build/Candidate/App/Silent Snip.app" "$PWD/build/Candidate/AudioPlugin/CutdownAudio.app" "$PWD"/build/*/Candidate/CutdownAudio.app; do
   if [[ -f "$audio_candidate/Contents/Info.plist" ]]; then
     candidate_identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$audio_candidate/Contents/Info.plist")
-    if [[ "$candidate_identifier" == local.cutdown.audio ]]; then
-      remove_candidate_registration "$pluginkit" -r "$audio_candidate/Contents/PlugIns/CutdownAudioExtension.appex"
+    if [[ "$candidate_identifier" == local.silentsnip.app ]]; then
+      remove_candidate_registration "$pluginkit" -r "$audio_candidate/Contents/PlugIns/SilentSnipAudio.appex"
       remove_candidate_registration "$lsregister" -u "$audio_candidate"
     fi
   fi
 done
 "$lsregister" -f "$helper"
-"$lsregister" -f "$audio"
+if [[ "$audio" != "$helper" ]]; then "$lsregister" -f "$audio"; fi
 "$pluginkit" -a "$audio_extension"
 # Adding can return before discovery catches up. Do not report success merely
 # because the command exited zero: require the installed path in the registry.
 registration=''
 for attempt in 1 2 3 4 5; do
-  registration=$("$pluginkit" -m -A -D -v -i local.cutdown.audio.extension) || exit 1
+  registration=$("$pluginkit" -m -A -D -v -i local.silentsnip.app.audio) || exit 1
   if [[ "$registration" == *"$audio_extension"* ]]; then break; fi
   if [[ "$attempt" != 5 ]]; then /bin/sleep 1; fi
 done
@@ -117,6 +133,6 @@ if [[ "$registration" != *"$audio_extension"* ]]; then
   echo 'Silent Snip was not found at the installed path after registration. Keep Final Cut closed and retry Scripts/register-local.sh.' >&2
   exit 1
 fi
-echo 'Registered the Silent Snip helper and Audio Unit from their existing build paths.'
+echo 'Registered the Silent Snip app and Audio Unit from their existing paths.'
 echo 'Keep these build products in place while testing them in Final Cut Pro.'
 printf '%s\n' "$registration"

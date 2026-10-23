@@ -11,26 +11,39 @@ REPO = Path(__file__).resolve().parents[2]
 
 class RegistrationTests(unittest.TestCase):
     def run_registration(self, host_running=False, check_only=False, cleanup_failure=False,
-                         missing_registration=False, add_failure=False):
+                         missing_registration=False, add_failure=False, combined=False, explicit=False, candidate=False):
         with tempfile.TemporaryDirectory(prefix="cutdown-register-") as directory:
             root = Path(directory)
             (root / "Scripts").mkdir()
             tools = root / "tools"
             tools.mkdir()
             bundles = {
-                "build/Cutdown.app": "local.cutdown.helper",
-                "build/Candidate/Cutdown.app": "local.cutdown.helper.candidate",
-                "build/AudioPlugin/Build/Products/Debug/CutdownAudio.app": "local.cutdown.audio",
-                "build/AudioPlugin/Build/Products/Debug/CutdownAudio.app/Contents/PlugIns/CutdownAudioExtension.appex": "local.cutdown.audio.extension",
-                "build/Candidate/AudioPlugin/CutdownAudio.app": "local.cutdown.audio",
-                "build/Diagnostic/Candidate/CutdownAudio.app": "local.cutdown.audio",
+                "build/SilentSnipHelper.app": "local.silentsnip.helper",
+                "build/Candidate/SilentSnipHelper.app": "local.silentsnip.helper.candidate",
+                "build/AudioPlugin/Build/Products/Debug/CutdownAudio.app": "local.silentsnip.app",
+                "build/AudioPlugin/Build/Products/Debug/CutdownAudio.app/Contents/PlugIns/SilentSnipAudio.appex": "local.silentsnip.app.audio",
+                "build/Candidate/AudioPlugin/CutdownAudio.app": "local.silentsnip.app",
+                "build/Diagnostic/Candidate/CutdownAudio.app": "local.silentsnip.app",
                 "build/Unrelated/Candidate/CutdownAudio.app": "other.audio",
             }
+            combined_path = "Copied/Silent Snip.app" if explicit else "build/App/Silent Snip.app"
+            if combined:
+                bundles[combined_path] = "local.silentsnip.app"
+                bundles[combined_path + "/Contents/PlugIns/SilentSnipAudio.appex"] = "local.silentsnip.app.audio"
             for name, identity in bundles.items():
                 path = root / name / "Contents/Info.plist"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 data = {"CFBundleIdentifier": identity}
-                if identity == "local.cutdown.audio.extension":
+                if combined and name == combined_path:
+                    data.update(CFBundleExecutable="SilentSnip")
+                    if not candidate: data["CFBundleURLTypes"] = [{"CFBundleURLSchemes": ["silentsnip"]}]
+                    executable = path.parent / "MacOS/SilentSnip"
+                    executable.parent.mkdir()
+                    executable.write_text("fixture")
+                    executable.chmod(0o755)
+                    (path.parent / "Resources").mkdir()
+                    (path.parent / "Resources/SilentSnip.sdef").write_text("fixture")
+                if identity == "local.silentsnip.app.audio":
                     data["NSExtension"] = {"NSExtensionPointIdentifier": "com.apple.AudioUnit-UI",
                         "NSExtensionPrincipalClass": "CutdownAudioUnitFactory"}
                 path.write_bytes(plistlib.dumps(data))
@@ -61,11 +74,13 @@ exit 0
             path = root / "Scripts/register-local.sh"
             path.write_text(script)
             log = root / "calls"
-            result = subprocess.run(["/bin/bash", str(path)] + (["--check-only"] if check_only else []),
+            options = (["--check-only"] if check_only else []) + (["--app", str(root / combined_path)] if explicit else [])
+            registered = (root / combined_path / "Contents/PlugIns/SilentSnipAudio.appex") if combined else (root / "build/AudioPlugin/Build/Products/Debug/CutdownAudio.app/Contents/PlugIns/SilentSnipAudio.appex")
+            result = subprocess.run(["/bin/bash", str(path)] + options,
                 env=dict(os.environ, HOST_STATUS="0" if host_running else "1", CALL_LOG=str(log),
                          CLEANUP_STATUS="1" if cleanup_failure else "0", ADD_STATUS="1" if add_failure else "0",
                          MISSING_REGISTRATION="1" if missing_registration else "0",
-                         REGISTERED_PATH=str(root / "build/AudioPlugin/Build/Products/Debug/CutdownAudio.app/Contents/PlugIns/CutdownAudioExtension.appex")),
+                         REGISTERED_PATH=str(registered)),
                 capture_output=True, text=True)
             return result, log.read_text().splitlines() if log.exists() else []
 
@@ -114,6 +129,27 @@ exit 0
         result, calls = self.run_registration(add_failure=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("Registered the Silent Snip", result.stdout)
+
+    def test_combined_app_registers_one_containing_app_and_its_extension(self):
+        result, calls = self.run_registration(combined=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        published = [call for call in calls if call.startswith("lsregister -f ")]
+        self.assertEqual(len(published), 1)
+        self.assertIn("/build/App/Silent Snip.app", published[0])
+        self.assertTrue(any(call.startswith("pluginkit -a ") and "/build/App/Silent Snip.app/Contents/PlugIns/" in call for call in calls))
+
+    def test_copied_app_can_be_checked_and_registered_at_its_explicit_path(self):
+        result, calls = self.run_registration(combined=True, explicit=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(call.startswith("lsregister -f ") and "/Copied/Silent Snip.app" in call for call in calls))
+        result, calls = self.run_registration(combined=True, explicit=True, check_only=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [])
+
+    def test_inert_combined_candidate_is_rejected_before_any_registration(self):
+        result, calls = self.run_registration(combined=True, candidate=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import CutdownMac
     private let transport = ReviewTransport()
     private let interactive = InteractiveAudioSession()
     private var reviewRequest: AnalyzeRequest?
+    private var menuBar: MenuBarController?
     private lazy var coordinator = AnalysisReviewCoordinator(
         operation: { [unowned self] request, progress in
             reviewRequest = request
@@ -51,8 +52,12 @@ import CutdownMac
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if !FinalCutAccessibility.isTrusted { FinalCutAccessibility.requestAccess() }
-        try? IntegrationReport(state: "ready", message: "Ready. Analyze captures the selected audio clip; Apply replaces the project through XML in its existing event, with recovery XML saved first.").save()
+        menuBar = MenuBarController(isBusy: { [weak self] in self?.coordinator.isBusy == true })
+        let trusted = FinalCutAccessibility.isTrusted
+        if !trusted { FinalCutAccessibility.requestAccess() }
+        try? IntegrationReport(state: trusted ? "ready" : "permission-required", message: trusted
+            ? "Ready. Analyze captures the selected audio clip; Apply replaces the project through XML in its existing event, with recovery XML saved first."
+            : "Open Silent Snip in System Settings and grant control access, then reopen the app. Your Final Cut Share destination must point to this combined app.").save()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -87,7 +92,12 @@ import CutdownMac
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) { coordinator.stop(); interactive.stop(); transport.stop() }
+    func applicationWillTerminate(_ notification: Notification) {
+        coordinator.stop()
+        interactive.stop()
+        transport.stop()
+        menuBar?.stop()
+    }
 }
 
 @main enum CutdownApplication {

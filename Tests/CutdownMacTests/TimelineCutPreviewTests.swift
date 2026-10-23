@@ -8,17 +8,22 @@ final class TimelineCutPreviewTests: XCTestCase {
         var pacer = PreviewSamplePacer()
         XCTAssertTrue(pacer.isDue(at: start))
         pacer.didStartRead(at: start)
-        for step in 1...20 { pacer.wake(at: start.addingTimeInterval(Double(step) / 1000)) }
-        XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(0.1)))
-        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.15)))
-        pacer.didStartRead(at: start.addingTimeInterval(0.15))
-        XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(0.2)))
-        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.22)))
+        XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(0.02)))
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.034)))
+        for step in 1...10 { pacer.wake(at: start.addingTimeInterval(Double(step) / 1000)) }
+        XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(0.015)))
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.017)),
+            "Activity must shorten an idle wait without exceeding 60 requests/second.")
+        pacer.didStartRead(at: start.addingTimeInterval(0.017))
+        for step in 18...30 { pacer.wake(at: start.addingTimeInterval(Double(step) / 1000)) }
+        XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(0.032)))
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.034)))
+        pacer.didStartRead(at: start.addingTimeInterval(1))
+        XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(1.02)))
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(1.034)),
+            "Polling continues at 30 Hz when Final Cut sends no notifications.")
         pacer.reset()
-        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.22)))
-        pacer.didStartRead(at: start.addingTimeInterval(0.22))
-        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.37)),
-            "Polling must continue even when Final Cut sends no notifications.")
+        XCTAssertTrue(pacer.isDue(at: start))
     }
 
     func testClickTimeReadGapsNeverExpireVerifiedPreview() {

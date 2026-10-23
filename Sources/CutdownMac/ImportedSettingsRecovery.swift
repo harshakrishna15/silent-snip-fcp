@@ -82,8 +82,8 @@ enum ImportedSettingsRecovery {
     }
 
     static func load(outputURL: URL) throws -> ImportedResultVerification {
-        guard outputURL.isFileURL, outputURL.lastPathComponent == "Cutdown.fcpxml" else {
-            throw EditedProjectWriterError.verificationFailed("choose Cutdown.fcpxml from an existing result folder")
+        guard outputURL.isFileURL, outputURL.lastPathComponent == "Silent Snip.fcpxml" else {
+            throw EditedProjectWriterError.verificationFailed("choose Silent Snip.fcpxml from an existing result folder")
         }
         let directory = outputURL.deletingLastPathComponent()
         let data = try Data(contentsOf: outputURL)

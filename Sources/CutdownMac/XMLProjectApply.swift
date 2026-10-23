@@ -72,7 +72,7 @@ enum XMLProjectApply {
         }
         try FileManager.default.createDirectory(at: directory.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        let outputURL = directory.appendingPathComponent("Cutdown.fcpxml")
+        let outputURL = directory.appendingPathComponent("Silent Snip.fcpxml")
         let recoveryURL = directory.appendingPathComponent("Before-Cuts.fcpxml")
         try recovery.write(to: recoveryURL, options: .withoutOverwriting)
         try output.xmlData.write(to: outputURL, options: .withoutOverwriting)

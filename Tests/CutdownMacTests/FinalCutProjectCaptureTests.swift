@@ -4,6 +4,18 @@ import XCTest
 @testable import CutdownMac
 
 final class FinalCutProjectCaptureTests: XCTestCase {
+    func testApplyConfirmationUsesFreshDisabledGestureRatherThanButtonWording() {
+        let gesture = UUID()
+        let identifier = "cutdown.apply.requested.\(gesture.uuidString)"
+        XCTAssertTrue(FinalCutApplyGesture.isPending(identifier: identifier, enabled: false, gesture: gesture))
+        XCTAssertFalse(FinalCutApplyGesture.isPending(identifier: identifier, enabled: true, gesture: gesture))
+        XCTAssertFalse(FinalCutApplyGesture.isPending(identifier: identifier, enabled: nil, gesture: gesture))
+        XCTAssertFalse(FinalCutApplyGesture.isPending(identifier: identifier, enabled: false, gesture: UUID()))
+        for identifier in [nil, "cutdown.apply", "cutdown.apply.requested.", "prefix." + identifier, identifier + ".suffix"] {
+            XCTAssertFalse(FinalCutApplyGesture.isPending(identifier: identifier, enabled: false, gesture: gesture))
+        }
+    }
+
     func testPreviewAnchorsToExactHostWindowDespiteTransparentCoveringSurfaces() {
         let frame = CGRect(x: 0, y: 20, width: 1000, height: 800)
         let project = FinalCutPreviewSurface(pid: 10, frame: frame, layer: 0, alpha: 1, number: 123)

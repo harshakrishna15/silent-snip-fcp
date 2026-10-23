@@ -10,7 +10,7 @@ final class ReviewTransportTests: XCTestCase {
             try ReviewWire.encode(ReviewReconnectQuery(version: 2, view: view)), String(repeating: "x", count: 1025)] {
             XCTAssertNil(ReviewReconnectQuery.decode(object))
         }
-        let request = try AnalyzeRequest(url: XCTUnwrap(URL(string: "cutdown://analyze?request=\(UUID())&threshold=-42&minimum=8&before=1.5&after=2&output=gaps")))
+        let request = try AnalyzeRequest(url: XCTUnwrap(URL(string: "silentsnip://analyze?request=\(UUID())&threshold=-42&minimum=8&before=1.5&after=2&output=gaps")))
         let reply = try ReviewWire.encode(ReviewReconnectReply(view: view, request: request))
         let packet = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any])
         XCTAssertEqual(packet["view"] as? String, view.uuidString)
@@ -20,10 +20,10 @@ final class ReviewTransportTests: XCTestCase {
     }
 
     func testSavedResultURLRejectsAmbiguousOrNonlocalDestinations() throws {
-        let base = "cutdown://verify?view=\(UUID())&result=file:///tmp/Cutdown.fcpxml"
-        XCTAssertEqual(try ReviewVerificationRequest(url: XCTUnwrap(URL(string: base))).result.path, "/tmp/Cutdown.fcpxml")
+        let base = "silentsnip://verify?view=\(UUID())&result=file:///tmp/Silent Snip.fcpxml"
+        XCTAssertEqual(try ReviewVerificationRequest(url: XCTUnwrap(URL(string: base))).result.path, "/tmp/Silent Snip.fcpxml")
         for url in [base + "&view=\(UUID())", base + "#fragment", base.replacingOccurrences(of: "file:///", with: "https://example.org/"),
-                    base.replacingOccurrences(of: "Cutdown.fcpxml", with: "Other.fcpxml"), base.replacingOccurrences(of: "file:///", with: "file://remote/")] {
+                    base.replacingOccurrences(of: "Silent Snip.fcpxml", with: "Other.fcpxml"), base.replacingOccurrences(of: "file:///", with: "file://remote/")] {
             XCTAssertThrowsError(try ReviewVerificationRequest(url: XCTUnwrap(URL(string: url))))
         }
     }
@@ -67,7 +67,7 @@ final class ReviewTransportTests: XCTestCase {
         let include = ReviewCommand(request: request, command: .include, cutID: "cut-2", included: false, expectedRevision: 7)
         let object = try ReviewWire.encode(include)
         XCTAssertEqual(try ReviewWire.decodeCommand(object), include)
-        XCTAssertEqual(ReviewWire.responseName(for: request), "local.cutdown.review.response.v1.\(request.uuidString)")
+        XCTAssertEqual(ReviewWire.responseName(for: request), "local.silentsnip.review.response.v1.\(request.uuidString)")
     }
 
     func testMutationsRequireCurrentRevisionAndApplyRequiresViewGesture() throws {

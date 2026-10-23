@@ -23,12 +23,17 @@ struct PreviewRequestGate {
 struct PreviewSamplePacer {
     private(set) var nextRead = Date.distantPast
     private var activeUntil = Date.distantPast
+    private var lastRead = Date.distantPast
 
-    mutating func reset() { nextRead = .distantPast; activeUntil = .distantPast }
-    mutating func wake(at now: Date) { activeUntil = max(activeUntil, now.addingTimeInterval(0.5)) }
+    mutating func reset() { nextRead = .distantPast; activeUntil = .distantPast; lastRead = .distantPast }
+    mutating func wake(at now: Date) {
+        activeUntil = max(activeUntil, now.addingTimeInterval(0.5))
+        nextRead = min(nextRead, max(now, lastRead.addingTimeInterval(1.0 / 60)))
+    }
     func isDue(at now: Date) -> Bool { now >= nextRead }
     mutating func didStartRead(at now: Date) {
-        nextRead = now.addingTimeInterval(now < activeUntil ? 1.0 / 15 : 0.15)
+        lastRead = now
+        nextRead = now.addingTimeInterval(now < activeUntil ? 1.0 / 60 : 1.0 / 30)
     }
 }
 
@@ -79,13 +84,14 @@ struct PreviewSamplePacer {
     private var visibility = PreviewVisibility()
     private weak var removedEffectSession: FinalCutAXSession?
     private var lastGeometry: PreviewGeometry?
+    private var lastPresentationCheck = Date.distantPast
     private var readTimes: [Double] = []
     private var paintTimes: [Double] = []
     private var diagnosticEnabled = false
     private var diagnosticRequested = false
     private var lastStatus = ""
     private var diagnosticDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Cutdown/Integration")
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Silent Snip/Integration")
     }
 
     func show(review: ReviewPlan, session: FinalCutAXSession) {
@@ -94,12 +100,7 @@ struct PreviewSamplePacer {
         guard removedEffectSession !== session else { return }
         let duration = review.target.timelineRange.duration.seconds
         guard duration > 0, !review.selectedCuts.isEmpty else { hide(); return }
-        drawing.boundaries = review.selectedCuts.enumerated().flatMap { index, cut in
-            [(cut.range.start, true), (cut.range.end, false)].map { time, isStart in
-                CutBoundaryView.Boundary(fraction: (time.seconds - review.target.timelineRange.start.seconds) / duration,
-                                         isStart: isStart, number: index + 1)
-            }
-        }
+        drawing.boundaries = Self.boundaries(for: review)
         if self.session !== session || reader == nil {
             hide()
             self.session = session
@@ -113,7 +114,7 @@ struct PreviewSamplePacer {
         }
         wake()
         if timer == nil {
-            timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.tick() }
             }
             RunLoop.main.add(timer!, forMode: .common)
@@ -121,11 +122,25 @@ struct PreviewSamplePacer {
         tick()
     }
 
+    static func boundaries(for review: ReviewPlan) -> [CutBoundaryView.Boundary] {
+        let duration = review.target.timelineRange.duration.seconds
+        guard duration > 0 else { return [] }
+        // Use the complete review order so excluding cut 1 cannot renumber cut 2.
+        return review.cuts.enumerated().flatMap { index, cut -> [CutBoundaryView.Boundary] in
+            guard cut.included && cut.isEligible else { return [] }
+            return [(cut.range.start, true), (cut.range.end, false)].map { time, isStart in
+                CutBoundaryView.Boundary(fraction: (time.seconds - review.target.timelineRange.start.seconds) / duration,
+                                         isStart: isStart, number: index + 1)
+            }
+        }
+    }
+
     func hide() {
         gate.reset(); observer?.stop(); observer = nil
         timer?.invalidate(); timer = nil; reader = nil; session = nil
         pacer.reset()
         panel?.orderOut(nil); lastGeometry = nil; visibility.reset()
+        lastPresentationCheck = .distantPast
     }
     private func wake() { pacer.wake(at: Date()) }
 
@@ -166,6 +181,9 @@ struct PreviewSamplePacer {
     /// panel order on the display timer rather than waiting for a geometry
     /// read, which can be busy validating the Inspector during a scrub.
     private func maintainPresentation() {
+        let now = Date()
+        guard now.timeIntervalSince(lastPresentationCheck) >= 0.1 else { return }
+        lastPresentationCheck = now
         guard let window = panel, window.isVisible, let geometry = lastGeometry,
               let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                   kCGNullWindowID) as? [[String: Any]] else { return }

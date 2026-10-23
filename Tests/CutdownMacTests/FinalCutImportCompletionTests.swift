@@ -35,16 +35,16 @@ final class FinalCutImportCompletionTests: XCTestCase {
     private let notice = "Your XML was imported with the following warnings. Depending on the warnings, you may want to modify the XML, then import it again."
 
     func testAcknowledgesOnlyTheCompletedWarningForOurDeliveredFile() {
-        XCTAssertTrue(FinalCutImportDialog(title: "Import XML", text: [notice, "Cutdown.fcpxml", "A parameter was ignored"], buttons: ["OK"])
-            .isCompletedWarning(for: "Cutdown.fcpxml"))
+        XCTAssertTrue(FinalCutImportDialog(title: "Import XML", text: [notice, "Silent Snip.fcpxml", "A parameter was ignored"], buttons: ["OK"])
+            .isCompletedWarning(for: "Silent Snip.fcpxml"))
         for dialog in [
             FinalCutImportDialog(title: "Import XML", text: [notice, "Other.fcpxml"], buttons: ["OK"]),
-            FinalCutImportDialog(title: "Import XML", text: [notice, "Cutdown.fcpxml.bak"], buttons: ["OK"]),
-            FinalCutImportDialog(title: "Import XML", text: ["Import failed", "Cutdown.fcpxml"], buttons: ["OK"]),
-            FinalCutImportDialog(title: "Import XML", text: [notice, "Cutdown.fcpxml"], buttons: ["Replace", "Cancel"]),
-            FinalCutImportDialog(title: "Import XML", text: [notice, "Cutdown.fcpxml"], buttons: ["OK", "Cancel"]),
-            FinalCutImportDialog(title: "Missing Files", text: [notice, "Cutdown.fcpxml"], buttons: ["OK"])
-        ] { XCTAssertFalse(dialog.isCompletedWarning(for: "Cutdown.fcpxml")) }
+            FinalCutImportDialog(title: "Import XML", text: [notice, "Silent Snip.fcpxml.bak"], buttons: ["OK"]),
+            FinalCutImportDialog(title: "Import XML", text: ["Import failed", "Silent Snip.fcpxml"], buttons: ["OK"]),
+            FinalCutImportDialog(title: "Import XML", text: [notice, "Silent Snip.fcpxml"], buttons: ["Replace", "Cancel"]),
+            FinalCutImportDialog(title: "Import XML", text: [notice, "Silent Snip.fcpxml"], buttons: ["OK", "Cancel"]),
+            FinalCutImportDialog(title: "Missing Files", text: [notice, "Silent Snip.fcpxml"], buttons: ["OK"])
+        ] { XCTAssertFalse(dialog.isCompletedWarning(for: "Silent Snip.fcpxml")) }
     }
 
     func testReplacementConfirmationRequiresExactLibraryAndButtons() {
@@ -54,7 +54,7 @@ final class FinalCutImportCompletionTests: XCTestCase {
         XCTAssertFalse(dialog.isReplacementConfirmation(libraryName: "Other"))
         XCTAssertFalse(FinalCutImportDialog(title: "", text: [text], buttons: ["Replace", "Cancel"])
             .isReplacementConfirmation(libraryName: "Fixture"))
-        let failure = XMLProjectApplyFailure(cause: CocoaError(.fileReadUnknown), outputURL: URL(fileURLWithPath: "/tmp/Result/Cutdown.fcpxml"),
+        let failure = XMLProjectApplyFailure(cause: CocoaError(.fileReadUnknown), outputURL: URL(fileURLWithPath: "/tmp/Result/Silent Snip.fcpxml"),
                                             importAttempted: true, replacingOriginal: true)
         XCTAssertFalse(failure.localizedDescription.contains("original project is unchanged"))
         XCTAssertTrue(failure.localizedDescription.contains("Before-Cuts.fcpxml"))
@@ -103,7 +103,7 @@ final class FinalCutImportCompletionTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let error = XMLProjectApplyFailure(cause: FinalCutCaptureError.unavailable("Import warning still open."),
-            outputURL: directory.appendingPathComponent("Cutdown.fcpxml"), importAttempted: true)
+            outputURL: directory.appendingPathComponent("Silent Snip.fcpxml"), importAttempted: true)
         try error.saveStatus()
         let status = try String(contentsOf: directory.appendingPathComponent("Import-Status.txt"))
         XCTAssertTrue(status.contains("automatic verification could not finish"))

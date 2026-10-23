@@ -4,6 +4,20 @@ import XCTest
 @testable import CutdownMac
 
 @MainActor final class AnalysisReviewCoordinatorTests: XCTestCase {
+    func testPreviewNumbersMatchReviewRowsAfterExcludingEarlierCuts() throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        var review = fixture.result.analyzed.review
+        XCTAssertEqual(review.cuts.count, 2)
+        XCTAssertEqual(TimelineCutPreview.boundaries(for: review).map(\.number), [1, 1, 2, 2])
+        try review.setIncluded(false, cutID: review.cuts[0].id)
+        XCTAssertEqual(TimelineCutPreview.boundaries(for: review).map(\.number), [2, 2],
+            "The remaining START/END markers must still identify review row 2.")
+        review.selectAllEligible(false)
+        XCTAssertTrue(TimelineCutPreview.boundaries(for: review).isEmpty)
+        review.selectAllEligible(true)
+        XCTAssertEqual(TimelineCutPreview.boundaries(for: review).map(\.number), [1, 1, 2, 2])
+    }
+
     func testEarlyPreviewCannotApplyOrChangeUntilCleanupCompletes() async throws {
         let fixture = try makeFixture(); defer { fixture.remove() }
         let request = try makeRequest()
@@ -748,7 +762,7 @@ import XCTest
 
     private func makeRequest() throws -> AnalyzeRequest {
         try AnalyzeRequest(url: XCTUnwrap(URL(string:
-            "cutdown://analyze?request=\(UUID())&threshold=-40&minimum=0.5&before=0.1&after=0.1")))
+            "silentsnip://analyze?request=\(UUID())&threshold=-40&minimum=0.5&before=0.1&after=0.1")))
     }
 
     private func makeFixture(uniformLevel: Double? = nil, role: String = "dialogue", isolated: Bool = false) throws -> Fixture {

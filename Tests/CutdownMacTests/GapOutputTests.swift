@@ -50,7 +50,7 @@ final class GapOutputTests: XCTestCase {
     }
 
     func testOutputRequestDefaultsAndFractionalFrameRounding() throws {
-        let base = "cutdown://analyze?request=\(UUID())&threshold=-40&minimum=0.5&before=0.1&after=0.1"
+        let base = "silentsnip://analyze?request=\(UUID())&threshold=-40&minimum=0.5&before=0.1&after=0.1"
         XCTAssertEqual(try AnalyzeRequest(url: URL(string: base)!).outputMode, .remove)
         XCTAssertEqual(try AnalyzeRequest(url: URL(string: base + "&output=gaps")!).outputMode, .gaps)
         XCTAssertThrowsError(try AnalyzeRequest(url: URL(string: base + "&output=unknown")!))

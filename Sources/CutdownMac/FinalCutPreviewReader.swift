@@ -21,7 +21,7 @@ final class FinalCutPreviewReader: @unchecked Sendable {
     let mainWindow: AXUIElement
     private let projectName: String
     private let expected: FinalCutSelectionSnapshot
-    private let queue = DispatchQueue(label: "local.cutdown.preview.geometry", qos: .userInteractive)
+    private let queue = DispatchQueue(label: "local.silentsnip.preview.geometry", qos: .userInteractive)
     private var timeline: AXUIElement?
     private var clip: AXUIElement?
     private var projectControl: AXUIElement?
@@ -55,10 +55,11 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         case complete(PreviewEffectInspection)
     }
     private var effectInspectionProgress: EffectInspectionProgress?
+    private var effectInspector: AXUIElement?
     private var nextDeadline = Date.distantFuture
     private let diagnostics = FileManager.default.fileExists(atPath:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Cutdown/Integration/EnablePreviewDiagnostics").path)
+            .appendingPathComponent("Silent Snip/Integration/EnablePreviewDiagnostics").path)
 
     init(pid: pid_t, root: AXUIElement, mainWindow: AXUIElement, projectName: String, expected: FinalCutSelectionSnapshot) {
         self.pid = pid; self.root = root; self.mainWindow = mainWindow
@@ -116,23 +117,23 @@ final class FinalCutPreviewReader: @unchecked Sendable {
     }
 
     private func validate() throws {
+        // Scrolling does not change the verified clip's identity. Validate its
+        // cached handles before searching the entire host tree again.
+        if let clip, let timeline, let projectControl,
+           let title = string(projectControl, kAXTitleAttribute) {
+            guard title == projectName else { throw FinalCutPreviewError.unavailable("Project changed") }
+            if let items = attribute(timeline, kAXChildrenAttribute) as? [AXUIElement],
+               items.contains(where: { CFEqual($0, clip) }), matchesExpectedClip(clip) {
+                identityLease.verified(at: Date())
+                return
+            }
+        }
         guard let timeline = Self.search(mainWindow, role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true),
               let project = Self.search(mainWindow, identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton", containersOnly: true),
               let title = string(project, kAXTitleAttribute) else { throw FinalCutPreviewError.transient("Project or timeline is unavailable") }
         guard title == projectName else { throw FinalCutPreviewError.unavailable("Project changed") }
         let items = children(timeline)
-        let matches = items.filter { item in
-            guard string(item, kAXRoleAttribute) == kAXLayoutItemRole,
-                  string(item, kAXValueAttribute) == expected.durationTimecode else { return false }
-            let parts = children(item)
-            func value(_ role: String, _ description: String) -> String? {
-                let found = parts.filter { string($0, kAXRoleAttribute) == role && string($0, kAXDescriptionAttribute) == description }
-                return found.count == 1 ? string(found[0], kAXValueAttribute) : nil
-            }
-            return value(kAXTextFieldRole, "Title") == expected.clipName &&
-                value("AXHandle", "Leading Edge") == expected.leadingTimecode &&
-                value("AXHandle", "Trailing Edge") == expected.trailingTimecode
-        }
+        let matches = items.filter { matchesExpectedClip($0) }
         guard matches.count == 1, let clip = matches.first else { throw FinalCutPreviewError.transient("Analyzed clip identity is unavailable") }
         // Inspector children are virtualized and can be offscreen behind other
         // effects. They cannot prove that Silent Snip was removed. Geometry must
@@ -151,6 +152,19 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         self.timeline = timeline; self.clip = clip; projectControl = project; scrollAncestors = ancestors
         identityLease.verified(at: Date())
         regularApplications.removeAll(keepingCapacity: true)
+    }
+
+    private func matchesExpectedClip(_ item: AXUIElement) -> Bool {
+        guard string(item, kAXRoleAttribute) == kAXLayoutItemRole,
+              string(item, kAXValueAttribute) == expected.durationTimecode else { return false }
+        let parts = children(item)
+        func value(_ role: String, _ description: String) -> String? {
+            let found = parts.filter { string($0, kAXRoleAttribute) == role && string($0, kAXDescriptionAttribute) == description }
+            return found.count == 1 ? string(found[0], kAXValueAttribute) : nil
+        }
+        return value(kAXTextFieldRole, "Title") == expected.clipName &&
+            value("AXHandle", "Leading Edge") == expected.leadingTimecode &&
+            value("AXHandle", "Trailing Edge") == expected.trailingTimecode
     }
 
     private func validateDialogs() throws {
@@ -224,13 +238,12 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         // often cover the entire display, despite containing no visible pixels.
         var geometry = PreviewGeometry(frame: frame, visibleFrame: visibleFrame, occlusions: [],
             projectWindowNumber: windowSnapshot.projectNumber,
-            windowOrder: refreshedWindowSnapshot ? windowSnapshot.order :
-                (currentWindowOrder(projectNumber: windowSnapshot.projectNumber) ?? windowSnapshot.order))
+            windowOrder: refreshedWindowSnapshot ? windowSnapshot.order : [])
         if Date().timeIntervalSince(effectDate) >= (effectInspectionProgress == nil ? 1.0 : 0.1) {
             // Bound each Inspector slice so it cannot monopolize tracking.
             // Partial snapshots resume on later samples and remain unknown,
             // never evidence that the effect was removed.
-            nextDeadline = Date().addingTimeInterval(effectInspectionProgress == nil ? 0.35 : 0.1)
+            nextDeadline = Date().addingTimeInterval(0.012)
             let inspection = inspectEffect(timeline: timeline, clip: clip)
             effectDate = Date()
             switch inspection {
@@ -278,18 +291,10 @@ final class FinalCutPreviewReader: @unchecked Sendable {
             order: windows.compactMap { $0[kCGWindowNumber as String] as? Int }, diagnosticSurfaces: details)
     }
 
-    /// Final Cut can put its project back in front when the mouse enters the
-    /// timeline, without changing clip geometry or AX notifications. A cheap
-    /// WindowServer order read on each sample avoids waiting for the slower
-    /// dialog/project-window safety refresh before restoring the overlay.
-    private func currentWindowOrder(projectNumber: Int) -> [Int]? {
-        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID) as? [[String: Any]] else { return nil }
-        let order = windows.compactMap { $0[kCGWindowNumber as String] as? Int }
-        return order.contains(projectNumber) ? order : nil
-    }
-
     private func inspectEffect(timeline: AXUIElement, clip: AXUIElement) -> EffectInspectionResult {
+        // Selection/setup and final stability checks need their own allowance;
+        // exhausting a tiny drawing budget must not prevent removal detection.
+        nextDeadline = Date().addingTimeInterval(0.05)
         func selectedTarget() -> Bool {
             // Final Cut versions differ in whether the layout area provides
             // SelectedChildren or only Selected on its layout items.
@@ -311,33 +316,45 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         }
         guard selectedTarget() else { effectInspectionProgress = nil; return .notSelected }
         if effectInspectionProgress == nil {
-            guard let inspector = Self.search(mainWindow, role: kAXScrollAreaRole, description: "inspector", containersOnly: true) else { return .incomplete }
+            guard let inspector = effectInspector ?? Self.search(mainWindow, role: kAXScrollAreaRole, description: "inspector", containersOnly: true) else { return .incomplete }
+            effectInspector = inspector
             guard let viewport = rect(inspector) else { return .incomplete }
-            guard let controls = attribute(inspector, kAXChildrenAttribute) as? [AXUIElement], controls.count <= 300 else { return .incomplete }
+            guard let controls = attribute(inspector, kAXChildrenAttribute) as? [AXUIElement], controls.count <= 300 else {
+                if Date() < nextDeadline { effectInspector = nil }
+                return .incomplete
+            }
             effectInspectionProgress = EffectInspectionProgress(inspector: inspector, viewport: viewport, controls: controls)
         }
         guard var progress = effectInspectionProgress else { return .incomplete }
+        nextDeadline = Date().addingTimeInterval(0.012)
         while progress.index < progress.controls.count {
             let control = progress.controls[progress.index]
             guard Date() < nextDeadline else { effectInspectionProgress = progress; return .incomplete }
-            guard let role = string(control, kAXRoleAttribute) else {
+            // Finish one complete control snapshot even if its single AX call
+            // overruns the slice. Otherwise slow rows could starve forever.
+            let names = [kAXRoleAttribute, kAXDescriptionAttribute, kAXHelpAttribute,
+                         kAXValueAttribute, kAXTitleAttribute, kAXPositionAttribute,
+                         kAXSizeAttribute, kAXEnabledAttribute]
+            guard let snapshot = snapshot(control, names), let role = snapshot[kAXRoleAttribute] as? String else {
                 effectInspectionProgress = Date() >= nextDeadline ? progress : nil
                 return .incomplete
+            }
+            func text(_ name: String) -> String? {
+                (snapshot[name] as? String) ?? (snapshot[name] as? NSNumber)?.stringValue
             }
             var candidate = progress
             var key: String?
             if [kAXCheckBoxRole, kAXButtonRole, kAXDisclosureTriangleRole, "AXToggleButton"].contains(role) {
-                let description = string(control, kAXDescriptionAttribute)
-                    ?? string(control, kAXHelpAttribute) ?? ""
+                let description = text(kAXDescriptionAttribute) ?? text(kAXHelpAttribute) ?? ""
                 if FinalCutReviewInspector.isControllerCheckbox(description) {
-                    guard candidate.cutdown == nil, let frame = rect(control) else {
+                    guard candidate.cutdown == nil, let frame = Self.rect(snapshot) else {
                         effectInspectionProgress = Date() >= nextDeadline ? progress : nil
                         return .incomplete
                     }
                     candidate.cutdown = frame
                 } else if description == "toggle Effects" {
-                    guard PreviewEffectInspection.effectsExpanded(value: string(control, kAXValueAttribute),
-                        title: string(control, kAXTitleAttribute)) else {
+                    guard PreviewEffectInspection.effectsExpanded(value: text(kAXValueAttribute),
+                        title: text(kAXTitleAttribute)) else {
                         effectInspectionProgress = Date() >= nextDeadline ? progress : nil
                         return .incomplete
                     }
@@ -345,19 +362,19 @@ final class FinalCutPreviewReader: @unchecked Sendable {
                     key = "Effects"
                 } else if description.lowercased().hasSuffix(" check box") { key = description }
             } else if role == kAXStaticTextRole {
-                let value = string(control, kAXValueAttribute) ?? string(control, kAXTitleAttribute)
+                let value = text(kAXValueAttribute) ?? text(kAXTitleAttribute)
                 if value == "Effects" { candidate.effectsHeading = true }
                 if let value, ["Volume", "Audio Enhancements", "Pan", "Audio Configuration"].contains(value) { key = value }
             } else if role == kAXScrollBarRole {
-                guard let value = attribute(control, kAXValueAttribute) as? NSNumber,
-                      let enabled = attribute(control, kAXEnabledAttribute) as? NSNumber else {
+                guard let value = snapshot[kAXValueAttribute] as? NSNumber,
+                      let enabled = snapshot[kAXEnabledAttribute] as? NSNumber else {
                     effectInspectionProgress = Date() >= nextDeadline ? progress : nil
                     return .incomplete
                 }
                 candidate.scrollPosition = PreviewEffectInspection.scrollPosition(value: value.doubleValue, enabled: enabled.boolValue)
             }
             if let key {
-                guard let frame = rect(control) else {
+                guard let frame = Self.rect(snapshot) else {
                     effectInspectionProgress = Date() >= nextDeadline ? progress : nil
                     return .incomplete
                 }
@@ -370,7 +387,7 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         guard !progress.effectsHeading || progress.effectsExpanded else { effectInspectionProgress = nil; return .incomplete }
         // The Inspector may have rebuilt or the selection may have changed
         // during reads. Accept only a complete, stable list on this occurrence.
-        guard Date() < nextDeadline else { effectInspectionProgress = progress; return .incomplete }
+        nextDeadline = Date().addingTimeInterval(0.05)
         guard selectedTarget() else { effectInspectionProgress = nil; return .notSelected }
         guard
               let after = attribute(progress.inspector, kAXChildrenAttribute) as? [AXUIElement],
@@ -384,15 +401,26 @@ final class FinalCutPreviewReader: @unchecked Sendable {
                      anchors: progress.anchors, scrollPosition: progress.scrollPosition))
     }
     private func rect(_ element: AXUIElement) -> CGRect? {
-            guard let p = attribute(element, kAXPositionAttribute),
-                  let s = attribute(element, kAXSizeAttribute),
-                  CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
-            var origin = CGPoint.zero; var size = CGSize.zero
-            guard AXValueGetValue(p as! AXValue, .cgPoint, &origin),
-                  AXValueGetValue(s as! AXValue, .cgSize, &size),
-                  size.width > 2, size.height > 2 else { return nil }
-            return CGRect(origin: origin, size: size)
-        }
+        guard Date() < nextDeadline,
+              let values = snapshot(element, [kAXPositionAttribute, kAXSizeAttribute]) else { return nil }
+        return Self.rect(values)
+    }
+    private func snapshot(_ element: AXUIElement, _ names: [String]) -> [String: Any]? {
+        var copied: CFArray?
+        guard AXUIElementCopyMultipleAttributeValues(element, names as CFArray, [], &copied) == .success,
+              let values = copied as? [Any], values.count == names.count else { return nil }
+        return Dictionary(uniqueKeysWithValues: zip(names, values))
+    }
+    private static func rect(_ values: [String: Any]) -> CGRect? {
+        guard let p = values[kAXPositionAttribute], let s = values[kAXSizeAttribute],
+              CFGetTypeID(p as AnyObject) == AXValueGetTypeID(),
+              CFGetTypeID(s as AnyObject) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero; var size = CGSize.zero
+        guard AXValueGetValue(p as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(s as! AXValue, .cgSize, &size),
+              size.width > 2, size.height > 2 else { return nil }
+        return CGRect(origin: origin, size: size)
+    }
     private static func search(_ root: AXUIElement, role: String? = nil, identifier: String? = nil,
                                title: String? = nil, description: String? = nil,
                                maxDepth: Int = 24, maxNodes: Int = 600, containersOnly: Bool = false) -> AXUIElement? {

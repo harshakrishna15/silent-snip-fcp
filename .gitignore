@@ -1,5 +1,6 @@
 # Swift/Xcode builds, caches, and generated app bundles
 build/
+dist/
 .build/
 .swiftpm/
 DerivedData/

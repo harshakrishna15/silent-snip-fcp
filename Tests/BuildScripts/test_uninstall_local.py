@@ -7,9 +7,9 @@ import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
-HELPER = "local.cutdown.helper"
-AUDIO = "local.cutdown.audio"
-EXTENSION = AUDIO + ".extension"
+HELPER = "local.silentsnip.helper"
+AUDIO = "local.silentsnip.app"
+EXTENSION = "local.silentsnip.app.audio"
 
 
 class UninstallTests(unittest.TestCase):
@@ -23,8 +23,8 @@ class UninstallTests(unittest.TestCase):
         self.tools.mkdir()
         (self.root / "Scripts").mkdir()
         self.apps = [
-            self.bundle("build/Cutdown.app", HELPER),
-            self.bundle("build/Candidate/Cutdown.app", HELPER + ".candidate"),
+            self.bundle("build/SilentSnipHelper.app", HELPER),
+            self.bundle("build/Candidate/SilentSnipHelper.app", HELPER + ".candidate"),
             self.bundle("build/AudioPlugin/Build/Products/Debug/CutdownAudio.app", AUDIO),
             self.bundle("build/Candidate/AudioPlugin/CutdownAudio.app", AUDIO),
             self.bundle("build/Diagnostic/Candidate/CutdownAudio.app", AUDIO),
@@ -39,8 +39,8 @@ class UninstallTests(unittest.TestCase):
         self.test_library = self.root / "Cutdown Integration.fcpbundle"
         self.test_library.mkdir()
         (self.test_library / "keep").write_text("user project")
-        self.inside_library = self.bundle("build/Fixture.fcpbundle/Cutdown.app", HELPER)
-        self.data = [self.library / "Application Support/Cutdown", self.library / "Application Support/Cutdown Audio"]
+        self.inside_library = self.bundle("build/Fixture.fcpbundle/SilentSnipHelper.app", HELPER)
+        self.data = [self.library / "Application Support/Silent Snip", self.library / "Application Support/Silent Snip Audio"]
         for identity in [HELPER, HELPER + ".candidate", AUDIO, EXTENSION]:
             self.data += [self.library / category / (identity + suffix) for category, suffix in [
                 ("Containers", ""), ("Caches", ""), ("Saved Application State", ".savedState"),
@@ -84,6 +84,11 @@ exit 9
 file="$TEST_USER_HOME/Library/Preferences/$2.plist"
 if [[ "$1" == read ]]; then [[ -f "$file" && "$PREFERENCES_READ_STATUS" == 0 ]]; exit; fi
 printf 'defaults %s\\n' "$*" >> "$CALL_LOG"
+if [[ "$PREFERENCES_DISAPPEAR" == 1 ]]; then
+  /bin/rm -f "$file"
+  printf "Error: Domain '%s' not found.\\nDefaults have not been changed.\\n" "$2"
+  exit 1
+fi
 [[ "$PREFERENCES_DELETE_STATUS" == 0 ]] || exit 1
 /bin/rm -f "$file"
 ''',
@@ -111,15 +116,15 @@ exec /bin/rm "$@"
         plist.parent.mkdir(parents=True)
         plist.write_bytes(plistlib.dumps({"CFBundleIdentifier": identity}))
         if identity == AUDIO:
-            self.bundle(str(app.relative_to(self.root)) + "/Contents/PlugIns/CutdownAudioExtension.appex", EXTENSION)
+            self.bundle(str(app.relative_to(self.root)) + "/Contents/PlugIns/SilentSnipAudio.appex", EXTENSION)
         return app
 
     def run_uninstall(self, *arguments, **overrides):
         env = dict(os.environ, TEST_USER_HOME=str(self.user_home), TEST_TOOL_DIR=str(self.tools), CALL_LOG=str(self.log),
                    PROCESS_STATUS="1", RUNNING_APP="", UNREGISTER_STATUS="0", EXTENSION_REMOVE_STATUS="0",
                    REGISTRY_STATUS="0", REGISTRY_PRESENT="0", REMOVE_STATUS="0", PREFERENCES_READ_STATUS="0",
-                   PREFERENCES_DELETE_STATUS="0",
-                   REGISTERED_EXTENSION=str(self.apps[2] / "Contents/PlugIns/CutdownAudioExtension.appex"))
+                   PREFERENCES_DELETE_STATUS="0", PREFERENCES_DISAPPEAR="0",
+                   REGISTERED_EXTENSION=str(self.apps[2] / "Contents/PlugIns/SilentSnipAudio.appex"))
         env.update(overrides)
         return subprocess.run(["/bin/bash", str(self.script), *arguments], cwd="/",
                               env=env, capture_output=True, text=True)
@@ -166,7 +171,7 @@ exec /bin/rm "$@"
         self.assert_protected_files()
 
     def test_running_apps_or_unreadable_process_list_block_all_changes(self):
-        for app in ["Final Cut Pro", "Cutdown", "CutdownAudio", "CutdownAudioExtension"]:
+        for app in ["Final Cut Pro", "Cutdown", "CutdownAudio", "SilentSnipAudio"]:
             result = self.run_uninstall("--remove-data", RUNNING_APP=app)
             self.assertNotEqual(result.returncode, 0)
         result = self.run_uninstall(PROCESS_STATUS="2")
@@ -175,7 +180,7 @@ exec /bin/rm "$@"
         self.assertTrue(all(path.exists() for path in self.apps + self.data))
 
     def test_unexpected_extension_identity_blocks_before_any_changes(self):
-        plist = self.apps[2] / "Contents/PlugIns/CutdownAudioExtension.appex/Contents/Info.plist"
+        plist = self.apps[2] / "Contents/PlugIns/SilentSnipAudio.appex/Contents/Info.plist"
         plist.write_bytes(plistlib.dumps({"CFBundleIdentifier": "other.extension"}))
         result = self.run_uninstall("--remove-data")
         self.assertNotEqual(result.returncode, 0)
@@ -209,7 +214,7 @@ exec /bin/rm "$@"
         self.assertTrue(all(app.exists() for app in self.apps))
 
     def test_nested_build_symlinks_are_not_followed(self):
-        outside = self.bundle("outside/Cutdown.app", HELPER)
+        outside = self.bundle("outside/SilentSnipHelper.app", HELPER)
         (self.root / "build/linked").symlink_to(outside.parent, target_is_directory=True)
         result = self.run_uninstall()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -242,8 +247,15 @@ exec /bin/rm "$@"
         result = self.run_uninstall()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(), [])
-        self.assertTrue((external / "CutdownAudioExtension.appex").exists())
+        self.assertTrue((external / "SilentSnipAudio.appex").exists())
         self.assertTrue(all(app.exists() for app in self.apps))
+
+    def test_domain_disappearing_after_preflight_does_not_fail_removal(self):
+        result = self.run_uninstall("--remove-data", PREFERENCES_DISAPPEAR="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(all(not path.exists() for path in self.apps + self.data + [self.preferences]))
+        self.assertIn("Removed local app data.", result.stdout)
+        self.assert_protected_files()
 
     def test_failed_preference_deletion_is_not_reported_as_complete(self):
         result = self.run_uninstall("--remove-data", PREFERENCES_DELETE_STATUS="1")

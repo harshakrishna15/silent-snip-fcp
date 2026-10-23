@@ -32,57 +32,47 @@ Targets must be normal-speed, audio-only clips. Retimed or nested targets, linke
 
 - **Apple Silicon Mac** — the audio plug-in targets `arm64`.
 - **macOS 14 or later** — the deployment target; Xcode and Final Cut may require a newer version.
-- **Full Xcode** — complete first-launch setup and select its command-line tools.
 - **Final Cut Pro in English** — automation currently matches English interface labels.
 
 Recorded builds used Xcode 27.0 / Swift 6.4; historical integration reports used Final Cut Pro 12.3. Other toolchain and host combinations have not been verified here.
 
-No external Swift packages, separate plug-in SDK, Motion installation, or paid signing identity are required for a local ad hoc build. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
+A prebuilt app needs no Xcode, repository, or Terminal. Building from source requires full Xcode with first-launch setup completed. There are no external Swift packages or separate plug-in SDKs. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
 
-## Build and install
+## Install
 
-Clone or download the repository, then open Terminal in its root.
+Start with **Silent Snip.zip**. You do not need the repository, Xcode, Terminal, or a separate installer.
 
-1. Quit Final Cut Pro and the Silent Snip helper.
-2. Build and register both components:
+1. **Quit Final Cut Pro and Silent Snip** before replacing an earlier copy.
+2. **Extract the ZIP** and drag **Silent Snip.app** into Applications. Choose **Replace** if prompted. Keep one main app copy there.
+3. **Open Silent Snip once.** A scissors icon appears in the menu bar. Its menu shows access status and provides saved results and Quit.
+4. **Grant control access.** Open **System Settings → Privacy & Security → Device Control and Data Access** (called **Accessibility** on earlier macOS versions). Enable **Silent Snip**. If it is missing, click **+** and select the app you copied into Applications.
+5. **Set up Final Cut Share.** In **Final Cut Pro → Settings → Destinations**, add **Export File**, name it **Silent Snip**, and choose **Audio Only → WAV**. Under **Action → Other…**, select that same **Silent Snip.app** in Applications.
+6. **Add the effect.** In Final Cut’s Effects browser, add **Silent Snip Audio** to an audio-only clip. Open **Controls**, adjust detection, and choose **Analyze**. Review the ranges before choosing **Apply Cuts**.
 
-   ```sh
-   Scripts/build.sh --release
-   ```
+**Upgrading from Cutdown:** this release uses a fresh app identity. Grant access to **Silent Snip**, remove obsolete **CutdownAudio** permission entries, and reselect the new app as the Share action. Old settings are not migrated; old files are left on disk.
 
-3. Complete [first-time setup](docs/setup.md): grant macOS access and create a Share destination named **Silent Snip**.
-4. Reopen Final Cut and follow [the workflow](docs/workflow.md).
-
-The build command verifies signatures and registers bundles in place under `build/`. Keep those bundles at their generated paths. Permissions and Share setup are separate, one-time steps. For an existing setup, rename its Share destination to **Silent Snip**.
+See [setup and troubleshooting](docs/setup.md) for detailed steps, migration, and complete removal. The Audio Unit’s **Controls** window is the main interface; the menu bar app stays running in the background.
 
 <details>
-<summary>Development builds and staging</summary>
+<summary>Build from source</summary>
+
+With full Xcode installed, quit Final Cut and Silent Snip, then run:
 
 ```sh
-Scripts/build.sh                  # Build and register with a Debug helper
-Scripts/build.sh --stage           # Build candidates only
-Scripts/build.sh --stage --release # Build candidates with a Release helper
+Scripts/build-app.sh
 ```
 
-All modes reuse the existing Swift and Xcode caches. The audio plug-in uses Xcode's Debug configuration in every mode. These commands do not launch apps or run tests.
+This produces **`build/App/Silent Snip.app`** and **`dist/Silent Snip.zip`**, with both components in Release. The app includes the background executable, sandboxed Audio Unit, and Share definitions. Local builds are ad hoc signed; packaging does not bypass macOS security checks.
 
-Staged helpers have a separate identity and cannot serve the live workflow. Xcode may still register a staged audio candidate; run a normal build before live use.
-
-See [the setup guide](docs/setup.md#build-and-register-both-apps) for individual component commands, bundle paths, signing options, and troubleshooting.
+For development, `Scripts/build.sh` builds a Debug app and registers it in place. Add `--release` for Release, or `--stage` to create an inert candidate without changing the published app, ZIP, or registrations. `Scripts/register-local.sh --check-only` checks the combined build without changing registrations. Keep registered build products in place. See [developer setup](docs/setup.md#build-from-source).
 
 </details>
 
 ## Uninstall
 
-Quit Final Cut Pro and Silent Snip, then run:
+Quit Final Cut and Silent Snip, then move the copied **Silent Snip.app** to Trash. Settings and saved results are kept. Remove its Final Cut Share destination and macOS control-access entry as described in [complete removal](docs/setup.md#uninstall).
 
-```sh
-Scripts/uninstall-local.sh
-```
-
-This unregisters and removes this checkout’s app bundles, including staged copies. Saved settings and results are kept. Use `--dry-run` to preview, or `--remove-data` to also erase settings, saved results, and recovery XML.
-
-Follow [the complete removal steps](docs/setup.md#uninstall) to remove the Share destination and macOS privacy entries.
+Developer builds can be removed with `Scripts/uninstall-local.sh`. Use `--dry-run` to preview or `--remove-data` to erase this account's saved settings, results, and recovery XML. This script only removes app bundles inside the checkout; protected data may require manual removal in Finder.
 
 ## Tests
 
@@ -138,6 +128,7 @@ These are historical results, not checks rerun for every commit. See [XML replac
 
 | Guide | Covers |
 | --- | --- |
+| [Single-app design and verification](docs/single-app-plan.md) | Architecture, migration, and current verification |
 | [Setup and troubleshooting](docs/setup.md) | Installation, permissions, Share destination, and test library |
 | [Workflow and recovery](docs/workflow.md) | Detection settings, review, Apply, and settings recovery |
 | [Analysis and caching](docs/analysis-speed.md) | Source versus processed audio and measurement reuse |
@@ -151,7 +142,7 @@ These are historical results, not checks rerun for every commit. See [XML replac
 | --- | --- |
 | `Sources/CutdownCore` | Time, timeline parsing, detection, and review |
 | `Sources/CutdownMac` | Audio analysis, Final Cut integration, XML, verification, and preview |
-| `Sources/CutdownApp` | Background helper application |
+| `Sources/CutdownApp` | Containing app executable and background workflow |
 | `Sources/CutdownVerify` | Offline developer verifier; does not import projects |
 | `AudioPlugin` | Passthrough Audio Unit and Controls window |
 | `Tests` | Swift fixtures, regression tests, and build-script tests |

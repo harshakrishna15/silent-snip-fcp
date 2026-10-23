@@ -120,6 +120,28 @@ static void run(NSString *name, void (^test)(Fixture *)) {
 }
 
 int main(int argc, const char *argv[]) { @autoreleasepool {
+    // Resolve the app beside this exact extension even when another copy is
+    // registered. No application is launched by this test.
+    NSURL *package = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+    NSURL *app = [package URLByAppendingPathComponent:@"A copied Silent Snip.app" isDirectory:YES];
+    NSURL *contents = [app URLByAppendingPathComponent:@"Contents" isDirectory:YES];
+    NSURL *bundledExtension = [contents URLByAppendingPathComponent:@"PlugIns/SilentSnipAudio.appex" isDirectory:YES];
+    [NSFileManager.defaultManager createDirectoryAtURL:bundledExtension withIntermediateDirectories:YES attributes:nil error:nil];
+    NSURL *infoFile = [bundledExtension URLByAppendingPathComponent:@"Contents/Info.plist"];
+    [NSFileManager.defaultManager createDirectoryAtURL:infoFile.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+    NSMutableDictionary *contract = [@{@"bundleIdentifier":@"local.silentsnip.app", @"executable":@"SilentSnip", @"enabled":@YES} mutableCopy];
+    NSMutableDictionary *info = [@{@"CFBundleIdentifier":@"local.silentsnip.app.audio", @"SilentSnipContainingApp":contract} mutableCopy];
+    [info writeToURL:infoFile atomically:YES];
+    require([CutdownContainingApplicationURL(bundledExtension).path isEqual:app.path], @"Requests target their own app without reading sandbox-inaccessible parent metadata");
+    contract[@"bundleIdentifier"] = @"other.app"; [info writeToURL:infoFile atomically:YES];
+    require(!CutdownContainingApplicationURL(bundledExtension), @"Unrelated containing-app contracts are rejected");
+    contract[@"bundleIdentifier"] = @"local.silentsnip.app"; contract[@"enabled"] = @NO; [info writeToURL:infoFile atomically:YES];
+    require(!CutdownContainingApplicationURL(bundledExtension), @"An inert candidate cannot receive analysis requests");
+    [info removeObjectForKey:@"SilentSnipContainingApp"]; [info writeToURL:infoFile atomically:YES];
+    require(!CutdownContainingApplicationURL(bundledExtension), @"A legacy extension has no combined-app contract");
+    require(!CutdownContainingApplicationURL(package), @"A loose extension has no containing app");
+    [NSFileManager.defaultManager removeItemAtURL:package error:nil];
+    puts("PASS: sandbox-safe copied app routing and invalid/candidate/legacy contract rejection");
     require(argc == 2, @"Pass extension Info.plist");
     NSDictionary *extension = [NSDictionary dictionaryWithContentsOfFile:@(argv[1])][@"NSExtension"];
     require([extension[@"NSExtensionPointIdentifier"] isEqual:@"com.apple.AudioUnit-UI"], @"Custom effect window registration");
@@ -130,6 +152,40 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
             [component[@"description"] isEqual:@"Silent Snip Audio"], @"Silent Snip effect discovery names");
     require([component[@"manufacturer"] isEqual:@"Ctdn"] && [component[@"subtype"] isEqual:@"ctdn"],
             @"Existing projects retain the same Audio Unit identity");
+
+    // Match AudioToolbox's XPC startup path with the main thread unavailable
+    // until creation returns. Exercise both possible view/audio creation orders.
+    for (NSNumber *preload in @[@NO, @YES]) {
+        TestFactory *factory = [TestFactory new];
+        if (preload.boolValue) (void)factory.view;
+        dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+        __block CutdownAudioUnit *created = nil;
+        __block NSError *creationError = nil;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            AudioComponentDescription description = {'aufx','ctdn','Ctdn',0,0};
+            created = (CutdownAudioUnit *)[factory createAudioUnitWithComponentDescription:description error:&creationError];
+            [created.analysisParameterTree parameterWithAddress:1].value = -37;
+            dispatch_semaphore_signal(finished);
+        });
+        require(dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)) == 0,
+            @"Background creation returns without waiting for the main thread");
+        require(created && !creationError && factory.isViewLoaded == preload.boolValue,
+            @"Background creation succeeds without loading the view");
+        __block BOOL drained = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{ drained = YES; });
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3];
+        while (!drained && deadline.timeIntervalSinceNow > 0)
+            [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+        require(drained && [factory valueForKey:@"audioUnit"] == created,
+            @"Main thread connects the returned processor");
+        (void)factory.view;
+        NSArray<NSTextField *> *fields = [factory valueForKey:@"fields"];
+        require(fields[0].doubleValue == -37 && [(NSButton *)[factory valueForKey:@"analyzeButton"] isEnabled] &&
+            NSEqualSizes(factory.preferredContentSize, NSMakeSize(580, 220)),
+            @"Both startup orders refresh settings, actions and compact size on the main thread");
+        [factory viewDidDisappear];
+    }
+    puts("PASS: background AudioToolbox creation before and after view loading");
 
     run(@"state persistence and native legacy compatibility", ^(Fixture *f) {
         require(f.unit.parameterTree.allParameters.count == 0 && f.fields.count == 4, @"Four private controls, no Inspector parameters");
@@ -224,13 +280,15 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 
     run(@"Apply replay, retransmission, acknowledgment and uncertain timeout", ^(Fixture *f) {
         [f review]; NSString *review = connection(f.factory).lastResponseObject;
+        require([f.apply.title isEqual:@"Apply 1 Cut"], @"Review uses a counted action title");
         [f.apply performClick:nil];
         require(commandCount(f.factory, @"apply") == 1 && !f.apply.enabled && !f.analyze.enabled, @"Apply sent exactly once");
         NSDictionary *apply = f.factory.previewCommand;
         require([apply[@"expectedRevision"] isEqual:@1] && [apply[@"view"] isKindOfClass:NSString.class] &&
             [apply[@"applyGesture"] isKindOfClass:NSString.class] &&
-            [f.apply.identifier isEqual:[@"cutdown.apply.requested." stringByAppendingString:apply[@"applyGesture"]]] && !f.apply.hidden,
-            @"Apply carries a fresh gesture exposed by its visible disabled button");
+            [f.apply.identifier isEqual:[@"cutdown.apply.requested." stringByAppendingString:apply[@"applyGesture"]]] && !f.apply.hidden &&
+            [f.apply.title isEqual:@"Apply 1 Cut"],
+            @"A counted Apply button carries the fresh gesture independently of its title");
         NSDate *before = [NSDate dateWithTimeIntervalSinceNow:-5]; connection(f.factory).lastResponse = before;
         deliver(f.factory, review); [f.apply performClick:nil];
         require([connection(f.factory).lastResponse isEqual:before] && !connection(f.factory).applyAcknowledged && commandCount(f.factory, @"apply") == 1, @"Old review neither acknowledges nor postpones Apply timeout");
@@ -244,6 +302,22 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require(commandCount(f.factory, @"apply") == 2 && connection(f.factory).applying, @"Acknowledged Apply only polls and remains alive on heartbeats");
         connection(f.factory).lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16]; [f.factory pollStatus];
         require(f.analyze.enabled && !f.apply.enabled && !connection(f.factory).applying, @"Uncertain timeout consumes local review");
+    });
+
+    run(@"plural counted Apply exposes the same confirmation contract", ^(Fixture *f) {
+        [f review];
+        NSMutableArray *cuts = [NSMutableArray array];
+        for (NSUInteger i = 0; i < 35; i++) [cuts addObject:@{
+            @"id":[NSString stringWithFormat:@"cut-%lu", (unsigned long)i + 1],
+            @"start":@"1s", @"end":@"2s", @"duration":@"1s", @"eligible":@YES, @"included":@YES}];
+        response(f.factory, 2, @"review", @{@"cuts":cuts});
+        require(f.apply.enabled && [f.apply.title isEqual:@"Apply 35 Cuts"], @"Plural label reflects selected cuts");
+        [f.apply performClick:nil];
+        NSDictionary *apply = f.factory.previewCommand;
+        require([apply[@"expectedRevision"] isEqual:@2] && !f.apply.enabled && !f.apply.hidden &&
+            [f.apply.title isEqual:@"Apply 35 Cuts"] &&
+            [f.apply.identifier isEqual:[@"cutdown.apply.requested." stringByAppendingString:apply[@"applyGesture"]]],
+            @"The plural counted label preserves the fresh disabled gesture required by the helper");
     });
 
     run(@"early preview rows stay read-only until cleanup completes", ^(Fixture *f) {
@@ -264,11 +338,11 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         response(f.factory, 2, @"failed", @{@"message":@"Rendered project verification failed.", @"canApply":@NO, @"cuts":@[]});
         connection(f.factory).lastResponse = [NSDate dateWithTimeIntervalSinceNow:-120];
         [f.factory pollStatus];
-        require([[(NSTextField *)[f.factory valueForKey:@"statusLabel"] stringValue] isEqual:@"Rendered project verification failed."],
+        require([(NSString *)[f.factory valueForKey:@"statusDetails"] isEqual:@"Rendered project verification failed."],
             @"Terminal error is never overwritten by an idle heartbeat timeout");
         require(!f.apply.enabled &&
-            [[(NSTextField *)[f.factory valueForKey:@"summaryLabel"] stringValue] isEqual:@"Rendered project verification failed."],
-            @"Failed analysis displays its reason in the Review section");
+            [[(NSTextField *)[f.factory valueForKey:@"summaryLabel"] stringValue] isEqual:@"Review the error details before continuing."],
+            @"Failed analysis points to the retained details");
     });
 
     run(@"a delayed failure replaces timeout while expired Apply remains consumed", ^(Fixture *f) {
@@ -280,7 +354,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f.factory pollStatus];
         require(commandCount(f.factory, @"apply") == applies, @"Expired Apply is never retransmitted");
         response(f.factory, 3, @"failed", @{@"message":@"The render could not be verified.", @"canApply":@NO, @"cuts":@[], @"canRetryVerification":@YES});
-        require([[(NSTextField *)[f.factory valueForKey:@"statusLabel"] stringValue] isEqual:@"The render could not be verified."], @"Late real failure replaces provisional timeout");
+        require([(NSString *)[f.factory valueForKey:@"statusDetails"] isEqual:@"The render could not be verified."], @"Late real failure replaces provisional timeout");
         [(NSButton *)[f.factory valueForKey:@"retryButton"] performClick:nil];
         require(!connection(f.factory).timedOut && connection(f.factory).pendingRetry, @"Explicit verification retry gets its own deadline");
         connection(f.factory).lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16];
@@ -316,25 +390,58 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         response(f.factory, 4, @"review", nil); require(f.apply.enabled, @"Select All acknowledged");
     });
 
+    run(@"review appears only when ranges exist", ^(Fixture *f) {
+        NSView *review = [f.factory valueForKey:@"reviewArea"];
+        NSView *heading = [f.factory valueForKey:@"reviewHeading"];
+        require(review.hidden && heading.hidden && !f.analyze.hidden && f.fields.count == 4,
+            @"Idle Controls contains detection and Analyze without an empty review section");
+        [f review];
+        require(!review.hidden && !heading.hidden, @"Returned ranges reveal review");
+        require(f.factory.preferredContentSize.width == 680 && f.factory.preferredContentSize.height >= 476,
+            @"Returned ranges request a larger host window");
+        response(f.factory, 2, @"review", @{@"canApply":@NO, @"cuts":@[@{@"id":@"cut-1", @"start":@"1s", @"end":@"2s", @"duration":@"1s", @"eligible":@YES, @"included":@NO}]});
+        require(!review.hidden && !heading.hidden && !f.apply.enabled,
+            @"Deselecting all cuts keeps ranges visible so they can be selected again");
+        response(f.factory, 3, @"review", @{@"canApply":@NO, @"cuts":@[]});
+        require(review.hidden && heading.hidden, @"An empty result removes the whole review section");
+        require(NSEqualSizes(f.factory.preferredContentSize, NSMakeSize(580, 220)),
+            @"An empty result returns to compact detection size");
+    });
+
+    run(@"review numbers stay aligned when earlier cuts are excluded", ^(Fixture *f) {
+        [f review];
+        response(f.factory, 2, @"review", @{@"cuts":@[
+            @{@"id":@"cut-1", @"start":@"1s", @"end":@"2s", @"duration":@"1s", @"eligible":@YES, @"included":@NO},
+            @{@"id":@"cut-2", @"start":@"3s", @"end":@"4s", @"duration":@"1s", @"eligible":@YES, @"included":@YES}]});
+        NSTableView *table = [f.factory valueForKey:@"resultsView"];
+        NSButton *first = (NSButton *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[0] row:0];
+        NSButton *second = (NSButton *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[0] row:1];
+        require([first.title hasPrefix:@"1.  "] && first.state == NSControlStateValueOff &&
+            [second.title hasPrefix:@"2.  "] && second.state == NSControlStateValueOn,
+            @"Row numbers refer to full review order rather than only checked cuts");
+    });
+
     run(@"review presents scannable cuts and the current primary action", ^(Fixture *f) {
         require([f.analyze.title isEqual:@"Analyze"] && !f.analyze.hidden && f.apply.hidden,
             @"Analyze is the only initial footer action");
         [f review];
         NSTableView *table = [f.factory valueForKey:@"resultsView"];
-        require(table.tableColumns.count == 4 && table.headerView != nil &&
-            f.analyze.hidden && !f.apply.hidden, @"Review has labeled columns and one visible primary action");
+        require(table.tableColumns.count == 2 && table.headerView != nil &&
+            !f.analyze.hidden && !f.apply.hidden, @"Review keeps reanalysis beside the primary Apply action");
         require(!containsViewIdentifier(f.factory.view, @"cutdown.preview"), @"Guidelines stay on during review");
         [f.factory updateMoreMenuVisibility];
         NSMenu *more = [f.factory valueForKey:@"moreMenu"];
         [more update];
         require(!more.itemArray[0].hidden && !more.itemArray[2].hidden && more.itemArray[2].enabled,
             @"Reanalysis and bulk selection are available in More");
-        NSTextField *end = (NSTextField *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[1] row:0];
-        NSTextField *duration = (NSTextField *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[2] row:0];
-        require([end.stringValue isEqual:@"2s"] && [duration.stringValue isEqual:@"1s"], @"End and duration are separate values");
+        NSButton *range = (NSButton *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[0] row:0];
+        NSView *durationCell = [(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[1] row:0];
+        NSTextField *duration = durationCell.subviews.firstObject;
+        require([range.title isEqual:@"1.  1s  →  2s"] && [duration.stringValue isEqual:@"1s"], @"The numbered range retains both edges and duration");
         response(f.factory, 2, @"review", @{@"cuts":@[@{@"id":@"cut-1", @"start":@"1s", @"end":@"2s", @"duration":@"1s",
             @"eligible":@NO, @"included":@NO, @"reason":@"Protected by a transition"}]});
-        NSTextField *note = (NSTextField *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[3] row:0];
+        NSStackView *restricted = (NSStackView *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[0] row:0];
+        NSTextField *note = (NSTextField *)restricted.arrangedSubviews.lastObject;
         require([note.stringValue isEqual:@"Protected by a transition"] && !f.apply.enabled &&
             !f.analyze.hidden && f.apply.hidden, @"Unavailable reason stays in the review row");
     });
@@ -425,6 +532,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         f.fields[0].stringValue = @"invalid"; [f.factory saveSettings:nil];
         require([f.unit.analysisParameterTree parameterWithAddress:1].value == -29, @"Invalid automated save preserves values");
         status.stringValue = [@"Long recovery notice. " stringByPaddingToLength:1200 withString:@"More information. " startingAtIndex:0];
+        [f.factory.view setFrameSize:f.factory.preferredContentSize];
         [f.factory.view layoutSubtreeIfNeeded];
         require(f.apply.hidden && NSContainsRect(f.factory.view.bounds, [f.analyze convertRect:f.analyze.bounds toView:f.factory.view]),
             @"The relevant footer action stays visible with a long notice");
@@ -434,7 +542,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
             !more.hidden && [more isKindOfClass:NSButton.class], @"Reconnection keeps an always-visible native button anchor");
         NSMenu *menu = [f.factory valueForKey:@"moreMenu"];
         [f.factory updateMoreMenuVisibility];
-        require(menu.numberOfItems == 7 && menu.itemArray[5].action == @selector(restoreSavedSettings:) &&
+        require(menu.numberOfItems == 9 && menu.itemArray[5].action == @selector(restoreSavedSettings:) &&
             menu.itemArray[6].action == @selector(verifyExistingResult:) && menu.itemArray[0].hidden,
             @"Recovery actions remain available while review actions are hidden");
         [menu update];
@@ -442,12 +550,36 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         connection(f.factory).operationBusy = YES; [menu update];
         require(!menu.itemArray[5].enabled && !menu.itemArray[6].enabled, @"Recovery menu cannot interrupt an active operation");
         response(f.factory, 2, @"analyzing", @{@"canCancel":@YES, @"progress":@0.5, @"message":status.stringValue});
+        [f.factory.view setFrameSize:f.factory.preferredContentSize];
         [f.factory.view layoutSubtreeIfNeeded];
-        require(f.factory.view.frame.size.width <= 520 && f.factory.view.frame.size.height <= 500,
+        require(f.factory.view.frame.size.width <= 680 && f.factory.view.frame.size.height <= 656,
             @"Progress and long notices fit the requested single-window size");
         NSView *results = [f.factory valueForKey:@"resultsView"];
-        require(NSMinY([results convertRect:results.bounds toView:f.factory.view]) >= NSMaxY([f.analyze convertRect:f.analyze.bounds toView:f.factory.view]) + 8,
-            @"Review results do not overlap the fixed Apply footer");
+        require(!NSIntersectsRect([results convertRect:results.bounds toView:f.factory.view], [f.analyze convertRect:f.analyze.bounds toView:f.factory.view]),
+            @"Scrollable review does not overlap the fixed footer");
+    });
+
+    run(@"always-visible detection and full status details", ^(Fixture *f) {
+        require(![(NSView *)[f.factory valueForKey:@"settingsView"] isHidden] && f.fields.count == 4 &&
+            [[(NSButton *)[f.factory valueForKey:@"saveButton"] identifier] isEqual:@"cutdown.saveSettings"],
+            @"All four settings and the original recovery Save action remain visible");
+        [f review];
+        NSString *message = @"Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts. Threshold uses RMS. Original audio has processing effects.";
+        response(f.factory, 2, @"review", @{@"message":message});
+        require([(NSString *)[f.factory valueForKey:@"statusDetails"] isEqual:message] &&
+            [[(NSTextField *)[f.factory valueForKey:@"statusLabel"] stringValue] length] < message.length,
+            @"Successful technical details remain available behind the concise status");
+        NSString *failure = [@"Verification failed. " stringByPaddingToLength:1200 withString:@"Recovery detail. " startingAtIndex:0];
+        response(f.factory, 3, @"failed", @{@"message":failure, @"canApply":@NO});
+        NSTextField *status = [f.factory valueForKey:@"statusLabel"];
+        require([(NSString *)[f.factory valueForKey:@"statusDetails"] isEqual:failure] && status.stringValue.length < 100 &&
+            [[(NSMenuItem *)[f.factory valueForKey:@"detailsItem"] title] isEqual:@"Error Details…"],
+            @"Failures retain complete details while the inspector shows a short status");
+        NSString *key = [f.factory valueForKey:@"lastErrorKey"];
+        [f.factory setValue:nil forKey:@"pendingErrorMessage"];
+        response(f.factory, 4, @"failed", @{@"message":failure, @"canApply":@NO});
+        require([[f.factory valueForKey:@"lastErrorKey"] isEqual:key] && ![f.factory valueForKey:@"pendingErrorMessage"],
+            @"Repeated failure status cannot queue the same alert again");
     });
 
     NSArray *states = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:@"AudioPlugin/Tests/review-states.json"] options:0 error:nil];

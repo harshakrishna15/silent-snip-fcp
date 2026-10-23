@@ -132,10 +132,9 @@ extension FinalCutAXSession {
     func canAuthorizeApply(view: UUID, gesture: UUID) -> Bool {
         guard canReconnectReview(view: view), let window = cutdownReviewWindows().first,
               let button = find(in: window, role: kAXButtonRole,
-                  identifier: "cutdown.apply.requested.\(gesture.uuidString)", maxDepth: 16, maxNodes: 250),
-              string(button, kAXTitleAttribute) == "Apply Cuts",
-              (attribute(button, kAXEnabledAttribute) as? NSNumber)?.boolValue == false else { return false }
-        return true
+                  identifier: "cutdown.apply.requested.\(gesture.uuidString)", maxDepth: 16, maxNodes: 250) else { return false }
+        return FinalCutApplyGesture.isPending(identifier: string(button, kAXIdentifierAttribute),
+            enabled: (attribute(button, kAXEnabledAttribute) as? NSNumber)?.boolValue, gesture: gesture)
     }
 
     func makePreviewReader() -> FinalCutPreviewReader? {

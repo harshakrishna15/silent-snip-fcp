@@ -39,7 +39,7 @@ final class AudioProjectProcessorTests: XCTestCase {
         XCTAssertEqual(report.measurementWindowCount, 300)
         XCTAssertEqual(report.dialogueAudioSHA256, fixture.context.audioSHA256)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: artifacts.directory.path).sorted(),
-                       ["Before-Cutdown.fcpxml", "Cutdown.fcpxml", "Edit-Report.json"])
+                       ["Before-Silent Snip.fcpxml", "Edit-Report.json", "Silent Snip.fcpxml"])
     }
 
     func testNoSilenceEntireSilenceAndEmptySelectionCreateNoOutputDirectory() async throws {

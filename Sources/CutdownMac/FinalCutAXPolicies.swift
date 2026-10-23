@@ -41,6 +41,15 @@ enum FinalCutControlAction {
     }
 }
 
+enum FinalCutApplyGesture {
+    /// The counted/localized button title is presentation, not confirmation.
+    /// The owning Controls window must expose this exact fresh gesture and
+    /// disable the button while its Apply request is awaiting acknowledgment.
+    static func isPending(identifier: String?, enabled: Bool?, gesture: UUID) -> Bool {
+        identifier == "cutdown.apply.requested.\(gesture.uuidString)" && enabled == false
+    }
+}
+
 /// AX menu modifiers use Command by default; they are not CGEvent flag bits.
 /// Require a complete, advertised shortcut instead of guessing a keyboard layout.
 struct FinalCutMenuShortcut {

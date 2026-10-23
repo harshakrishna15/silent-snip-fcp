@@ -6,10 +6,10 @@ import CutdownCore
 /// userInfo. Notifications can be dropped, so clients poll the latest revision.
 public enum ReviewWire {
     public static let version = 1
-    public static let commandName = "local.cutdown.review.command.v1"
+    public static let commandName = "local.silentsnip.review.command.v1"
     public static let maximumBytes = 262_144
     public static func responseName(for request: UUID) -> String {
-        "local.cutdown.review.response.v1.\(request.uuidString)"
+        "local.silentsnip.review.response.v1.\(request.uuidString)"
     }
 
     public static func encode<T: Encodable>(_ value: T) throws -> String {
@@ -188,7 +188,7 @@ struct ReviewReconnectReply: Encodable {
         stop()
         self.handler = handler
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(reconnect(_:)),
-            name: Notification.Name("local.cutdown.review.reconnect.v1"), object: nil, suspensionBehavior: .deliverImmediately)
+            name: Notification.Name("local.silentsnip.review.reconnect.v1"), object: nil, suspensionBehavior: .deliverImmediately)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(receive(_:)),
             name: Notification.Name(ReviewWire.commandName), object: nil, suspensionBehavior: .deliverImmediately)
     }
@@ -221,7 +221,7 @@ struct ReviewReconnectReply: Encodable {
 
     private func sendConnection(view: UUID, object: String) {
         DistributedNotificationCenter.default().postNotificationName(
-            Notification.Name("local.cutdown.review.connected.v1.\(view.uuidString)"),
+            Notification.Name("local.silentsnip.review.connected.v1.\(view.uuidString)"),
             object: object, userInfo: nil, deliverImmediately: true)
     }
 

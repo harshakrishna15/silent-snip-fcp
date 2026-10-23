@@ -10,7 +10,7 @@ done
 check_helper_stopped() {
   # Staged builds have a separate identity and never replace the live helper.
   if [[ "$stage" == true ]]; then return; fi
-  if /usr/bin/pgrep -x Cutdown >/dev/null; then
+  if /usr/bin/pgrep -x SilentSnip >/dev/null; then
     echo 'Quit Silent Snip before replacing its installed helper, or build with --stage. The running helper would otherwise continue using the old code.' >&2
     exit 1
   else
@@ -31,23 +31,24 @@ binary_dir=$(swift build --disable-sandbox --scratch-path build/swift --cache-pa
 # Personal builds default to ad hoc. An existing identity can be supplied without
 # creating certificates or changing keychain/accessibility permissions.
 signing_identity="${CUTDOWN_SIGNING_IDENTITY:--}"
-installed_app="$PWD/build/Cutdown.app"
+installed_app="$PWD/build/SilentSnipHelper.app"
 if [[ "$stage" == true ]]; then
   mkdir -p build/Candidate
-  installed_app="$PWD/build/Candidate/Cutdown.app"
+  installed_app="$PWD/build/Candidate/SilentSnipHelper.app"
 fi
 staging_dir=$(mktemp -d "$PWD/build/helper-stage.XXXXXX")
 trap 'rm -rf "$staging_dir"' EXIT
-app="$staging_dir/Cutdown.app"
+app="$staging_dir/SilentSnipHelper.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$binary_dir/Cutdown" "$app/Contents/MacOS/Cutdown"
+cp "$binary_dir/Cutdown" "$app/Contents/MacOS/SilentSnip"
 cp Config/Info.plist "$app/Contents/Info.plist"
-cp Config/Cutdown.sdef "$app/Contents/Resources/Cutdown.sdef"
-expected_identifier=local.cutdown.helper
+cp Config/SilentSnip.sdef "$app/Contents/Resources/SilentSnip.sdef"
+expected_identifier=local.silentsnip.helper
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $expected_identifier" "$app/Contents/Info.plist"
 if [[ "$stage" == true ]]; then
   # Launch Services can discover staged apps without explicit registration.
   # Candidates must not compete for the installed helper's URL/share routes.
-  expected_identifier=local.cutdown.helper.candidate
+  expected_identifier=local.silentsnip.helper.candidate
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $expected_identifier" "$app/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Silent Snip Candidate' "$app/Contents/Info.plist"
   for key in CFBundleURLTypes CFBundleDocumentTypes com.apple.proapps.MediaAssetProtocol; do
@@ -57,7 +58,7 @@ fi
 codesign --force --sign "$signing_identity" "$app"
 codesign --verify --deep --strict "$app"
 identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
-[[ "$identifier" == "$expected_identifier" && -x "$app/Contents/MacOS/Cutdown" ]]
+[[ "$identifier" == "$expected_identifier" && -x "$app/Contents/MacOS/SilentSnip" ]]
 # A helper may have launched while Swift was building. Check again immediately
 # before replacing the installed bundle; never terminate an active job here.
 check_helper_stopped

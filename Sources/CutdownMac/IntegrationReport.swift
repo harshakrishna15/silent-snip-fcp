@@ -18,7 +18,7 @@ public struct IntegrationReport: Codable, Sendable {
 
     public static var reportURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Cutdown/Integration/latest.json")
+            .appendingPathComponent("Silent Snip/Integration/latest.json")
     }
 
     public func save() throws {

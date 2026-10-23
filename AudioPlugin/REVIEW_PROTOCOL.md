@@ -1,9 +1,15 @@
 # Audio effect window review channel
 
-The current window sends Analyze through the local URL handler, then polls this
+The current window sends Analyze through the local URL handler in its own containing app, then polls this
 channel for status. It sends Apply only from the separate button after a valid
 review response. The helper now dispatches both operations through the analysis
 coordinator. Protocol and unit tests are not proof of a successful live Final Cut import.
+
+The extension resolves its exact containing `Silent Snip.app` and explicitly
+targets that application for Analyze and saved-result verification. A competing
+legacy helper cannot receive these requests through the default URL association.
+The extension remains a separate sandboxed process; the containing app runs the
+existing background workflow. The wire protocol is unchanged.
 
 The Audio Unit's custom effect window and the Silent Snip helper communicate through
 `DistributedNotificationCenter` within the current macOS login session. The Audio
@@ -20,8 +26,8 @@ a bounded JSON string as the notification's `object`.
 and acknowledgment state independently of the view. Both implementations check
 their state policies against `AudioPlugin/Tests/review-states.json`.
 Commands use notification name
-`local.cutdown.review.command.v1`. Responses use
-`local.cutdown.review.response.v1.<uppercase request UUID>`.
+`local.silentsnip.review.command.v1`. Responses use
+`local.silentsnip.review.response.v1.<uppercase request UUID>`.
 
 Every payload contains `version: 1` and `request`. Responses also contain a
 monotonic `revision`. Payloads are limited to 256 KiB and at most 2,000 cut rows.
@@ -97,7 +103,7 @@ not cancel analysis or hide the overlay. Apply and cancellation clear it.
 
 `highlight` requires the exact current `cutID` and `canHighlight`; it moves the playhead to the range start after baseline verification, without changing inclusion. The transient `navigating` state blocks Apply, settings, and selection mutations until navigation finishes. Helpers without a navigation implementation leave the capability disabled.
 
-Optional `canRetryVerification` is true only for a failed/cancelled job with a pending imported result. `retryVerification` enters `verifying`, retains single-operation ownership, and invokes a verification-only operation. Duplicate requests while busy do not start another verification, and retry never invokes Apply or import. A later failure remains retryable. Existing job revisions stay monotonic when reopened from a saved result. Controls can adopt a saved verification receipt after restart using the explicit `cutdown://verify` request.
+Optional `canRetryVerification` is true only for a failed/cancelled job with a pending imported result. `retryVerification` enters `verifying`, retains single-operation ownership, and invokes a verification-only operation. Duplicate requests while busy do not start another verification, and retry never invokes Apply or import. A later failure remains retryable. Existing job revisions stay monotonic when reopened from a saved result. Controls can adopt a saved verification receipt after restart using the explicit `silentsnip://verify` request.
 
 The plug-in includes `expectedRevision` in every verification retry. The helper
 accepts it only while that failed/cancelled revision is current. Once the attempt
@@ -114,22 +120,22 @@ may omit `expectedRevision`.
 ## Single-window reconnection
 
 On appearance, a view with no request publishes a bounded string envelope to
-`local.cutdown.review.reconnect.v1`: `{"version":1,"view":"UUID"}`. It retries
+`local.silentsnip.review.reconnect.v1`: `{"version":1,"view":"UUID"}`. It retries
 while visible and unedited. The view exposes that UUID in its Cancel button's
 accessibility identifier, `cutdown.review.reconnect.UUID`.
 
 The helper checks the pinned project, original selected clip and sole Silent Snip
 Controls window, then locates the exact button identifier in that window. Only
-then does it send a reply to `local.cutdown.review.connected.v1.UUID` containing
+then does it send a reply to `local.silentsnip.review.connected.v1.UUID` containing
 `version`, `view`, `request`, four `settings` values and `output`. The recreated
 view restores those submitted values without rewriting AU document state,
 subscribes to the specific request and polls status. Apply remains disabled
 until a validated review arrives. Duplicate handshakes cannot reset an existing
 connection; edited views do not reconnect. There is no global latest-job adoption.
 
-Verify Existing Result uses `cutdown://verify?view=UUID&result=ENCODED_FILE_URL`.
+Verify Existing Result uses `silentsnip://verify?view=UUID&result=ENCODED_FILE_URL`.
 The helper verifies the requesting native view before loading a local
-`Cutdown.fcpxml` recovery receipt, connects the view to the saved request, and
+`Silent Snip.fcpxml` recovery receipt, connects the view to the saved request, and
 starts verification without importing again. Failures return a view-scoped
 error. A view that loses connection after Apply can recover status by returning
 to the original clip's Controls, or verify the saved result explicitly.

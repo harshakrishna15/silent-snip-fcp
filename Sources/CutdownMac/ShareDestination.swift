@@ -36,7 +36,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         case .alreadyCompleted: return "This Share to Silent Snip export was already received."
         case .shareInProgress: return "Another Share to Silent Snip export or analysis is in progress. Wait for it to finish, or cancel it in Silent Snip before sharing again."
         case .changedDelivery: return "A shared file changed after Final Cut delivered it. Silent Snip left that file in place; share the project again."
-        case .scriptingUnavailable: return "Silent Snip could not create the scripting reference needed by Final Cut. Rebuild and register the helper with its Cutdown.sdef resource."
+        case .scriptingUnavailable: return "Silent Snip could not create the scripting reference needed by Final Cut. Rebuild and register the helper with its SilentSnip.sdef resource."
         }
     }
 }
@@ -112,7 +112,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
 
     public init(rootURL: URL? = nil) {
         self.rootURL = (rootURL ?? FileManager.default.urls(for: .applicationSupportDirectory,
-            in: .userDomainMask)[0].appendingPathComponent("Cutdown/Share Inbox", isDirectory: true))
+            in: .userDomainMask)[0].appendingPathComponent("Silent Snip/Share Inbox", isDirectory: true))
             .standardizedFileURL.resolvingSymlinksInPath()
         restorePendingAssets()
     }

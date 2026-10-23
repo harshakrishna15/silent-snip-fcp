@@ -96,7 +96,7 @@ BOOL validSettings(id settings) {
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)description
                                     options:(AudioComponentInstantiationOptions)options error:(NSError **)error {
     NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
-    NSURL *file = [[support URLByAppendingPathComponent:@"Cutdown Audio" isDirectory:YES] URLByAppendingPathComponent:@"LastUsedSettings.plist"];
+    NSURL *file = [[support URLByAppendingPathComponent:@"Silent Snip Audio" isDirectory:YES] URLByAppendingPathComponent:@"LastUsedSettings.plist"];
     return [self initWithComponentDescription:description options:options
         settingsStore:[[CutdownAudioLastUsedSettingsStore alloc] initWithFileURL:file] error:error];
 }
@@ -255,7 +255,7 @@ BOOL validSettings(id settings) {
         [query addObject:[NSURLQueryItem queryItemWithName:keys[i] value:@(value).stringValue]];
     }
     NSURLComponents *components = [[NSURLComponents alloc] init];
-    components.scheme = @"cutdown"; components.host = @"analyze"; components.queryItems = query;
+    components.scheme = @"silentsnip"; components.host = @"analyze"; components.queryItems = query;
     return [[CutdownAudioAnalysisRequest alloc] initWithURL:components.URL settings:settings];
 }
 - (BOOL)rememberSettingsForRequest:(CutdownAudioAnalysisRequest *)request error:(NSError **)error {

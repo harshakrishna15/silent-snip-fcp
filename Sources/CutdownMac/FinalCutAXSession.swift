@@ -192,14 +192,6 @@ import Foundation
         return action
     }
 
-    func setValue(_ element: AXUIElement, value: String) throws {
-        try assertInputFocus()
-        guard AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString) == .success,
-              string(element, kAXValueAttribute) == value else {
-            throw FinalCutCaptureError.unavailable("Final Cut did not accept the export destination.")
-        }
-    }
-
     func currentSheet() -> AXUIElement? {
         var blockers: [AXUIElement] = []
         var roots = [mainWindow]

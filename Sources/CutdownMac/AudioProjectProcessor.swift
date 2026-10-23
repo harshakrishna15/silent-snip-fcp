@@ -132,8 +132,8 @@ public enum AudioProjectProcessor {
             .appendingPathComponent(".Cutdown-\(UUID().uuidString).staging", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: staging) }
-        let editedName = "Cutdown.fcpxml"
-        let beforeName = "Before-Cutdown.fcpxml"
+        let editedName = "Silent Snip.fcpxml"
+        let beforeName = "Before-Silent Snip.fcpxml"
         let reportName = "Edit-Report.json"
         try output.xmlData.write(to: staging.appendingPathComponent(editedName), options: .withoutOverwriting)
         try originalData.write(to: staging.appendingPathComponent(beforeName), options: .withoutOverwriting)

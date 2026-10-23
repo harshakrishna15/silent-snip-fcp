@@ -9,7 +9,7 @@ import Foundation
     /// initial project XML here. This method does not touch any Final Cut library.
     public static func makeJobDirectory(jobID: UUID) throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Cutdown/Temporary", isDirectory: true)
+            .appendingPathComponent("Silent Snip/Temporary", isDirectory: true)
             .appendingPathComponent(jobID.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
