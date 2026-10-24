@@ -6,9 +6,32 @@ import Foundation
 extension FinalCutAXSession {
     /// Bind the native selection to a unique occurrence, including its timeline
     /// edges and source mapping, before touching the imported controller.
-    private func selectTimelineClip(_ clip: TimelineClip, document: TimelineDocument) async throws {
-        try await activate()
-        try await focusTimeline()
+    func selectTimelineClip(_ clip: TimelineClip, document: TimelineDocument,
+                            restoring expected: FinalCutSelectionSnapshot? = nil) async throws {
+        if expected == nil {
+            try await activate()
+            try await focusTimeline()
+        } else {
+            // Restoring a cleared selection is a targeted AX operation, not
+            // keyboard input. A floating editor need not relinquish focus.
+            requestActivation()
+            try await waitUntil(timeout: 3, context: "Final Cut activation for review selection") {
+                NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier
+            }
+            try refreshTimeline()
+        }
+        func assertRestorableSelection() throws {
+            guard let expected else { return }
+            if (try? selectionSnapshot()) == expected { return }
+            // Browser cleanup can clear the selection. Never replace another
+            // selection, a range, or an unreadable native selection state.
+            guard let items = attribute(timeline, kAXChildrenAttribute) as? [AXUIElement], items.count <= 10_000,
+                  !items.contains(where: { string($0, kAXDescriptionAttribute) == "Range Selection" }),
+                  items.filter({ string($0, kAXRoleAttribute) == kAXLayoutItemRole }).allSatisfy({
+                      (attribute($0, kAXSelectedAttribute) as? NSNumber)?.boolValue == false
+                  }) else { throw AudioControllerSettingsError.targetChanged }
+        }
+        try assertRestorableSelection()
         let items = children(timeline)
         guard items.count <= 10_000 else { throw FinalCutCaptureError.invalidSelection("The timeline is too large to select safely.") }
         let deadline = Date().addingTimeInterval(5)
@@ -26,10 +49,19 @@ extension FinalCutAXSession {
             let layout = AccessibilityNode(role: kAXLayoutAreaRole, identifier: nil, title: nil,
                 description: "Project Timeline", value: nil, selected: nil, enabled: nil, children: [node])
             if let snapshot = try? FinalCutSelectionSnapshot(projectName: projectName, timeline: layout),
+               expected == nil || snapshot == expected,
                let (_, resolved) = try? snapshot.resolve(in: document), resolved == clip { matches.append(item) }
         }
         guard matches.count == 1 else { throw AudioControllerSettingsError.targetChanged }
-        try assertInputFocus()
+        if expected == nil { try assertInputFocus() }
+        else {
+            try assertCurrentProject()
+            guard currentSheet() == nil,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier else {
+                throw AudioControllerSettingsError.targetChanged
+            }
+        }
+        try assertRestorableSelection()
         guard AXUIElementSetAttributeValue(timeline, kAXSelectedChildrenAttribute as CFString, matches as CFArray) == .success else {
             throw FinalCutCaptureError.unavailable("Final Cut could not select the exact imported segment for settings recovery.")
         }

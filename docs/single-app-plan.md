@@ -95,3 +95,20 @@ Build 7 passed 22 factory scenarios, 60 exact mono/stereo audio cases, and Apple
 5. Test recovery and **Verify Existing Result** using the saved job's `Silent Snip.fcpxml` and `Before-Silent Snip.fcpxml`; preserve that evidence. Test **Replace with 1-Second Gaps** only on a fresh disposable project; expected duration is **8.9 seconds** for this fixture. No other libraries or projects should be used.
 
 If anything fails, capture the exact Controls message and the job's reports before retrying. Do not treat an effect loading or Analyze succeeding as evidence that automatic Apply works.
+
+### Verified Controls foreground handoff — 2026-10-23
+
+Build 21 activates Final Cut and verifies that the original clip’s Controls window
+is focused after Analyze and settings verification. It retains a verified native
+window reference across Share, waits for remote controls to load, and uses a
+bounded reopen fallback. Window presentation targets the exact Inspector button
+without requiring timeline keyboard focus; timeline editing retains its existing
+focus and ownership checks. Late Share activation is returned cooperatively to
+Final Cut only while the same request still owns the operation or review.
+
+Two consecutive live analyses and empty/restored settings checks passed in the
+disposable **Silent Snip Foreground Check 21** project, with original media
+referenced in place. The installed app matches the app and ZIP; signing, sandbox,
+and Audio Unit validation passed. All 396 Swift tests passed with one skipped,
+and all 53 build-script tests passed. Automatic Apply and import recovery remain
+unverified by these checks. See [handoff behavior and limits](fast-review.md).

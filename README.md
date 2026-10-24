@@ -10,7 +10,7 @@ Silent Snip combines a passthrough audio effect with a background macOS helper. 
 
 1. Select one audio-only clip in the primary storyline and add **Silent Snip Audio**.
 2. Open **Controls**, adjust silence detection, and click **Analyze**.
-3. Review the proposed cuts and choose which to include. Detection or output edits update the current review; finish editing a field or press Return to start verification before Apply becomes available.
+3. Controls returns to the front when analysis finishes. Review the proposed cuts and choose which to include. Detection or output edits update the current review; finish editing a field or press Return to start verification before Apply becomes available.
 4. Click **Apply Cuts** to replace the project in its original event.
 
 Silent Snip saves recovery XML before replacement. Your source media stays unchanged.

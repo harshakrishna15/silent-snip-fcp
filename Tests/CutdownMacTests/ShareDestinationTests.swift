@@ -50,7 +50,10 @@ final class ShareDestinationTests: XCTestCase {
             CompletedXMLSnapshot.read(url, probe: { _ in .exclusive }) { _ in true }
         }
         var callbacks = 0
-        manager.onLateXMLCompletion = { callbacks += 1 }
+        manager.onLateXMLCompletion = { directory in
+            XCTAssertEqual(directory, manager.assets[0].directoryURL)
+            callbacks += 1
+        }
         _ = try await manager.captureXML(projectName: "Project") {
             let asset = try manager.createAsset(name: "Project")
             _ = try self.write("Project.fcpxml", in: asset.directoryURL, contents: self.completeXML)

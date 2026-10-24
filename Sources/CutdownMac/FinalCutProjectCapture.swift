@@ -19,6 +19,12 @@ import Foundation
     public func restoreReviewWindow() async -> String? {
         await session.restoreReviewWindow()
     }
+
+    /// Successful analysis may restore the exact original occurrence after its
+    /// own browser cleanup, then activate and raise the host's Controls window.
+    func presentReviewWindow() async -> String? {
+        await session.restoreReviewWindowIfSafe(bringToFront: true, document: document, target: target)
+    }
 }
 
 @MainActor public enum FinalCutProjectCapture {

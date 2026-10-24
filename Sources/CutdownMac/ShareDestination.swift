@@ -50,7 +50,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     public var onFailure: ((Error) -> Void)?
     /// An XML-only delivery accepted from a closed snapshot later received the
     /// host's real Open Document. The app may return its own activation to FCP.
-    public var onLateXMLCompletion: (() -> Void)?
+    public var onLateXMLCompletion: ((URL) -> Void)?
     public var canBeginShare: (() -> Bool)?
     public private(set) var assets: [ShareDestinationAsset] = []
     public let rootURL: URL
@@ -205,7 +205,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                     directoryURL: asset.directoryURL, xmlURL: xml, mediaURLs: []))
                 if asset.awaitingHostXMLCompletion {
                     asset.awaitingHostXMLCompletion = false
-                    onLateXMLCompletion?()
+                    onLateXMLCompletion?(asset.directoryURL)
                 }
                 return true // Late Open Document after validated file readiness.
             }

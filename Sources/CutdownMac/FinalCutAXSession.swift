@@ -16,6 +16,8 @@ import Foundation
     private let timelineLookup: FinalCutAXLookup<AXUIElement>
     private let windowTitle: String
     var operationStage = "Reading the selected audio-only timeline clip"
+    var lastXMLShareDirectory: URL?
+    var knownReviewWindows: [(element: AXUIElement, title: String)] = []
     typealias SuspendedReview = FinalCutReviewOwnership.Suspended
     var reviewOwnership = FinalCutReviewOwnership()
     var suspendedReview: SuspendedReview? {
@@ -126,10 +128,15 @@ import Foundation
         }
     }
 
+    func requestActivation() {
+        NSApplication.shared.yieldActivation(to: application)
+        application.activate(from: NSRunningApplication.current, options: [])
+    }
+
     func activate() async throws {
         try assertCurrentProject()
         guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut dialog before continuing.") }
-        application.activate(options: [])
+        requestActivation()
         try await waitUntil(timeout: 3) { NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier }
         // Analyze originates in the AU's floating panel. Activate the pinned
         // project window explicitly so subsequent shortcuts target its timeline.
@@ -218,7 +225,12 @@ import Foundation
             roots.append(window)
             // The AU review window remains nonblocking. Its actual child sheets
             // are still discovered below; no real sheet inherits this exemption.
-            let review = modal == false ? false : isCutdownReviewWindow(window)
+            let retainedReview = knownReviewWindows.contains {
+                FinalCutReviewWindowShell.isOwned(role: role, modal: modal,
+                    title: string(window, kAXTitleAttribute), recordedTitle: $0.title,
+                    sameElement: CFEqual(window, $0.element))
+            }
+            let review = modal == false ? false : (isCutdownReviewWindow(window) || retainedReview)
             if FinalCutWindowPolicy.isBlockingDialog(role: role, subrole: subrole, modal: modal, containsCutdownReview: review) {
                 blockers.append(window)
             }

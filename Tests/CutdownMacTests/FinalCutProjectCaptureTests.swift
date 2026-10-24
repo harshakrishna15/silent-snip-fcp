@@ -4,6 +4,18 @@ import XCTest
 @testable import CutdownMac
 
 final class FinalCutProjectCaptureTests: XCTestCase {
+    func testRetainedRemoteEditorShellNeverExemptsAnotherWindowOrRealModalDialog() {
+        XCTAssertTrue(FinalCutReviewWindowShell.isOwned(role: "AXWindow", modal: nil,
+            title: "Audio recording", recordedTitle: "Audio recording", sameElement: true))
+        for (role, modal, title, same) in [("AXSheet", nil, "Audio recording", true),
+                                         ("AXWindow", true, "Audio recording", true),
+                                         ("AXWindow", nil, "Share", true),
+                                         ("AXWindow", nil, "Audio recording", false)] as [(String, Bool?, String, Bool)] {
+            XCTAssertFalse(FinalCutReviewWindowShell.isOwned(role: role, modal: modal, title: title,
+                recordedTitle: "Audio recording", sameElement: same))
+        }
+    }
+
     func testApplyConfirmationUsesFreshDisabledGestureRatherThanButtonWording() {
         let gesture = UUID()
         let identifier = "cutdown.apply.requested.\(gesture.uuidString)"

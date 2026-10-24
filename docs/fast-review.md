@@ -52,9 +52,56 @@ for the separate repeat-analysis cache, whose conservative effects checks remain
 The final Apply still exports and verifies fresh state and saves recovery XML
 before importing anything. No source or recovery file is deleted by this feature.
 
+## Returning to Controls
+
+After successful Analyze or settings verification, Silent Snip activates Final
+Cut and raises the original clip's Controls window. It verifies native window
+focus instead of treating an existing hidden editor as success. It retains the
+verified native editor reference before Share, then checks its controls again
+before raising it, even if Final Cut omits that window from `AXWindows`. If Final Cut
+omits a hidden remote editor from its window list, a bounded close/reopen fallback
+uses only the selected clip's uniquely identified Silent Snip editor button.
+A newly opened remote editor may initially expose an empty dialog. Silent Snip
+waits for its native ownership controls before raising it; an unknown dialog
+cannot receive input or be treated as a successful handoff.
+
+Temporary-project cleanup can clear the timeline selection. Silent Snip may
+restore the original occurrence only when no other clip or range is selected,
+and its name, timeline edges, duration, and XML occurrence still match. A changed
+project, another selection, an unreadable state, or a blocking dialog stops the
+handoff and leaves manual reopening guidance in Analysis Details. Cancellation
+and error cleanup do not reselect a clip or activate another application.
+
+macOS cooperative activation returns focus from Silent Snip to Final Cut. A
+bounded check also handles the helper becoming active just after the Share
+completion callback. It never reclaims activation from another foreground app.
+After completion, only the current review's exact final Share directory can
+return the helper's own activation to the verified current Controls window. This late path never changes selection or toggles editors. Each
+successful operation writes `Review-Presentation.json` in its temporary job
+folder, recording verified focus or manual reopening guidance. Apply still waits
+for analysis or settings verification to finish.
+
+### Foreground verification — build 21
+
+The installed app passed two consecutive Analyze runs on **Silent Snip Foreground
+Check 21**, a fresh ten-second fixture in the required workspace library. Controls
+became the focused native window automatically, with **Apply 2 Cuts** enabled.
+Changing Minimum Silence to 10 seconds returned a focused empty result; restoring
+0.5 seconds returned both cuts and enabled Apply after fresh verification. No
+Apply action was clicked and no source media was edited.
+
+The app and ZIP match the installed copy; signatures, sandbox, and Audio Unit
+validation passed. All 396 Swift tests passed with one skipped, along with 53
+build-script tests. Reports are in `build/ReviewForegroundEvidence`.
+
+One run reported a cleanup focus warning, although the generated analysis project
+was absent from the event afterward. Controls restoration still passed. This
+handoff verification does not establish a complete automatic editing or import
+recovery pass. Final Cut still owns the Controls frame and can clip its contents.
+
 ## Evidence and limits
 
-Live tests use only the generated ten-second **Silent Snip Fast Review 12 —
+The earlier performance measurements use the generated ten-second **Silent Snip Fast Review 12 —
 Effects** project in the workspace-root **Cutdown Integration.fcpbundle**, with
 Noise Gate, Limiter, Silent Snip, and source audio referenced in place.
 

@@ -16,6 +16,7 @@ extension FinalCutAXSession {
         let delivered = try await ShareDestinationManager.shared.captureXML(projectName: projectName) {
             try await self.beginShare(renderAudio: false)
         }
+        lastXMLShareDirectory = delivered.deletingLastPathComponent().standardizedFileURL
         try assertCurrentProject()
         _ = try TimelineParser.parse(url: delivered)
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)

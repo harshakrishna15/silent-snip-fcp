@@ -115,6 +115,16 @@ struct FinalCutPreviewSurface {
 
 }
 
+enum FinalCutReviewWindowShell {
+    /// A verified remote editor can lose its view or disappear from AXWindows
+    /// during Share. Only its exact retained element and unchanged clip title
+    /// qualify; real modal dialogs and child sheets still block input.
+    static func isOwned(role: String?, modal: Bool?, title: String?, recordedTitle: String,
+                        sameElement: Bool) -> Bool {
+        sameElement && role == kAXWindowRole && modal != true && !recordedTitle.isEmpty && title == recordedTitle
+    }
+}
+
 enum FinalCutReviewInspector {
     // Final Cut can retain the previous effect label in existing projects.
     static func isControllerName(_ name: String?) -> Bool {

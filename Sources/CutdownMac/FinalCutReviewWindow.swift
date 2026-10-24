@@ -17,9 +17,15 @@ extension FinalCutAXSession {
 
     func isCutdownReviewWindow(_ window: AXUIElement) -> Bool {
         guard string(window, kAXRoleAttribute) != kAXSheetRole else { return false }
-        return find(in: window, identifier: "cutdown.status", maxDepth: 16, maxNodes: 250) != nil
-            && (find(in: window, identifier: "cutdown.review.cuts", maxDepth: 16, maxNodes: 250) != nil
-                || find(in: window, identifier: "cutdown.review.results", maxDepth: 16, maxNodes: 250) != nil)
+        let identified = find(in: window, identifier: "cutdown.status", maxDepth: 16, maxNodes: 250) != nil
+            && find(in: window, role: kAXTextFieldRole, identifier: "cutdown.setting.0", maxDepth: 16, maxNodes: 250) != nil
+            && find(in: window, role: kAXButtonRole, identifier: "cutdown.saveSettings", maxDepth: 16, maxNodes: 250) != nil
+        if identified, let title = string(window, kAXTitleAttribute), !title.isEmpty,
+           !knownReviewWindows.contains(where: { CFEqual($0.element, window) }) {
+            knownReviewWindows.append((window, title))
+            if knownReviewWindows.count > 32 { knownReviewWindows.removeFirst() }
+        }
+        return identified
     }
 
     func cutdownReviewWindows() -> [AXUIElement] {
@@ -59,6 +65,8 @@ extension FinalCutAXSession {
 
     func rememberReviewSelection(_ selection: FinalCutSelectionSnapshot) throws {
         try reviewOwnership.remember(selection)
+        // Capture the real editor before Share can omit it from AXWindows.
+        _ = cutdownReviewWindows()
     }
 
     func restoreReviewWindow() async -> String? {
@@ -67,50 +75,144 @@ extension FinalCutAXSession {
         await Task { @MainActor in await self.restoreReviewWindowIfSafe() }.value
     }
 
-    func restoreReviewWindowIfSafe() async -> String? {
+    func restoreReviewWindowIfSafe(bringToFront: Bool = false,
+                                   document: TimelineDocument? = nil, target: TimelineClip? = nil) async -> String? {
         guard let expected = suspendedReview?.selection ?? activeReviewSelection else { return nil }
-        let suspended = suspendedReview ?? SuspendedReview(title: expected.clipName, selection: expected)
-        let guidance = "To reopen the results, close any unfinished export dialog, select ‘\(suspended.title)’ in ‘\(projectName)’, and click Silent Snip Audio’s Show effect editor button."
+        let guidance = "To reopen the results, close any unfinished export dialog, select ‘\(expected.clipName)’ in ‘\(projectName)’, and click Silent Snip Audio’s Show effect editor button."
+        var stage = "Checking the original project"
         do {
             try assertCurrentProject()
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier else {
-                return guidance
+            guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("A Final Cut dialog is still open.") }
+            if bringToFront {
+                stage = "Activating the original project"
+                requestActivation()
+                try await waitUntil(timeout: 3, context: "Final Cut activation for Controls") {
+                    NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier
+                }
+                if (try? selectionSnapshot()) != expected, let document, let target {
+                    try await selectTimelineClip(target, document: document, restoring: expected)
+                }
+            } else {
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier else {
+                    return guidance
+                }
             }
-            guard let expected = suspended.selection else { return guidance }
-            let existing = cutdownReviewWindows()
-            if !existing.isEmpty {
-                guard existing.count == 1, string(existing[0], kAXTitleAttribute) == suspended.title,
-                      try selectionSnapshot() == expected else { return guidance }
-                suspendedReview = nil
-                return nil
+            func validate() throws {
+                try assertCurrentProject()
+                if let sheet = currentSheet() {
+                    throw FinalCutCaptureError.unavailable("A blocking Final Cut dialog is open: \(string(sheet, kAXTitleAttribute) ?? "untitled").")
+                }
+                guard try selectionSnapshot() == expected else {
+                    throw FinalCutCaptureError.invalidSelection("The original clip selection is no longer available.")
+                }
             }
-            try await activate()
-            try await focusTimeline()
-            guard try selectionSnapshot() == expected,
-                  let inspector = Self.search(mainWindow, role: kAXScrollAreaRole, description: "inspector", containersOnly: true) else {
-                return guidance
-            }
-            let controls = children(inspector)
-            guard controls.count <= 300 else { return guidance }
-            let descriptors = controls.map {
-                AccessibilityNode(role: string($0, kAXRoleAttribute), identifier: nil,
-                    title: string($0, kAXTitleAttribute), description: string($0, kAXDescriptionAttribute),
-                    value: string($0, kAXValueAttribute), selected: nil,
-                    enabled: (attribute($0, kAXEnabledAttribute) as? NSNumber)?.boolValue, children: [])
-            }
-            guard let editor = FinalCutReviewInspector.editorIndex(in: descriptors) else { return guidance }
-            try assertCurrentProject()
-            guard try selectionSnapshot() == expected else { return guidance }
-            try press(controls[editor])
-            try await waitUntil(timeout: 3, context: "the Silent Snip review window to reopen") {
-                let opened = self.cutdownReviewWindows()
-                return opened.count == 1 && self.string(opened[0], kAXTitleAttribute) == suspended.title
-            }
+            stage = "Validating the retained review selection"
+            try await FinalCutReviewPresentation.present(validate: validate, raiseExisting: {
+                stage = "Raising the existing Controls window"
+                return try await self.raiseReviewWindow(expected: expected)
+            }, toggleEditor: {
+                // Each toggle re-reads the Inspector; a remote view closing can
+                // rebuild it. Never reuse a stale effect button or guess a sibling.
+                stage = "Opening the exact Silent Snip editor"
+                self.requestActivation()
+                try await self.waitUntil(timeout: 3, context: "Final Cut activation for the effect editor") {
+                    NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier
+                }
+                try validate()
+                if try await self.raiseReviewWindow(expected: expected) { return }
+                let deadline = Date().addingTimeInterval(3)
+                while Date() < deadline {
+                    try Task.checkCancellation()
+                    try validate()
+                    if let inspector = Self.search(self.mainWindow, role: kAXScrollAreaRole,
+                        description: "inspector", containersOnly: true) {
+                        let controls = self.children(inspector)
+                        guard controls.count <= 300 else { throw AudioControllerSettingsError.targetChanged }
+                        let descriptors = controls.map {
+                            AccessibilityNode(role: self.string($0, kAXRoleAttribute), identifier: nil,
+                                title: self.string($0, kAXTitleAttribute), description: self.string($0, kAXDescriptionAttribute),
+                                value: self.string($0, kAXValueAttribute), selected: nil,
+                                enabled: (self.attribute($0, kAXEnabledAttribute) as? NSNumber)?.boolValue, children: [])
+                        }
+                        if let editor = FinalCutReviewInspector.editorIndex(in: descriptors) {
+                            try validate()
+                            // AXPress targets this verified Inspector button directly.
+                            // The floating AU editor may own keyboard focus; no
+                            // keyboard or timeline edit is sent by this operation.
+                            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier,
+                                  AXUIElementPerformAction(controls[editor], kAXPressAction as CFString) == .success else {
+                                throw FinalCutCaptureError.unavailable("Final Cut could not open the verified Silent Snip editor.")
+                            }
+                            return
+                        }
+                    }
+                    try await Task.sleep(for: .milliseconds(150))
+                }
+                throw FinalCutCaptureError.unavailable("The selected clip’s unique Silent Snip editor button is not available.")
+            }, awaitEditor: {
+                stage = "Waiting for the remote Controls view"
+                return try await FinalCutReviewPresentation.waitForEditor(assertProject: self.assertCurrentProject,
+                    raiseWhenReady: {
+                        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier,
+                              (try? self.selectionSnapshot()) == expected else { return false }
+                        return try await self.raiseReviewWindow(expected: expected)
+                    })
+            })
             suspendedReview = nil
             return nil
-        } catch {
-            return guidance
+        } catch { return "\(guidance) (\(stage): \(error.localizedDescription))" }
+    }
+
+    private func reviewWindow(expected: FinalCutSelectionSnapshot) -> AXUIElement? {
+        // The focused remote editor may be missing from AXWindows. Prefer it
+        // after checking its native controls and exact clip title.
+        if let focused = focusedReviewWindow(), string(focused, kAXTitleAttribute) == expected.clipName { return focused }
+        var candidates = cutdownReviewWindows()
+        for known in knownReviewWindows where !candidates.contains(where: { CFEqual($0, known.element) }) {
+            // Retaining the reference never substitutes for fresh native view
+            // identity, clip selection, project, or Apply-gesture validation.
+            if known.title == expected.clipName, isCutdownReviewWindow(known.element) { candidates.append(known.element) }
         }
+        let matches = candidates.filter { string($0, kAXTitleAttribute) == expected.clipName }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    private func raiseReviewWindow(expected: FinalCutSelectionSnapshot) async throws -> Bool {
+        try assertCurrentProject()
+        guard currentSheet() == nil, try selectionSnapshot() == expected,
+              let window = reviewWindow(expected: expected) else { return false }
+        // Finding an existing window is insufficient: it can be behind the
+        // timeline. Verify native focus after Raise before reporting success.
+        requestActivation()
+        try await waitUntil(timeout: 2, context: "Final Cut activation before raising Controls") {
+            NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier
+        }
+        try assertCurrentProject()
+        guard currentSheet() == nil, try selectionSnapshot() == expected else { return false }
+        _ = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else { return false }
+        _ = AXUIElementSetAttributeValue(root, kAXFocusedWindowAttribute as CFString, window)
+        _ = AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        let deadline = Date().addingTimeInterval(0.6)
+        while Date() < deadline {
+            try Task.checkCancellation()
+            try assertCurrentProject()
+            guard currentSheet() == nil, try selectionSnapshot() == expected else { return false }
+            if let focused = focusedReviewWindow(), CFEqual(focused, window),
+               NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier { return true }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+
+    /// A late Share Open Document can activate the accessory helper after the
+    /// review was presented. Only the current review's exact final export may
+    /// undo that activation. This path never selects clips or toggles editors.
+    func raiseReviewAfterLateCompletion(directory: URL) async {
+        guard directory.standardizedFileURL == lastXMLShareDirectory,
+              let expected = activeReviewSelection, (try? assertCurrentProject()) != nil,
+              currentSheet() == nil, (try? selectionSnapshot()) == expected else { return }
+        _ = try? await raiseReviewWindow(expected: expected)
     }
 
     /// A UUID alone does not establish ownership. Require its native control

@@ -7,6 +7,7 @@ import CutdownMac
     private var reviewRequest: AnalyzeRequest?
     private var menuBar: MenuBarController?
     private var storageTimer: Timer?
+    private var lateActivationTask: Task<Void, Never>?
     private lazy var storageCleanup = StorageCleanupController(isBusy: { [unowned self] in
         coordinator.isBusy || ShareDestinationManager.shared.hasActiveRequest
     }, protectedURLs: { [unowned self] in interactive.storageProtectedURLs },
@@ -52,13 +53,24 @@ import CutdownMac
         manager.onFailure = { error in
             try? IntegrationReport(state: "failed", message: error.localizedDescription).save()
         }
-        manager.onLateXMLCompletion = { [weak self] in
-            // Only undo this helper's own activation during a live operation.
-            // Never reclaim focus from another app the user switched to.
-            guard self?.coordinator.isBusy == true, NSApp.isActive else { return }
-            let hosts = NSRunningApplication.runningApplications(withBundleIdentifier: FinalCutAccessibility.bundleIdentifier)
-            guard hosts.count == 1, let host = hosts.first else { return }
-            host.activate(options: [])
+        manager.onLateXMLCompletion = { [weak self] directory in
+            guard let self, let request = self.coordinator.currentRequest?.id else { return }
+            self.lateActivationTask?.cancel()
+            self.lateActivationTask = Task { [weak self] in
+                await FinalCutReviewPresentation.returnOwnActivation(
+                    stillOwnsRequest: { self?.coordinator.currentRequest?.id == request },
+                    helperIsActive: { NSApp.isActive }, restore: {
+                        guard let self else { return }
+                        if !self.coordinator.isBusy {
+                            await self.interactive.restoreReviewAfterLateCompletion(directory, request: request)
+                            return
+                        }
+                        let hosts = NSRunningApplication.runningApplications(withBundleIdentifier: FinalCutAccessibility.bundleIdentifier)
+                        guard hosts.count == 1, let host = hosts.first else { return }
+                        NSApp.yieldActivation(to: host)
+                        host.activate(from: NSRunningApplication.current, options: [])
+                    })
+            }
         }
         manager.onReceive = { _ in
             try? IntegrationReport(state: "ready", message: "Share received. Select the clip carrying Silent Snip Audio and use Analyze to start a verified review.").save()
@@ -119,6 +131,7 @@ import CutdownMac
             }
             do {
                 let request = try AnalyzeRequest(url: url)
+                lateActivationTask?.cancel()
                 if !FinalCutAccessibility.isTrusted { FinalCutAccessibility.requestAccess() }
                 coordinator.start(request)
             } catch { try? IntegrationReport(state: "failed", message: error.localizedDescription).save() }

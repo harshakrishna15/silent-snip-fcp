@@ -31,6 +31,10 @@ import Foundation
         return reason == nil
     }
 
+    public func restoreReviewAfterLateCompletion(_ directory: URL, request: UUID) async {
+        await contexts[request]?.capture.session.raiseReviewAfterLateCompletion(directory: directory)
+    }
+
     public func canAuthorizeApply(view: UUID, gesture: UUID) -> Bool {
         !restoringControllerSettings && reviewSession?.canAuthorizeApply(view: view, gesture: gesture) == true
     }
@@ -198,6 +202,7 @@ import Foundation
                 let restoredURL = try await restored.exportProjectXML(to: directory.appendingPathComponent("After-Isolation.fcpxmld"))
                 let restoredDocument = try TimelineParser.parse(url: restoredURL, exclusions: analyzed.dialogueContext.fingerprintExclusions)
                 try XMLProjectApply.verifyBaseline(restoredDocument, analyzed: capture.document)
+                capture.session.lastXMLShareDirectory = restored.lastXMLShareDirectory
             }
             timing.begin("previewPreparation")
             // Prove that the selected cuts can be represented before enabling Apply.
@@ -236,7 +241,8 @@ import Foundation
                     .write(to: directory.appendingPathComponent("Cleanup-Status.txt"), options: .atomic)
             }
             timing.begin("restoreControls")
-            let notice = await capture.restoreReviewWindow()
+            let notice = await capture.presentReviewWindow()
+            recordPresentation(notice, in: directory)
             try Task.checkCancellation()
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
@@ -304,11 +310,21 @@ import Foundation
             }
             try Task.checkCancellation()
             timing.begin("restoreControls")
-            _ = await context.capture.restoreReviewWindow()
+            let notice = await context.capture.presentReviewWindow()
+            recordPresentation(notice, in: context.directory)
+            try Task.checkCancellation()
             outcome = "verified"
         } catch {
             _ = await context.capture.restoreReviewWindow()
             throw error
+        }
+    }
+
+    private func recordPresentation(_ guidance: String?, in directory: URL) {
+        let report = ["state": guidance == nil ? "focused" : "manual-reopen-required",
+                      "guidance": guidance ?? "Controls is the focused Final Cut window."]
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: directory.appendingPathComponent("Review-Presentation.json"), options: .atomic)
         }
     }
 
