@@ -34,7 +34,7 @@ static BOOL booleanValue(id value) {
     NSMutableArray *commands = [NSMutableArray array];
     if (self.applying && !self.applyAcknowledged && self.pendingApply)
         [commands addObject:self.pendingApply];
-    for (id pending in @[self.pendingSelection ?: NSNull.null, self.pendingRetry ?: NSNull.null, self.pendingPreview ?: NSNull.null, self.pendingSettings ?: NSNull.null])
+    for (id pending in @[self.pendingSelection ?: NSNull.null, self.pendingRetry ?: NSNull.null, self.pendingSettings ?: NSNull.null])
         if (pending != NSNull.null) [commands addObject:pending];
     return commands;
 }
@@ -43,7 +43,7 @@ static BOOL booleanValue(id value) {
     // A completed/failed job needs no heartbeat. Do not erase the actual
     // failure with "helper not responding" when its host view was hidden.
     if (CutdownReviewStateIsTerminal(self.state) && !self.awaitingResponse && !self.applying &&
-        !self.operationBusy && !self.pendingRetry && !self.pendingSelection && !self.pendingPreview && !self.pendingSettings) return NO;
+        !self.operationBusy && !self.pendingRetry && !self.pendingSelection && !self.pendingSettings) return NO;
     return self.lastResponse && [now timeIntervalSinceDate:self.lastResponse] > 15;
 }
 - (NSDictionary *)acceptNotification:(NSNotification *)notification {
@@ -92,8 +92,6 @@ static BOOL booleanValue(id value) {
     self.state = value[@"state"];
     if (self.pendingSettings && [value[@"settingsEdit"] isEqual:self.pendingSettings[@"settingsEdit"]]) self.pendingSettings = nil;
     if (self.pendingRetry && [self.revision compare:self.pendingRetry[@"expectedRevision"]] == NSOrderedDescending) self.pendingRetry = nil;
-    if (self.pendingPreview && [self.revision compare:self.previewRevision] == NSOrderedDescending &&
-        (![value[@"state"] isEqual:CutdownReviewStateReview] || [value[@"previewVisible"] isEqual:self.pendingPreview[@"included"]])) self.pendingPreview = nil;
     if (self.pendingSelection && [self.revision compare:self.selectionRevision] == NSOrderedDescending) {
         NSString *kind = self.pendingSelection[@"command"];
         BOOL matches = YES;

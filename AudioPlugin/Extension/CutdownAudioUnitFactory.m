@@ -771,7 +771,7 @@ static BOOL booleanValue(id value) {
     self.retryAvailable = NO;
     [self updatePrimaryAction];
     self.cutRows = @[]; [self.resultsView reloadData];
-    self.connection.pendingSelection = nil; self.connection.pendingRetry = nil; self.connection.pendingPreview = nil; self.canChangeSelection = NO;
+    self.connection.pendingSelection = nil; self.connection.pendingRetry = nil; self.canChangeSelection = NO;
     self.summaryLabel.stringValue = @"Waiting for analysis. No cuts have been applied.";
     [self setStatusMessage:@"Connecting to Silent Snip…"];
     self.connection.awaitingResponse = YES; self.connection.lastResponse = NSDate.date;
@@ -846,7 +846,7 @@ static BOOL booleanValue(id value) {
         self.retryAvailable = NO;
         [self updatePrimaryAction];
         self.connection.pendingSelection = nil; self.canChangeSelection = NO;
-        self.connection.pendingRetry = nil; self.connection.pendingPreview = nil;
+        self.connection.pendingRetry = nil;
         self.connection.pendingSettings = nil; [self.settingsTimer invalidate]; self.settingsTimer = nil;
         self.connection.pendingApply = nil; self.applyButton.identifier = @"cutdown.apply";
         self.cancelButton.enabled = NO;
