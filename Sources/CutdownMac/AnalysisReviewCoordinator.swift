@@ -83,6 +83,15 @@ public struct ReviewAnalysisResult: Sendable {
     public var isBusy: Bool { jobs.values.contains { $0.task != nil || $0.state.isBusy } }
     public var currentRequest: AnalyzeRequest? { active.flatMap { jobs[$0]?.request } }
 
+    /// Reconnect only the exact native session's job, using its latest edits.
+    /// A cancelled review is consumed; an interrupted import may still be retried.
+    public func requestForReconnect(_ id: UUID) -> AnalyzeRequest? {
+        guard let job = jobs[id], active == nil || active == id else { return nil }
+        if job.applyStarted && canRetryVerification(id) { return job.request }
+        guard !job.cancelled, active == id, job.result != nil || job.task != nil else { return nil }
+        return job.request
+    }
+
     /// A verified plan may be displayed while the operation still owns cleanup.
     /// No review mutations or Apply are accepted until the operation completes.
     public func previewReady(_ id: UUID, result: ReviewAnalysisResult) {

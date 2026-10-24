@@ -16,6 +16,7 @@
 - (void)restoreSavedSettings:(id)sender;
 - (void)verifyExistingResult:(id)sender;
 - (void)jumpToCut:(id)sender;
+- (void)apply:(id)sender;
 - (void)selectCuts:(id)sender;
 - (void)updateMoreMenuVisibility;
 - (void)retryVerification:(id)sender;
@@ -673,6 +674,47 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require(connection.timedOut && !f.apply.enabled && !connection.pendingSettings, @"Stale heartbeat cannot suppress settings timeout");
         [f.factory sendSettingsPreview];
         require(!connection.pendingSettings && !connection.operationBusy, @"Typing after timeout cannot start an untracked settings request; Analyze reconnects");
+    });
+
+    run(@"late settings success cannot revive a timed-out review", ^(Fixture *f) {
+        [f review]; f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
+        NSDictionary *edit = f.factory.previewCommand;
+        connection(f.factory).lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16];
+        [f.factory pollStatus];
+        require(connection(f.factory).timedOut && !f.apply.enabled, @"Timeout consumes the review");
+        response(f.factory, 2, @"review", @{@"settingsEdit":edit[@"settingsEdit"], @"settings":edit[@"settings"],
+            @"output":edit[@"output"], @"canHighlight":@YES});
+        [f.factory apply:nil];
+        require(connection(f.factory).timedOut && !f.apply.enabled && !connection(f.factory).operationBusy && f.analyze.enabled &&
+            commandCount(f.factory, @"apply") == 0, @"Delayed success neither enables Apply nor hides Analyze");
+        response(f.factory, 3, @"failed", @{@"message":@"Actual final failure", @"canApply":@NO});
+        require([[f.factory valueForKey:@"statusDetails"] isEqual:@"Actual final failure"], @"Late terminal outcome remains visible");
+    });
+    run(@"reconnect uses the processor's full supported minimum range", ^(Fixture *f) {
+        for (NSNumber *minimum in @[@0.0001, @0.01, @0.1, @0.00001]) {
+            [f.factory setValue:[CutdownReviewConnection new] forKey:@"connection"];
+            NSDictionary *packet = @{@"version":@1, @"view":[f.factory valueForKey:@"viewID"], @"request":NSUUID.UUID.UUIDString,
+                @"output":@"gaps", @"settings":@{@"threshold":@-35, @"minimum":minimum, @"before":@0.1, @"after":@0.1}};
+            [f.factory reconnect:[NSNotification notificationWithName:@"test" object:json(packet)]];
+            require((connection(f.factory).requestID != nil) == (minimum.floatValue >= [f.unit.analysisParameterTree parameterWithAddress:2].minValue),
+                @"Reconnect accepts exactly the Audio Unit's parameter bounds");
+        }
+    });
+    run(@"invalid settings block row double-click navigation", ^(Fixture *f) {
+        [f review]; response(f.factory, 2, @"review", @{@"canHighlight":@YES});
+        f.fields[0].stringValue = @"-";
+        [f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
+        NSTableView *table = [f.factory valueForKey:@"resultsView"];
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        [f.factory jumpToCut:nil];
+        require(commandCount(f.factory, @"highlight") == 0, @"Double-click cannot use the old review while text is invalid");
+        f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
+        NSDictionary *edit = f.factory.previewCommand;
+        response(f.factory, 3, @"review", @{@"canHighlight":@YES, @"settingsEdit":edit[@"settingsEdit"],
+            @"settings":edit[@"settings"], @"output":edit[@"output"]});
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        [f.factory jumpToCut:nil];
+        require(commandCount(f.factory, @"highlight") == 1, @"Matching verification restores navigation");
     });
 
     NSArray *states = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:@"AudioPlugin/Tests/review-states.json"] options:0 error:nil];

@@ -2,14 +2,16 @@ import CutdownCore
 import Foundation
 
 struct ProjectRoundTripReport: Codable, Sendable {
-    let verified: Bool
-    let differences: [String]
+    var verified: Bool
+    var differences: [String]
     let expectedProjectUID: String?
     let actualProjectUID: String?
     let expectedFingerprint: String
     let actualFingerprint: String
     /// Separate from rendering verification: FCP can omit passthrough AU state.
     let controllerSettingsPreserved: Bool?
+    /// False means a legacy result has no historical source-content evidence.
+    var sourceMediaVerified: Bool? = nil
 }
 
 enum ProjectRoundTripVerification {

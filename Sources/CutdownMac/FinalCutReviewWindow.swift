@@ -35,7 +35,13 @@ extension FinalCutAXSession {
 
     func suspendReviewWindow() async throws {
         try assertCurrentProject()
-        let windows = cutdownReviewWindows()
+        var windows = cutdownReviewWindows()
+        if let focused = focusedReviewWindow(), !windows.contains(where: { CFEqual($0, focused) }) {
+            windows.append(focused)
+        }
+        if windows.isEmpty, let expected = activeReviewSelection, let retained = reviewWindow(expected: expected) {
+            windows.append(retained)
+        }
         guard !windows.isEmpty else { return }
         guard windows.count == 1, let window = windows.first,
               let title = string(window, kAXTitleAttribute), !title.isEmpty else {
@@ -235,13 +241,19 @@ extension FinalCutAXSession {
         return nil
     }
 
-    private func focusedReviewWindow() -> AXUIElement? {
+    func focusedReviewWindow() -> AXUIElement? {
         // Final Cut can retain hidden AU editors or omit a reopened remote
         // editor from AXWindows after Share. AXFocusedWindow directly names
         // the native window receiving this user's edit or button gesture.
         guard let window = Self.elementAttribute(root, kAXFocusedWindowAttribute),
               !CFEqual(window, mainWindow), isCutdownReviewWindow(window) else { return nil }
         return window
+    }
+
+    func recoveryReviewWindow(clipName: String) -> AXUIElement? {
+        FinalCutReviewPresentation.focusedEditor(focused: focusedReviewWindow(), listed: cutdownReviewWindows(),
+            matches: { self.isCutdownReviewWindow($0) && self.string($0, kAXTitleAttribute) == clipName },
+            equals: { CFEqual($0, $1) })
     }
 
     /// The request UUID travels over a broadcast channel. An Apply message is

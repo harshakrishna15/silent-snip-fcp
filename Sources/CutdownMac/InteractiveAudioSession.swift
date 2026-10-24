@@ -14,6 +14,7 @@ import Foundation
     private let analysisCache = AnalysisCache()
     public var onPreviewReady: ((UUID, ReviewAnalysisResult) -> Void)?
     private var reviewSession: FinalCutAXSession?
+    public private(set) var reviewRequestID: UUID?
     private var restoringControllerSettings = false
     private var lastReviewAuthorizationFailure: String?
 
@@ -62,12 +63,16 @@ import Foundation
 
     public func discard(_ requestID: UUID) {
         contexts.removeValue(forKey: requestID)
+        if reviewRequestID == requestID, verifications[requestID] == nil {
+            reviewSession = nil; reviewRequestID = nil
+        }
     }
 
     public func stop() {
         preview.hide()
         contexts.removeAll()
         reviewSession = nil
+        reviewRequestID = nil
         verifications.removeAll()
         analysisCache.clear()
     }
@@ -78,6 +83,7 @@ import Foundation
         preview.hide()
         contexts.removeAll()
         reviewSession = nil
+        reviewRequestID = request.id
         let directory = try FinalCutDialogueExport.makeJobDirectory(jobID: request.id)
         let timing = AnalysisTiming(request: request.id)
         var outcome = "failed"
@@ -89,12 +95,13 @@ import Foundation
             capture = try await FinalCutProjectCapture.capture(to: directory,
                 controllerEffectUIDs: [AudioControllerSettings.effectUID],
                 timing: timing,
-                onSession: { self.reviewSession = $0 }) { progress($0, nil) }
+                onSession: { if !Task.isCancelled { self.reviewSession = $0 } }) { progress($0, nil) }
         } catch {
             try? Data(error.localizedDescription.utf8).write(
                 to: directory.appendingPathComponent("Analysis-Failure.txt"), options: .atomic)
             throw error
         }
+        try Task.checkCancellation()
         reviewSession = capture.session
         var renderedReceipt: ShareDestinationReceipt?
         var cleanup: (IsolatedAudioProject, Data)?
@@ -368,8 +375,10 @@ import Foundation
             try Data("Import requested; verification pending. Do not import again until checking Final Cut.\n".utf8)
                 .write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             let verification = try ImportedResultVerification(expected: artifact.output.xmlData, outputURL: artifact.outputURL,
-                originalProjectName: capture.projectName, request: request, replacementTarget: artifact.output.report.replacementTarget)
+                originalProjectName: capture.projectName, request: request, replacementTarget: artifact.output.report.replacementTarget,
+                sourceMedia: context.mediaSnapshot)
             try await artifact.send { url in
+                try await context.mediaSnapshot.validate()
                 try verification.savePending()
                 importAttempted = true
                 self.verifications.remember(request.id, at: verification.outputURL)
@@ -396,6 +405,7 @@ import Foundation
         }
         let request = try loadVerification(outputURL)
         reviewSession = session
+        reviewRequestID = request.id
         return request
     }
 
@@ -430,7 +440,7 @@ import Foundation
                 try await imported.restoreControllerSettings(correction.settings, clip: correction.clip, document: document)
             })
             let disposition = result.replacementTarget == nil ? "Original project unchanged." : "Project replaced in its original event. Recovery XML saved in the result folder."
-            let message = "Verified ‘\(result.projectName)’: timeline, source media, rendering effects, and Silent Snip settings match. \(disposition)"
+            let message = "Verified ‘\(result.projectName)’: timeline, rendering effects, and Silent Snip settings match. \(result.sourceMediaNotice) \(disposition)"
             try Data((message + "\n").utf8).write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             result.markComplete()
             verifications.remove(id)

@@ -520,7 +520,7 @@ static BOOL booleanValue(id value) {
         !self.connection.awaitingResponse && !self.connection.pendingRetry && !self.verificationPending;
     if (item == self.detailsItem) return YES;
     if (item == self.analyzeAgainItem) return idle && [self.connection.state isEqual:CutdownReviewStateReview] && !self.settingsDirty;
-    if (item == self.jumpItem) return idle && self.canHighlight && self.resultsView.selectedRow >= 0;
+    if (item == self.jumpItem) return idle && !self.settingsDirty && !self.connection.timedOut && !self.connection.pendingSettings && self.canHighlight && self.resultsView.selectedRow >= 0;
     if (item == self.selectAllItem || item == self.deselectAllItem)
         return idle && self.canChangeSelection && !self.connection.pendingSelection;
     return idle;
@@ -884,12 +884,13 @@ static BOOL booleanValue(id value) {
         ![value[@"settings"] isKindOfClass:NSDictionary.class]) return;
     NSMutableArray *settings = [NSMutableArray array];
     NSArray *keys = @[@"threshold", @"minimum", @"before", @"after"];
-    const double lower[] = {-80, .1, 0, 0}, upper[] = {0, 10, 2, 2};
     for (NSUInteger i=0; i<4; i++) {
         id number = value[@"settings"][keys[i]];
+        AUParameter *parameter = [self.audioUnit.analysisParameterTree parameterWithAddress:i+1];
         if (![number isKindOfClass:NSNumber.class] || booleanValue(number) || !isfinite([number doubleValue]) ||
-            [number doubleValue] < lower[i] || [number doubleValue] > upper[i]) return;
-        [settings addObject:number];
+            !parameter || !isfinite([number floatValue]) ||
+            [number floatValue] < parameter.minValue || [number floatValue] > parameter.maxValue) return;
+        [settings addObject:@([number floatValue])];
     }
     self.verificationPending = nil;
     self.pendingErrorMessage = nil;
@@ -1027,7 +1028,7 @@ static BOOL booleanValue(id value) {
 - (void)receive:(NSNotification *)notification {
     NSDictionary *value = [self.connection acceptNotification:notification];
     if (!value) return;
-    if ([value[@"state"] isEqual:CutdownReviewStateReview] && [self responseMatchesCurrentSettings:value]) self.settingsDirty = NO;
+    if (!self.connection.timedOut && [value[@"state"] isEqual:CutdownReviewStateReview] && [self responseMatchesCurrentSettings:value]) self.settingsDirty = NO;
     self.cancelButton.enabled = [value[@"canCancel"] isEqual:@YES];
     self.cancelButton.hidden = !self.cancelButton.enabled;
     if ([value[@"state"] isEqual:CutdownReviewStateFailed] || [value[@"state"] isEqual:CutdownReviewStateUnavailable])
@@ -1035,7 +1036,7 @@ static BOOL booleanValue(id value) {
     else [self setStatusMessage:value[@"message"]];
     NSUInteger included = 0;
     for (NSDictionary *row in value[@"cuts"]) if ([row[@"eligible"] boolValue] && [row[@"included"] boolValue]) included++;
-    self.canHighlight = [value[@"state"] isEqual:CutdownReviewStateReview] && [value[@"canHighlight"] isEqual:@YES];
+    self.canHighlight = !self.settingsDirty && !self.connection.timedOut && !self.connection.pendingSettings && [value[@"state"] isEqual:CutdownReviewStateReview] && [value[@"canHighlight"] isEqual:@YES];
     BOOL canRetry = [value[@"canRetryVerification"] isEqual:@YES] && CutdownReviewStateCanRetry(value[@"state"]);
     self.retryAvailable = canRetry;
     self.retryButton.enabled = canRetry && !self.connection.pendingRetry;
@@ -1079,7 +1080,7 @@ static BOOL booleanValue(id value) {
     if (!busy) self.progressLabel.stringValue = @"";
     self.analyzeButton.enabled = !busy;
     for (NSTextField *field in self.fields) field.enabled = !busy || tuning;
-    self.canApply = !self.connection.pendingSelection && !self.connection.pendingSettings && !self.connection.applying && !self.settingsDirty &&
+    self.canApply = !self.connection.timedOut && !self.connection.pendingSelection && !self.connection.pendingSettings && !self.connection.applying && !self.settingsDirty &&
         ![value[@"provisional"] boolValue] && included > 0 && [value[@"state"] isEqual:CutdownReviewStateReview] && [value[@"canApply"] boolValue];
     self.applyButton.enabled = self.canApply;
     if (self.connection.applying && !busy) {
@@ -1092,7 +1093,7 @@ static BOOL booleanValue(id value) {
 }
 - (void)jumpToCut:(id)sender {
     NSInteger row = self.resultsView.selectedRow;
-    if (!self.connection.requestID || !self.connection.revision || !self.canHighlight || self.connection.operationBusy || self.connection.applying || row < 0 || row >= self.cutRows.count) return;
+    if (!self.connection.requestID || !self.connection.revision || !self.canHighlight || self.settingsDirty || self.connection.timedOut || self.connection.pendingSettings || self.connection.operationBusy || self.connection.applying || row < 0 || row >= self.cutRows.count) return;
     [self sendPreviewCommand:@{@"version":@1, @"request":self.connection.requestID, @"command":@"highlight", @"cutID":self.cutRows[row][@"id"], @"expectedRevision":self.connection.revision}];
 }
 - (void)retryVerification:(id)sender {
@@ -1116,7 +1117,7 @@ static BOOL booleanValue(id value) {
 
 - (void)apply:(id)sender {
     self.operationStarted = NSDate.date;
-    if (!self.canApply || !self.connection.revision || self.connection.applying || ![[self readFields] isEqual:self.submittedSettings]) return;
+    if (!self.canApply || self.connection.timedOut || !self.connection.revision || self.connection.applying || ![[self readFields] isEqual:self.submittedSettings]) return;
     self.canApply = NO; self.applyButton.enabled = NO; self.connection.applying = YES;
     [self updatePrimaryAction];
     self.connection.applyAcknowledged = NO; self.connection.lastResponse = NSDate.date;

@@ -17,6 +17,9 @@ Silent Snip saves recovery XML before replacement. Your source media stays uncha
 
 See the [full workflow and recovery guide](docs/workflow.md) for detection settings, preview controls, and recovery steps.
 
+See [review and verification fixes](docs/review-safety-fixes.md) for timeout handling,
+reconnection, and source-integrity checks, including limits for older saved results.
+
 ## What it supports
 
 - **Two output modes:** remove selected pauses or replace them with one-second gaps.

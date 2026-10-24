@@ -31,6 +31,7 @@ static BOOL booleanValue(id value) {
 }
 @implementation CutdownReviewConnection
 - (NSArray<NSDictionary *> *)commandsToRetry {
+    if (self.timedOut) return @[];
     NSMutableArray *commands = [NSMutableArray array];
     if (self.applying && !self.applyAcknowledged && self.pendingApply)
         [commands addObject:self.pendingApply];
@@ -66,6 +67,9 @@ static BOOL booleanValue(id value) {
         ![value[@"message"] isKindOfClass:NSString.class] || ![value[@"state"] isKindOfClass:NSString.class] ||
         ![value[@"cuts"] isKindOfClass:NSArray.class] || [value[@"cuts"] count] > 2000 || !booleanValue(value[@"canApply"])) return nil;
     if (self.revision && [value[@"revision"] compare:self.revision] == NSOrderedAscending) return nil;
+    // A timeout consumes this local review. Keep listening for the real final
+    // outcome, but no delayed progress/review may restore its capabilities.
+    if (self.timedOut && !CutdownReviewStateIsTerminal(value[@"state"])) return nil;
     if (self.applying) {
         BOOL terminal = CutdownReviewStateIsTerminal(value[@"state"]);
         if ([value[@"revision"] compare:self.applyRevision] != NSOrderedDescending ||

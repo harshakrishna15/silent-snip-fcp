@@ -81,15 +81,12 @@ extension FinalCutAXSession {
         // segment's suspended review must not veto this deliberate selection.
         reviewOwnership.bindVerifiedRecovery(expected)
         if let reason = await restoreReviewWindowIfSafe() { throw FinalCutCaptureError.unavailable(reason) }
-        let windows = cutdownReviewWindows()
-        guard windows.count == 1, let window = windows.first,
-              string(window, kAXTitleAttribute) == clip.name else { throw AudioControllerSettingsError.targetChanged }
+        guard let window = recoveryReviewWindow(clipName: clip.name) else { throw AudioControllerSettingsError.targetChanged }
         func assertController() throws {
             try assertCurrentProject()
             guard try selectionSnapshot() == expected,
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
-                  self.cutdownReviewWindows().count == 1,
-                  self.cutdownReviewWindows().contains(where: { CFEqual($0, window) }),
+                  self.recoveryReviewWindow(clipName: clip.name).map({ CFEqual($0, window) }) == true,
                   self.currentSheet() == nil else { throw AudioControllerSettingsError.targetChanged }
         }
         let values = [settings.thresholdDBFS, settings.minimumSilenceDuration,

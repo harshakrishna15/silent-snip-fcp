@@ -1,6 +1,15 @@
 import Foundation
 
 public enum FinalCutReviewPresentation {
+    /// The host's list can omit the focused remote editor. Validate the focused
+    /// control directly, while rejecting another live editor for the same clip.
+    static func focusedEditor<Element>(focused: Element?, listed: [Element],
+                                        matches: (Element) -> Bool,
+                                        equals: (Element, Element) -> Bool) -> Element? {
+        guard let focused, matches(focused),
+              !listed.contains(where: { !equals($0, focused) && matches($0) }) else { return nil }
+        return focused
+    }
     /// Open Document may activate the helper after its delegate callback. Watch
     /// only this bounded handoff, and undo only the helper's own activation.
     @MainActor public static func returnOwnActivation(stillOwnsRequest: () -> Bool,

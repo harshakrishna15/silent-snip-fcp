@@ -24,6 +24,11 @@ final class MediaContentSnapshotTests: XCTestCase {
         XCTAssertEqual(reads.count, 1)
         XCTAssertEqual(snapshot.hashes.count, 1)
         try await snapshot.validate()
+        let restored = try JSONDecoder().decode(MediaContentSnapshot.self, from: JSONEncoder().encode(snapshot))
+        XCTAssertEqual(restored, snapshot)
+        XCTAssertTrue(restored.covers([alias, source, source]))
+        XCTAssertFalse(restored.covers([source]), "A receipt must retain every original reference, including aliases")
+        try await restored.validate()
     }
 
     func testSameSizeSameModificationDateReplacementStillRejects() async throws {

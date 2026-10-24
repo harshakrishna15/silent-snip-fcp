@@ -45,6 +45,7 @@ enum ImportedSettingsRecovery {
         let expectedSHA256: String
         var replacementTarget: XMLReplacementTarget?
         var hostProjectUID: String?
+        var sourceMedia: MediaContentSnapshot?
     }
     let request: AnalyzeRequest
     let expected: Data
@@ -54,8 +55,14 @@ enum ImportedSettingsRecovery {
     let replacementTarget: XMLReplacementTarget?
     private(set) var hostProjectUID: String?
     private(set) var complete = false
+    private let sourceMedia: MediaContentSnapshot?
+    var sourceMediaNotice: String {
+        sourceMedia == nil ? "Historical source integrity is unverified: this older result has no saved media fingerprints. Current media is available and unchanged during this verification." : "Source media contents match the saved fingerprints."
+    }
 
-    init(expected: Data, outputURL: URL, originalProjectName: String, request: AnalyzeRequest, replacementTarget: XMLReplacementTarget? = nil) throws {
+    init(expected: Data, outputURL: URL, originalProjectName: String, request: AnalyzeRequest, replacementTarget: XMLReplacementTarget? = nil,
+         sourceMedia: MediaContentSnapshot? = nil) throws {
+        self.sourceMedia = sourceMedia
         self.replacementTarget = replacementTarget
         self.request = request
         self.expected = expected; self.outputURL = outputURL
@@ -77,7 +84,8 @@ enum ImportedSettingsRecovery {
 
     func savePending() throws {
         let receipt = Receipt(requestID: request.id, settings: request.settings, outputMode: request.outputMode.rawValue,
-            originalProjectName: originalProjectName, expectedSHA256: Self.digest(expected), replacementTarget: replacementTarget, hostProjectUID: hostProjectUID)
+            originalProjectName: originalProjectName, expectedSHA256: Self.digest(expected), replacementTarget: replacementTarget, hostProjectUID: hostProjectUID,
+            sourceMedia: sourceMedia)
         try JSONEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
     }
 
@@ -126,7 +134,8 @@ enum ImportedSettingsRecovery {
         }
         let result = try ImportedResultVerification(expected: data, outputURL: outputURL,
             originalProjectName: receipt.originalProjectName,
-            request: AnalyzeRequest(id: receipt.requestID, settings: receipt.settings, outputMode: mode), replacementTarget: receipt.replacementTarget)
+            request: AnalyzeRequest(id: receipt.requestID, settings: receipt.settings, outputMode: mode), replacementTarget: receipt.replacementTarget,
+            sourceMedia: receipt.sourceMedia)
         result.hostProjectUID = receipt.hostProjectUID
         return result
     }
@@ -140,38 +149,61 @@ enum ImportedSettingsRecovery {
         }
         let directory = outputURL.deletingLastPathComponent()
         let expectedSnapshot = try ProjectRoundTripVerification.Snapshot(data: expected)
-        let actualData = try await capture()
-        try replacementTarget?.verifyDestination(actualData)
-        let actualSnapshot = try ProjectRoundTripVerification.Snapshot(data: actualData)
-        let comparison = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
-            allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID)
         let reportURL = directory.appendingPathComponent("Import-Verification.json")
-        var report = try comparison.verify(reportURL: reportURL)
-        if let bound = hostProjectUID, bound != report.actualProjectUID {
-            throw EditedProjectWriterError.verificationFailed("the imported project identity changed")
-        }
-        hostProjectUID = report.actualProjectUID
-        try savePending()
-        let corrections = try ImportedSettingsRecovery.plan(comparison)
-        if !corrections.isEmpty {
-            let document = actualSnapshot.document
-            for correction in corrections {
-                try Task.checkCancellation()
-                try await restore(correction, document)
+        var report = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: expectedSnapshot).report
+        do {
+            let urls = expectedSnapshot.document.clips.filter(\.enabled).compactMap(\.mediaURL)
+            let media = try await MediaContentSnapshot.capture(urls)
+            if let sourceMedia {
+                guard sourceMedia.covers(urls), media == sourceMedia else {
+                    throw EditedProjectWriterError.verificationFailed("source media contents changed since Apply; no settings were restored")
+                }
             }
-            let recoveredData = try await capture()
-            try replacementTarget?.verifyDestination(recoveredData)
-            let recoveredSnapshot = try ProjectRoundTripVerification.Snapshot(data: recoveredData)
-            report = try ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: recoveredSnapshot,
-                allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID).verify(reportURL: reportURL)
-            guard report.actualProjectUID == hostProjectUID else {
-                throw EditedProjectWriterError.verificationFailed("the project changed during settings recovery")
+            let actualData = try await capture()
+            try replacementTarget?.verifyDestination(actualData)
+            let actualSnapshot = try ProjectRoundTripVerification.Snapshot(data: actualData)
+            let comparison = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
+                allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID)
+            report = comparison.report
+            _ = try comparison.verify(reportURL: reportURL)
+            try await media.validate()
+            if let bound = hostProjectUID, bound != report.actualProjectUID {
+                throw EditedProjectWriterError.verificationFailed("the imported project identity changed")
             }
+            hostProjectUID = report.actualProjectUID
+            try savePending()
+            let corrections = try ImportedSettingsRecovery.plan(comparison)
+            if !corrections.isEmpty {
+                let document = actualSnapshot.document
+                for correction in corrections {
+                    try Task.checkCancellation()
+                    try await restore(correction, document)
+                }
+                let recoveredData = try await capture()
+                try replacementTarget?.verifyDestination(recoveredData)
+                let recoveredSnapshot = try ProjectRoundTripVerification.Snapshot(data: recoveredData)
+                let recovered = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: recoveredSnapshot,
+                    allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID)
+                report = recovered.report
+                _ = try recovered.verify(reportURL: reportURL)
+                guard report.actualProjectUID == hostProjectUID else {
+                    throw EditedProjectWriterError.verificationFailed("the project changed during settings recovery")
+                }
+            }
+            try await media.validate()
+            guard report.controllerSettingsPreserved != false else {
+                throw EditedProjectWriterError.verificationFailed("Final Cut did not retain the recovered Silent Snip settings. Retry Verification to try recovery again; no new import is needed")
+            }
+            try Task.checkCancellation()
+            report.sourceMediaVerified = sourceMedia != nil
+            try JSONEncoder().encode(report).write(to: reportURL, options: .atomic)
+            return report
+        } catch {
+            report.verified = false
+            report.sourceMediaVerified = false
+            report.differences.append(error.localizedDescription)
+            try? JSONEncoder().encode(report).write(to: reportURL, options: .atomic)
+            throw error
         }
-        guard report.controllerSettingsPreserved != false else {
-            throw EditedProjectWriterError.verificationFailed("Final Cut did not retain the recovered Silent Snip settings. Retry Verification to try recovery again; no new import is needed")
-        }
-        try Task.checkCancellation()
-        return report
     }
 }

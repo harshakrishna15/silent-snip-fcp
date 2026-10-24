@@ -10,19 +10,21 @@ final class XMLProjectApplyTests: XCTestCase {
     private var folder: URL!
     private var library: URL { folder.appendingPathComponent("Fixture.fcpbundle") }
     private var destination: URL { folder.appendingPathComponent("Result") }
+    private var source: URL { folder.appendingPathComponent("voice.wav") }
     private let selection = TimelineSelection(timelineRange: .init(start: .zero, end: .init(10)))
     private let cuts = [TimeRange(start: .init(2), end: .init(3)), TimeRange(start: .init(6), end: .init(8))]
 
     override func setUpWithError() throws {
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("CutdownXMLApply-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        try Data("original media".utf8).write(to: source)
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: folder) }
 
     private func fixture(location: String? = nil) -> Data {
         Data("""
         <fcpxml version="1.11"><resources><format id="f" frameDuration="1/30s"/>
-        <asset id="a" name="Voice" start="0s" duration="10s" hasAudio="1"><media-rep kind="original-media" src="file:///tmp/voice.wav"/></asset>
+        <asset id="a" name="Voice" start="0s" duration="10s" hasAudio="1"><media-rep kind="original-media" src="\(source.absoluteString)"/></asset>
         <effect id="e" name="Silent Snip Audio" uid="\(AudioControllerSettings.effectUID)"/>
         </resources><library location="\(location ?? library.absoluteString)"><event name="Fixture" uid="original-event"><project name="Original" uid="original-project">
         <sequence format="f" duration="10s" tcStart="0s"><spine>
@@ -205,6 +207,101 @@ final class XMLProjectApplyTests: XCTestCase {
         let report = try await restored.verify(capture: { try self.hostCopy(result.output.xmlData, stripped: false) },
             restore: { _, _ in XCTFail("Already retained settings need no writes") })
         XCTAssertEqual(report.controllerSettingsPreserved, true)
+        XCTAssertEqual(report.sourceMediaVerified, false)
+        XCTAssertTrue(restored.sourceMediaNotice.contains("Historical source integrity is unverified"))
+    }
+
+    @MainActor func testReceiptPersistsVerifiedSourceContentsAcrossRestart() async throws {
+        let result = try prepare()
+        let evidence = try await MediaContentSnapshot.capture([source])
+        let verification = try ImportedResultVerification(expected: result.output.xmlData, outputURL: result.outputURL,
+            originalProjectName: "Original", request: .init(id: UUID(), settings: .defaults, outputMode: .remove), sourceMedia: evidence)
+        try verification.savePending()
+        let loaded = try ImportedResultVerification.load(outputURL: result.outputURL)
+        let report = try await loaded.verify(capture: { try self.hostCopy(result.output.xmlData, stripped: false) },
+            restore: { _, _ in XCTFail("Already retained") })
+        XCTAssertTrue(report.verified)
+        XCTAssertEqual(report.sourceMediaVerified, true)
+        XCTAssertTrue(loaded.sourceMediaNotice.contains("contents match"))
+    }
+
+    @MainActor func testMissingOrSameSizeChangedMediaCannotVerifyOrRestoreSettings() async throws {
+        let result = try prepare()
+        for missing in [false, true] {
+            try Data("AAAA".utf8).write(to: source)
+            let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+            let verification = try ImportedResultVerification(expected: result.output.xmlData, outputURL: result.outputURL,
+                originalProjectName: "Original", request: .init(id: UUID(), settings: .defaults, outputMode: .remove),
+                sourceMedia: try await MediaContentSnapshot.capture([source]))
+            try verification.savePending()
+            if missing { try FileManager.default.removeItem(at: source) }
+            else {
+                try Data("BBBB".utf8).write(to: source)
+                try FileManager.default.setAttributes([.modificationDate: attributes[.modificationDate]!], ofItemAtPath: source.path)
+            }
+            let loaded = try ImportedResultVerification.load(outputURL: result.outputURL)
+            do {
+                _ = try await loaded.verify(capture: { XCTFail("Reject before host access"); return result.output.xmlData },
+                    restore: { _, _ in XCTFail("Changed media must not receive recovery writes") })
+                XCTFail("Invalid source must fail")
+            } catch { }
+            let report = try JSONDecoder().decode(ProjectRoundTripReport.self,
+                from: Data(contentsOf: destination.appendingPathComponent("Import-Verification.json")))
+            XCTAssertFalse(report.verified)
+            XCTAssertEqual(report.sourceMediaVerified, false)
+            XCTAssertFalse(loaded.complete)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: result.recoveryURL.path))
+        }
+    }
+
+    @MainActor func testMediaChangesDuringCaptureOrSettingsRecoveryCannotReportSuccess() async throws {
+        let result = try prepare()
+        for duringRestore in [false, true] {
+            try Data("AAAA".utf8).write(to: source)
+            let verification = try ImportedResultVerification(expected: result.output.xmlData, outputURL: result.outputURL,
+                originalProjectName: "Original", request: .init(id: UUID(), settings: .defaults, outputMode: .remove),
+                sourceMedia: try await MediaContentSnapshot.capture([source]))
+            var actual = try hostCopy(result.output.xmlData), restores = 0
+            do {
+                _ = try await verification.verify(capture: {
+                    if !duringRestore { try Data("BBBB".utf8).write(to: self.source) }
+                    return actual
+                }, restore: { correction, _ in
+                    restores += 1
+                    actual = try AudioControllerSettings.embedding(correction.settings, in: actual,
+                        selection: .init(timelineRange: correction.clip.timelineRange))
+                    try Data("BBBB".utf8).write(to: self.source)
+                })
+                XCTFail("Changed contents must fail")
+            } catch { }
+            XCTAssertEqual(restores, duringRestore ? 3 : 0)
+            let report = try JSONDecoder().decode(ProjectRoundTripReport.self,
+                from: Data(contentsOf: destination.appendingPathComponent("Import-Verification.json")))
+            XCTAssertFalse(report.verified)
+        }
+    }
+
+    @MainActor func testLegacyReceiptStillRejectsMissingMedia() async throws {
+        let result = try prepare()
+        let loaded = try ImportedResultVerification.load(outputURL: result.outputURL)
+        try FileManager.default.removeItem(at: source)
+        do {
+            _ = try await loaded.verify(capture: { XCTFail("No host access"); return result.output.xmlData },
+                restore: { _, _ in XCTFail("No writes") })
+            XCTFail("Legacy verification still requires available source media")
+        } catch { }
+    }
+
+    @MainActor func testReceiptCannotOmitAnEnabledSourceFromItsEvidence() async throws {
+        let result = try prepare()
+        let verification = try ImportedResultVerification(expected: result.output.xmlData, outputURL: result.outputURL,
+            originalProjectName: "Original", request: .init(id: UUID(), settings: .defaults, outputMode: .remove),
+            sourceMedia: try await MediaContentSnapshot.capture([]))
+        do {
+            _ = try await verification.verify(capture: { XCTFail("Incomplete evidence must stop before host access"); return result.output.xmlData },
+                restore: { _, _ in XCTFail("No writes") })
+            XCTFail("Missing historical evidence is not a match")
+        } catch { }
     }
 
     @MainActor func testInterruptedSettingsRecoveryResumesOnlyMissingOccurrencesAfterRestart() async throws {
@@ -250,7 +347,7 @@ final class XMLProjectApplyTests: XCTestCase {
         } catch { XCTAssertTrue(error.localizedDescription.contains("identity changed")) }
         let rejected = try JSONDecoder().decode(ProjectRoundTripReport.self, from: Data(contentsOf: destination.appendingPathComponent("Import-Verification.json")))
         XCTAssertFalse(rejected.verified, "The saved report must also reject a different host identity")
-        let changed = Data(String(decoding: stripped, as: UTF8.self).replacingOccurrences(of: "file:///tmp/voice.wav", with: "file:///tmp/other.wav").utf8)
+        let changed = Data(String(decoding: stripped, as: UTF8.self).replacingOccurrences(of: source.absoluteString, with: "file:///tmp/other.wav").utf8)
         XCTAssertThrowsError(try ImportedSettingsRecovery.plan(expected: result.output.xmlData, actual: changed))
         try Data("tampered".utf8).write(to: result.outputURL)
         XCTAssertThrowsError(try ImportedResultVerification.load(outputURL: result.outputURL))
@@ -277,7 +374,7 @@ final class XMLProjectApplyTests: XCTestCase {
                         return try self.hostCopy(actual, uid: "changed-during-recovery", stripped: false)
                     }
                     return Data(String(decoding: actual, as: UTF8.self)
-                        .replacingOccurrences(of: "file:///tmp/voice.wav", with: "file:///tmp/changed.wav").utf8)
+                        .replacingOccurrences(of: self.source.absoluteString, with: "file:///tmp/changed.wav").utf8)
                 }, restore: { correction, document in
                     XCTAssertTrue(document.clips.contains(correction.clip), "Recovery uses occurrences from the compared host snapshot")
                     corrections += 1
@@ -331,7 +428,7 @@ final class XMLProjectApplyTests: XCTestCase {
             preset.replacingOccurrences(of: "name=\"Original\"", with: "name=\"Renamed\""),
             preset.replacingOccurrences(of: "duration=\"10s\"", with: "duration=\"9s\""),
             preset.replacingOccurrences(of: "frameDuration=\"1/30s\"", with: "frameDuration=\"1/25s\""),
-            preset.replacingOccurrences(of: "file:///tmp/voice.wav", with: "file:///tmp/other.wav"),
+            preset.replacingOccurrences(of: source.absoluteString, with: "file:///tmp/other.wav"),
             preset.replacingOccurrences(of: "<filter-audio presetID", with: "<filter-audio enabled=\"0\" presetID"),
             preset.replacingOccurrences(of: "<filter-audio presetID", with: "<adjust-volume amount=\"-6dB\"/><filter-audio presetID")
         ] {

@@ -3,9 +3,13 @@ import Foundation
 
 /// Job-scoped content evidence. Never reuse this as a metadata-only or global cache:
 /// analysis validates it after decoding, and Apply captures fresh file contents.
-struct MediaContentSnapshot: Sendable, Equatable {
+struct MediaContentSnapshot: Sendable, Equatable, Codable {
     let hashes: [URL: String]
     private let originalURLs: [URL]
+
+    func covers(_ urls: [URL]) -> Bool {
+        originalURLs == Array(Set(urls)).sorted { $0.absoluteString < $1.absoluteString }
+    }
 
     static func canonical(_ url: URL) throws -> URL {
         guard url.isFileURL else { throw ProjectAnalysisError.invalidRenderArtifact }

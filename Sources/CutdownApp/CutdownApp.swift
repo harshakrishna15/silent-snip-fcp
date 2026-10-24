@@ -4,7 +4,6 @@ import CutdownMac
 @MainActor final class CutdownDelegate: NSObject, NSApplicationDelegate {
     private let transport = ReviewTransport()
     private let interactive = InteractiveAudioSession()
-    private var reviewRequest: AnalyzeRequest?
     private var menuBar: MenuBarController?
     private var storageTimer: Timer?
     private var lateActivationTask: Task<Void, Never>?
@@ -15,7 +14,6 @@ import CutdownMac
     private lazy var coordinator = AnalysisReviewCoordinator(
         operation: { [unowned self] request, progress in
             await waitForStorageCleanup()
-            reviewRequest = request
             return try await interactive.analyze(request, progress: progress)
         }, applyOperation: { [unowned self] request, result, progress in
             await waitForStorageCleanup()
@@ -76,7 +74,8 @@ import CutdownMac
             try? IntegrationReport(state: "ready", message: "Share received. Select the clip carrying Silent Snip Audio and use Analyze to start a verified review.").save()
         }
         transport.onReconnect = { [weak self] view in
-            guard let self, let request = coordinator.currentRequest ?? reviewRequest,
+            guard let self, let id = interactive.reviewRequestID,
+                  let request = coordinator.requestForReconnect(id),
                   interactive.canReconnectReview(view: view) else { return nil }
             return request
         }
@@ -121,7 +120,6 @@ import CutdownMac
                         throw FinalCutCaptureError.unavailable("Wait for the current Silent Snip operation to finish before verifying another result.")
                     }
                     let request = try interactive.loadVerification(verification.result, view: verification.view)
-                    reviewRequest = request
                     transport.connect(view: verification.view, request: request)
                     coordinator.restoreVerification(request)
                 } catch {

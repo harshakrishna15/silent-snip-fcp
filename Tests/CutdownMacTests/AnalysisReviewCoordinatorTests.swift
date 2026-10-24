@@ -11,6 +11,36 @@ import XCTest
             settingsEdit: edit, settingsSequence: sequence, verifySettings: true)
     }
 
+    func testReconnectUsesLatestTuningAndCannotAdoptCancelledOrUnrelatedReview() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest()
+        var latest: ReviewResponse?
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            recalculationOperation: { _, _, _ in }, authorizeRecalculation: { _ in true },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        XCTAssertNil(coordinator.requestForReconnect(UUID()))
+        coordinator.handle(settingsCommand(request, revision: try XCTUnwrap(latest).revision, view: UUID(), sequence: 1))
+        try await waitUntil { latest?.state == "review" }
+        XCTAssertEqual(coordinator.requestForReconnect(request.id)?.settings.thresholdDBFS, -35)
+        XCTAssertEqual(coordinator.requestForReconnect(request.id)?.outputMode, .gaps)
+        coordinator.handle(.init(request: request.id, command: .cancel))
+        XCTAssertNil(coordinator.requestForReconnect(request.id))
+        coordinator.stop()
+    }
+
+    func testInterruptedImportCanReconnectForRetryAfterReviewCancellation() async throws {
+        let request = try makeRequest()
+        var latest: ReviewResponse?
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in throw FixtureError.exportFailed },
+            verificationOperation: { _, _ in throw FixtureError.exportFailed }, canRetryVerification: { $0 == request.id },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        coordinator.restoreVerification(request)
+        try await waitUntil { latest?.state == "failed" }
+        XCTAssertEqual(coordinator.requestForReconnect(request.id), request)
+        coordinator.stop()
+    }
+
     func testSettingsPreviewPublishesImmediatelyAndCannotApplyUntilFreshVerification() async throws {
         let fixture = try makeFixture(); defer { fixture.remove() }
         let request = try makeRequest(), gate = OperationGate()

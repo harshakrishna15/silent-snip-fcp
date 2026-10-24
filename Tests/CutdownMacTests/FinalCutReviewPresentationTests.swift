@@ -4,6 +4,19 @@ import XCTest
 @MainActor final class FinalCutReviewPresentationTests: XCTestCase {
     private enum Failure: Error { case changedProject, uncertainPress }
 
+    func testRecoveryAcceptsFocusedUnlistedEditorButRejectsStaleUnrelatedAndDuplicateEditors() {
+        func resolve(_ focused: String?, _ listed: [String]) -> String? {
+            FinalCutReviewPresentation.focusedEditor(focused: focused, listed: listed,
+                matches: { ["current", "duplicate"].contains($0) }, equals: ==)
+        }
+        XCTAssertEqual(resolve("current", []), "current")
+        XCTAssertEqual(resolve("current", ["current", "stale", "unrelated"]), "current")
+        XCTAssertNil(resolve("unrelated", ["current"]))
+        XCTAssertNil(resolve("stale", []))
+        XCTAssertNil(resolve(nil, ["current"]))
+        XCTAssertNil(resolve("current", ["duplicate"]))
+    }
+
     func testLateHostActivationCanArriveAfterTheCompletionCallback() async {
         var checks = 0, restores = 0
         await FinalCutReviewPresentation.returnOwnActivation(stillOwnsRequest: { true },
