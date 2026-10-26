@@ -7,14 +7,17 @@ import FoundationXML
 #endif
 
 extension FinalCutAXSession {
-    func exportProjectXML(to destination: URL) async throws -> URL {
+    func exportProjectXML(to destination: URL, timing: AnalysisTiming? = nil) async throws -> URL {
+        let timing = timing ?? AnalysisTiming(request: UUID())
         try assertCurrentProject()
         guard currentSheet() == nil, destination.isFileURL,
               !FileManager.default.fileExists(atPath: destination.path) else {
             throw FinalCutCaptureError.unavailable("Close the current dialog before requesting project XML.")
         }
-        let delivered = try await ShareDestinationManager.shared.captureXML(projectName: projectName) {
-            try await self.beginShare(renderAudio: false)
+        let delivered = try await timing.measure("share.xml.exchange") {
+            try await ShareDestinationManager.shared.captureXML(projectName: projectName) {
+                try await timing.measure("share.xml.setup") { try await self.beginShare(renderAudio: false, timing: timing) }
+            }
         }
         lastXMLShareDirectory = delivered.deletingLastPathComponent().standardizedFileURL
         try assertCurrentProject()
@@ -36,32 +39,38 @@ extension FinalCutAXSession {
         return output
     }
 
-    func shareRenderedAudio() async throws -> ShareDestinationReceipt {
-        try await clearTimelineRanges()
-        return try await ShareDestinationManager.shared.captureMedia(projectName: projectName) {
-            try await self.beginShare(renderAudio: true)
+    func shareRenderedAudio(timing: AnalysisTiming? = nil) async throws -> ShareDestinationReceipt {
+        let timing = timing ?? AnalysisTiming(request: UUID())
+        try await timing.measure("share.render.clearRanges") { try await clearTimelineRanges() }
+        return try await timing.measure("share.render.exchange") {
+            try await ShareDestinationManager.shared.captureMedia(projectName: projectName) {
+                try await timing.measure("share.render.setup") { try await self.beginShare(renderAudio: true, timing: timing) }
+            }
         }
     }
 
-    private func beginShare(renderAudio: Bool) async throws {
+    private func beginShare(renderAudio: Bool, timing: AnalysisTiming) async throws {
+        let prefix = renderAudio ? "share.render" : "share.xml"
         try assertCurrentProject()
         guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the current dialog before sharing.") }
-        try await focusTimeline()
+        try await timing.measure(prefix + ".focus") { try await focusTimeline() }
         var ownsPanel = false
         do {
-            try await pressMenu(path: ["File", "Share", "Silent Snip…"])
-            try await waitUntil(timeout: 10, context: "Silent Snip Share confirmation") {
-                guard let panel = self.currentSheet() else { return false }
-                return self.string(panel, kAXTitleAttribute) == "Silent Snip"
-                    && self.find(in: panel, role: kAXButtonRole, title: "Next…") != nil
+            try await timing.measure(prefix + ".openPanel") {
+                try await pressMenu(path: ["File", "Share", "Silent Snip…"])
+                try await waitUntil(timeout: 10, context: "Silent Snip Share confirmation") {
+                    guard let panel = self.currentSheet() else { return false }
+                    return self.string(panel, kAXTitleAttribute) == "Silent Snip"
+                        && self.find(in: panel, role: kAXButtonRole, title: "Next…") != nil
+                }
             }
             ownsPanel = true
             guard let panel = currentSheet() else { throw FinalCutCaptureError.unavailable("Share panel disappeared.") }
-            if renderAudio { try await FinalCutDialogueExport.configureShare(panel, session: self) }
+            if renderAudio { try await FinalCutDialogueExport.configureShare(panel, session: self, timing: timing) }
             guard let next = find(in: panel, role: kAXButtonRole, title: "Next…") else {
                 throw FinalCutCaptureError.unavailable("The Share confirmation is unavailable.")
             }
-            try press(next)
+            _ = try timing.measure(prefix + ".confirm") { try press(next) }
             ownsPanel = false
         } catch {
             if ownsPanel {

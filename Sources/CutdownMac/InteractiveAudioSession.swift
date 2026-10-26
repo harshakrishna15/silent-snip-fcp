@@ -155,7 +155,7 @@ import Foundation
                     do {
                         timing.begin("render")
                         progress("Rendering the isolated clip with its effects…", nil)
-                        let receipt = try await isolatedSession.shareRenderedAudio()
+                        let receipt = try await isolatedSession.shareRenderedAudio(timing: timing)
                         renderedReceipt = receipt
                         guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
                         try ShareDestinationManager.shared.validateReceipt(receipt)
@@ -206,7 +206,7 @@ import Foundation
                 progress("Checking the original project after rendering…", nil)
                 let restored = try FinalCutAXSession()
                 guard restored.projectName == capture.projectName else { throw FinalCutCaptureError.changedProject }
-                let restoredURL = try await restored.exportProjectXML(to: directory.appendingPathComponent("After-Isolation.fcpxmld"))
+                let restoredURL = try await restored.exportProjectXML(to: directory.appendingPathComponent("After-Isolation.fcpxmld"), timing: timing)
                 let restoredDocument = try TimelineParser.parse(url: restoredURL, exclusions: analyzed.dialogueContext.fingerprintExclusions)
                 try XMLProjectApply.verifyBaseline(restoredDocument, analyzed: capture.document)
                 capture.session.lastXMLShareDirectory = restored.lastXMLShareDirectory
@@ -300,7 +300,7 @@ import Foundation
             timing.begin("projectVerification")
             progress("Preview updated. Verifying the current project…", nil)
             try await session.activate()
-            let url = try await session.exportProjectXML(to: context.directory.appendingPathComponent("Settings-Check-\(attempt).fcpxmld"))
+            let url = try await session.exportProjectXML(to: context.directory.appendingPathComponent("Settings-Check-\(attempt).fcpxmld"), timing: timing)
             let data = try Data(contentsOf: url)
             let current = try TimelineParser.parse(data: data, exclusions: result.analyzed.dialogueContext.fingerprintExclusions)
             try XMLProjectApply.verifyBaseline(current, analyzed: context.capture.document)

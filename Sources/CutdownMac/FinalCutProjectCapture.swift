@@ -62,7 +62,7 @@ import Foundation
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         progress("Exporting the active project XML…")
         let destination = directory.appendingPathComponent("Project-\(UUID()).fcpxmld")
-        let xml = try await timing.measure("capture.xmlExchange") { try await session.exportProjectXML(to: destination) }
+        let xml = try await timing.measure("capture.xmlExchange") { try await session.exportProjectXML(to: destination, timing: timing) }
         // The exporter has confirmed this unique output is complete. Until the
         // caller receives it, capture owns cleanup if validation subsequently fails.
         var delivered = false

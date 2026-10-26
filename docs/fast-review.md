@@ -99,6 +99,33 @@ was absent from the event afterward. Controls restoration still passed. This
 handoff verification does not establish a complete automatic editing or import
 recovery pass. Final Cut still owns the Controls frame and can clip its contents.
 
+## Share setup optimization
+
+The Share configurator now reads each panel node's role, title, value,
+description, and children in one batched Accessibility request, with the existing
+individual-read fallback for hosts that cannot provide a batch. Successful popup
+and menu-item observations are reused immediately rather than traversing the
+same unchanged tree again. The Roles preset is checked from the same observation
+as its track and output labels. No observations survive a format or tab change.
+
+The fixed 150 ms pause after a tab change is removed. The next operation instead
+waits for its actual format controls or the verified Dialogue/WAV role panel.
+Format changes re-resolve the popup from the current dialog, because Final Cut
+can replace the original AX object. Duplicate labels, ambiguous controls,
+incomplete scans, additional roles, and unexpected output formats remain errors.
+
+`Analysis-Timing.json` and settings-check timing reports now include
+`share.xml.*` and `share.render.*` details. These separate opening the Share
+panel, focus, Settings/format selection, Roles verification, confirmation, and
+the complete exchange. XML details accumulate when a request performs multiple
+XML shares. Exchange includes setup; subtract setup from exchange to estimate
+delivery plus completion handling, not pure audio DSP time.
+
+This changes Share preparation only. Effect rendering, source-content checks,
+project verification, cleanup, and Apply authorization retain their existing
+behavior. End-to-end speed gains require new live measurements; the older
+measurements below do not establish the performance of this change.
+
 ## Evidence and limits
 
 The earlier performance measurements use the generated ten-second **Silent Snip Fast Review 12 —

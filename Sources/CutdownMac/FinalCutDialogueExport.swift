@@ -20,73 +20,66 @@ import Foundation
         return directory
     }
 
-    static func configureShare(_ dialog: AXUIElement, session: FinalCutAXSession) async throws {
-        try await selectTab("Settings", in: dialog, session: session)
-        try await selectPopup(after: "Export File Format:", value: "Audio Only", in: dialog, session: session)
-        try await selectPopup(after: "Audio Format:", value: "WAV", in: dialog, session: session)
-        try await selectTab("Roles", in: dialog, session: session)
-        try await session.waitUntil(timeout: 5, context: "isolated Dialogue WAV output") {
-            (try? verifyDialogueRolePanel(dialog, session: session)) != nil
+    static func configureShare(_ dialog: AXUIElement, session: FinalCutAXSession, timing: AnalysisTiming? = nil) async throws {
+        let timing = timing ?? AnalysisTiming(request: UUID())
+        try await timing.measure("share.render.settingsTab") { try await selectTab("Settings", in: dialog, session: session) }
+        try await timing.measure("share.render.fileFormat") {
+            try await selectPopup(after: "Export File Format:", value: "Audio Only", in: dialog, session: session)
+        }
+        try await timing.measure("share.render.audioFormat") {
+            try await selectPopup(after: "Audio Format:", value: "WAV", in: dialog, session: session)
+        }
+        try await timing.measure("share.render.rolesTab") { try await selectTab("Roles", in: dialog, session: session) }
+        try await timing.measure("share.render.rolesVerification") {
+            try await session.waitUntil(timeout: 5, context: "isolated Dialogue WAV output") {
+                (try? panel(in: dialog).verifiesDialogueWAV) == true
+            }
         }
     }
 
+    private typealias Panel = FinalCutSharePanel<AXUIElement>
+
     private static func selectTab(_ title: String, in dialog: AXUIElement, session: FinalCutAXSession) async throws {
-        let matches = try nodes(in: dialog, session: session).filter {
-            [kAXRadioButtonRole, kAXButtonRole].contains(session.string($0, kAXRoleAttribute) ?? "")
-                && session.string($0, kAXTitleAttribute) == title
-        }
-        guard matches.count == 1 else { throw ExportError.unverifiedControl(title) }
-        // Radio tabs expose their selected state as AXValue. A selected tab
-        // already owns the panel; pressing it again only rebuilds host UI.
-        if session.string(matches[0], kAXRoleAttribute) == kAXRadioButtonRole,
-           (session.attribute(matches[0], kAXValueAttribute) as? NSNumber)?.intValue == 1 { return }
-        try session.press(matches[0])
-        try await Task.sleep(nanoseconds: 150_000_000)
+        guard let tab = try panel(in: dialog).tab(title) else { throw ExportError.unverifiedControl(title) }
+        if tab.role == kAXRadioButtonRole, tab.selected { return }
+        try session.press(tab.element)
+        // The next operation waits for the actual Settings or Roles controls.
+        // A fixed pause neither proves readiness nor helps an already-ready host.
     }
 
     private static func selectPopup(after label: String, value: String, in dialog: AXUIElement,
                                     session: FinalCutAXSession) async throws {
-        // Final Cut replaces this subtree asynchronously after a tab or format
-        // change. Resolve the label and its adjacent popup from each fresh tree.
-        func resolvePopup() throws -> AXUIElement? {
-            let elements = try nodes(in: dialog, session: session)
-            let labels = elements.indices.filter { index in
-                session.string(elements[index], kAXRoleAttribute) == kAXStaticTextRole
-                    && matchesSettingsLabel(text(elements[index], session: session), expected: label)
-            }
-            guard labels.count == 1 else { return nil }
-            return elements.dropFirst(labels[0] + 1).prefix(while: {
-                session.string($0, kAXRoleAttribute) != kAXStaticTextRole || text($0, session: session).isEmpty
-            }).first(where: { session.string($0, kAXRoleAttribute) == kAXPopUpButtonRole })
-        }
+        var popup: Panel.Control?
         do {
             try await session.waitUntil(timeout: 5, context: "\(label) export control") {
-                (try? resolvePopup()) != nil
+                popup = (try? panel(in: dialog))?.popup(after: label)
+                return popup != nil
             }
         } catch {
             if error is CancellationError { throw error }
-            let observed = (try? nodes(in: dialog, session: session)) ?? []
+            let observed = (try? panel(in: dialog).controls) ?? []
             let controls = observed.prefix(40).map {
-                "\(session.string($0, kAXRoleAttribute) ?? "?") title=\(session.string($0, kAXTitleAttribute) ?? "nil") value=\(session.string($0, kAXValueAttribute) ?? "nil")"
+                "\($0.role ?? "?") title=\($0.title ?? "nil") value=\($0.value ?? "nil")"
             }.joined(separator: "; ")
             throw ExportError.unverifiedControl("\(label) [\(controls)]")
         }
-        guard let popup = try resolvePopup() else { throw ExportError.unverifiedControl(label) }
-        if normalized(session.string(popup, kAXValueAttribute) ?? "") == normalized(value) { return }
-        try session.press(popup)
-        try await session.waitUntil(timeout: 3) {
-            guard let menuNodes = try? nodes(in: popup, session: session) else { return false }
-            return menuNodes.contains {
-                session.string($0, kAXRoleAttribute) == kAXMenuItemRole && normalized(text($0, session: session)) == normalized(value)
-            }
+        // Reuse the successful observation rather than immediately walking the
+        // same unchanged panel a second time. press() still validates live focus.
+        guard let popup else { throw ExportError.unverifiedControl(label) }
+        if Panel.normalized(popup.value ?? "") == Panel.normalized(value) { return }
+        try session.press(popup.element)
+        var item: Panel.Control?
+        try await session.waitUntil(timeout: 3, context: "\(value) export menu item") {
+            item = (try? panel(in: popup.element))?.menuItem(value)
+            return item != nil
         }
-        let items = try nodes(in: popup, session: session).filter {
-            session.string($0, kAXRoleAttribute) == kAXMenuItemRole && normalized(text($0, session: session)) == normalized(value)
-        }
-        guard items.count == 1 else { throw ExportError.unverifiedControl(value) }
-        try session.press(items[0])
-        try await session.waitUntil(timeout: 3) {
-            normalized(session.string(popup, kAXValueAttribute) ?? "") == normalized(value)
+        guard let item else { throw ExportError.unverifiedControl(value) }
+        try session.press(item.element)
+        try await session.waitUntil(timeout: 3, context: "\(value) export setting") {
+            // A format change can destroy the old popup. Resolve its replacement
+            // from the fresh dialog instead of polling a detached AX element.
+            guard let current = (try? panel(in: dialog))?.popup(after: label) else { return false }
+            return Panel.normalized(current.value ?? "") == Panel.normalized(value)
         }
     }
 
@@ -102,38 +95,26 @@ import Foundation
             && actual == "videocodec:noneresolution:nonecolorspace:noneaudioformat:"
     }
 
-    private static func verifyDialogueRolePanel(_ dialog: AXUIElement, session: FinalCutAXSession) throws {
-        let elements = try nodes(in: dialog, session: session)
-        let labels = elements.filter { session.string($0, kAXRoleAttribute) == kAXStaticTextRole }
-            .map { normalized(text($0, session: session)) }
-        let tracks = labels.filter { $0.hasPrefix("audiotrack-") }
-        guard labels.filter({ $0 == "alldialogue" }).count == 1,
-              labels.contains("1file"), labels.contains(".wav"), tracks == ["audiotrack-1"],
-              !labels.contains(where: { $0.hasPrefix("all") && $0 != "alldialogue" }),
-              let preset = session.find(in: dialog, role: kAXPopUpButtonRole, description: "Roles formats and presets"),
-              normalized(session.string(preset, kAXValueAttribute) ?? "") == "wav" else {
-            throw ExportError.unverifiedDialogueOutput
-        }
-    }
-
-    private static func nodes(in root: AXUIElement, session: FinalCutAXSession) throws -> [AXUIElement] {
-        var result: [AXUIElement] = []
-        var pending: [(AXUIElement, Int)] = [(root, 0)]
+    private static func panel(in root: AXUIElement) throws -> Panel {
         let deadline = ProcessInfo.processInfo.systemUptime + 3
-        while let (node, depth) = pending.popLast() {
-            try Task.checkCancellation()
-            guard result.count < 500, depth <= 16, ProcessInfo.processInfo.systemUptime < deadline else {
+        return try Panel.capture(root: root, read: { element in
+            // One batch per node supplies both matching fields and children.
+            // FinalCutAXAttributes retains compatibility with individual reads
+            // when a host cannot supply a usable batch.
+            let values = FinalCutAXAttributes.read(element, names: [kAXRoleAttribute, kAXTitleAttribute,
+                kAXValueAttribute, kAXDescriptionAttribute, kAXChildrenAttribute])
+            guard let role = values[kAXRoleAttribute] as? String else { throw ExportError.unverifiedDialogueOutput }
+            let children = values[kAXChildrenAttribute] as? [AXUIElement]
+            if children == nil && [kAXSheetRole, kAXGroupRole, kAXScrollAreaRole, kAXSplitGroupRole, kAXMenuRole].contains(role) {
                 throw ExportError.unverifiedDialogueOutput
             }
-            result.append(node)
-            pending.append(contentsOf: session.children(node).reversed().map { ($0, depth + 1) })
-        }
-        return result
-    }
-
-    private static func text(_ element: AXUIElement, session: FinalCutAXSession) -> String {
-        [session.string(element, kAXTitleAttribute), session.string(element, kAXValueAttribute)]
-            .compactMap { $0 }.first(where: { !$0.isEmpty }) ?? ""
+            let raw = values[kAXValueAttribute]
+            let value = (raw as? String) ?? (raw as? NSNumber)?.stringValue
+            return (Panel.Control(element: element, role: role,
+                title: values[kAXTitleAttribute] as? String, value: value,
+                description: values[kAXDescriptionAttribute] as? String,
+                selected: (raw as? NSNumber)?.intValue == 1), children ?? [])
+        }, shouldContinue: { ProcessInfo.processInfo.systemUptime < deadline })
     }
 
     nonisolated private static func normalized(_ value: String) -> String {
