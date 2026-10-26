@@ -4,6 +4,8 @@
 
 Extract **Silent Snip.zip**, copy **Silent Snip.app** into Applications (either `/Applications` or your home folder's `Applications`), and open that copy once. Users of a prebuilt app do not need Xcode, Terminal, or the source checkout. A scissors icon appears in the menu bar while the app is running. Click it for control-access status, **Open Results Folder**, and **Quit Silent Snip**. Quit is unavailable during an active operation. Use **Silent Snip Audio → Controls** in Final Cut for analysis and review.
 
+Silent Snip quits automatically when you quit Final Cut Pro, after interrupted work finishes saving its status and cleaning up. Closing a Final Cut window alone does not quit either app. **Analyze** in Controls starts Silent Snip again when needed. Opening Silent Snip by itself for first-time setup keeps it running until Final Cut has been opened and then quit.
+
 The app contains both the existing background executable and `Contents/PlugIns/SilentSnipAudio.appex`. The extension remains sandboxed; the containing app performs Final Cut capture, analysis, preview, Apply, verification, and recovery. There is no separate setup app or separately installed helper. See [the design and verification record](single-app-plan.md).
 
 ## Grant macOS access

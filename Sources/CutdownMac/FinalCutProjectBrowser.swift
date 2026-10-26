@@ -14,7 +14,9 @@ extension FinalCutAXSession {
             // Replace closes the old timeline and may expose a previous project
             // or an empty timeline. Re-pin solely to navigate the browser, then
             // return a normal session; semantic verification precedes writes.
-            let browserSession = try FinalCutAXSession(allowEmptyTimeline: true)
+            let browserSession = try await FinalCutAXSession.forImport(allowImportDialog: false, allowEmptyTimeline: true)
+            guard browserSession.application.processIdentifier == application.processIdentifier,
+                  CFEqual(browserSession.mainWindow, mainWindow) else { throw FinalCutCaptureError.changedProject }
             try browserSession.assertReplacementEvent(replacement)
             _ = try await browserSession.selectBrowserProject(named: name)
             try await browserSession.pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
@@ -23,7 +25,7 @@ extension FinalCutAXSession {
         // Import can replace the toolbar and briefly leave an empty timeline.
         // Re-pin after delivery rather than using pre-import AX objects for
         // browser navigation. Never navigate from an unrelated project/window.
-        let browserSession = try FinalCutAXSession(allowEmptyTimeline: true)
+        let browserSession = try await FinalCutAXSession.forImport(allowImportDialog: false, allowEmptyTimeline: true)
         guard browserSession.application.processIdentifier == application.processIdentifier,
               CFEqual(browserSession.mainWindow, mainWindow),
               FinalCutImportTimeline.permits(browserSession.projectName, original: projectName, imported: name) else {

@@ -3,6 +3,32 @@ import ApplicationServices
 import CutdownCore
 import Foundation
 
+enum FinalCutProjectWindow {
+    static func isWorkspace(role: String?, subrole: String?, modal: Bool?, title: String?) -> Bool {
+        role == kAXWindowRole && subrole == kAXStandardWindowSubrole && modal != true && title?.isEmpty == false
+    }
+
+    /// AXMainWindow can be absent while Final Cut is inactive or replacing a
+    /// timeline. Accept only a uniquely identified project workspace, never a
+    /// focused effect editor or an arbitrary first window.
+    static func resolve<Element>(main: Element?, windows: @autoclosure () -> [Element], equals: (Element, Element) -> Bool,
+                                 isWorkspace: (Element) -> Bool) -> Element? {
+        if let main, isWorkspace(main) { return main }
+        let windows = windows()
+        // An incomplete scan cannot establish that the workspace is unique.
+        guard windows.count <= 32 else { return nil }
+        var checked = main.map { [$0] } ?? []
+        var match: Element?
+        for window in windows where !checked.contains(where: { equals($0, window) }) {
+            checked.append(window)
+            guard isWorkspace(window) else { continue }
+            guard match == nil else { return nil }
+            match = window
+        }
+        return match
+    }
+}
+
 enum FinalCutWindowPolicy {
     /// Effect editors are nonmodal dialogs. WindowServer already keeps their
     /// visible content above the preview; opening one must not hide all lines.

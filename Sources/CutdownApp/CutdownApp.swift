@@ -6,6 +6,8 @@ import CutdownMac
     private let interactive = InteractiveAudioSession()
     private var menuBar: MenuBarController?
     private var storageTimer: Timer?
+    private var hostExitTimer: Timer?
+    private var hostLifetime = FinalCutHelperLifetime()
     private var lateActivationTask: Task<Void, Never>?
     private lazy var storageCleanup = StorageCleanupController(isBusy: { [unowned self] in
         coordinator.isBusy || ShareDestinationManager.shared.hasActiveRequest
@@ -83,6 +85,11 @@ import CutdownMac
             self?.coordinator.handle(command)
             if command.command == .cancel { self?.interactive.discard(command.request) }
         }
+        let notifications = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            notifications.addObserver(self, selector: #selector(hostApplicationsChanged(_:)), name: name, object: nil)
+        }
+        updateHostLifetime()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -102,6 +109,36 @@ import CutdownMac
         try? IntegrationReport(state: trusted ? "ready" : "permission-required", message: trusted
             ? "Ready. Analyze captures the selected audio clip; Apply replaces the project through XML in its existing event, with recovery XML saved first."
             : "Open Silent Snip in System Settings and grant control access, then reopen the app. Your Final Cut Share destination must point to this combined app.").save()
+        updateHostLifetime()
+    }
+
+    @objc private func hostApplicationsChanged(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              app.bundleIdentifier == FinalCutAccessibility.bundleIdentifier else { return }
+        updateHostLifetime()
+    }
+
+    private func updateHostLifetime() {
+        let hostRunning = NSRunningApplication.runningApplications(withBundleIdentifier: FinalCutAccessibility.bundleIdentifier)
+            .contains { !$0.isTerminated }
+        let busy = coordinator.isBusy || storageCleanup.isRunning || ShareDestinationManager.shared.hasActiveRequest
+        switch hostLifetime.update(hostIsRunning: hostRunning, isBusy: busy) {
+        case .wait: break
+        case .cancelWork:
+            // Let cancellation record an interrupted import and finish cleanup
+            // before applicationWillTerminate releases the retained sessions.
+            storageTimer?.invalidate()
+            lateActivationTask?.cancel()
+            transport.stop()
+            coordinator.stop()
+            hostExitTimer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.updateHostLifetime() }
+            }
+            RunLoop.main.add(hostExitTimer!, forMode: .common)
+        case .quit:
+            hostExitTimer?.invalidate()
+            NSApp.terminate(nil)
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -111,6 +148,7 @@ import CutdownMac
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        guard !hostLifetime.isStopping else { return }
         let files = urls.filter(\.isFileURL)
         if !files.isEmpty { _ = ShareDestinationManager.shared.handleOpen(urls: files) }
         for url in urls where !url.isFileURL {
@@ -137,7 +175,10 @@ import CutdownMac
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        hostExitTimer?.invalidate()
         storageTimer?.invalidate()
+        lateActivationTask?.cancel()
         coordinator.stop()
         interactive.stop()
         transport.stop()
@@ -149,7 +190,8 @@ import CutdownMac
     }
 
     private func cleanStorage(manual: Bool) async -> StorageCleanupReport? {
-        await storageCleanup.clean(manual: manual)
+        guard !hostLifetime.isStopping else { return nil }
+        return await storageCleanup.clean(manual: manual)
     }
 }
 

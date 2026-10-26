@@ -3,6 +3,7 @@ import Foundation
 
 public enum FinalCutCaptureError: LocalizedError {
     case unavailable(String)
+    case projectWindowUnavailable
     case changedProject
     case invalidSelection(String)
     case unsupportedTimecode(String)
@@ -12,6 +13,7 @@ public enum FinalCutCaptureError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unavailable(let detail): return "Final Cut Pro could not complete this step: \(detail)"
+        case .projectWindowUnavailable: return "Final Cut’s project window could not be identified. Bring the intended project window forward before continuing."
         case .changedProject: return "The active project or Final Cut window changed. Return to the intended project and Analyze again."
         case .invalidSelection(let detail): return "Select one whole audio-only clip in the primary storyline carrying Silent Snip Audio. \(detail)"
         case .unsupportedTimecode(let value): return "Silent Snip cannot safely read the displayed timeline timecode ‘\(value)’. Use a supported hours:minutes:seconds:frames display."

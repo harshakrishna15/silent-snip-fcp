@@ -422,7 +422,7 @@ import Foundation
         let result = try ImportedResultVerification.load(outputURL: outputURL)
         let parent = result.outputURL.deletingLastPathComponent()
         do {
-            let current = try FinalCutAXSession(allowImportDialog: true, allowEmptyTimeline: result.replacementTarget != nil)
+            let current = try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil)
             guard result.replacementTarget != nil || current.projectName == result.originalProjectName || current.projectName == result.projectName else {
                 throw FinalCutCaptureError.unavailable("Open the original project or ‘\(result.projectName)’ before retrying verification.")
             }

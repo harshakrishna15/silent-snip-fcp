@@ -31,18 +31,44 @@ import Foundation
             throw FinalCutAccessibility.AccessibilityError.notRunning
         }
         self.application = application
-        root = AXUIElementCreateApplication(application.processIdentifier)
+        let root = AXUIElementCreateApplication(application.processIdentifier)
+        self.root = root
         AXUIElementSetMessagingTimeout(root, 0.3)
-        guard let window = Self.elementAttribute(root, kAXMainWindowAttribute) else {
-            throw FinalCutCaptureError.unavailable("Open a project in the main Final Cut window.")
+        let query = FinalCutAXQuery(identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton",
+                                    containersOnly: true, additionalAttributes: [kAXTitleAttribute])
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        var workspaces: [(window: AXUIElement, title: String, lookup: FinalCutAXLookup<AXUIElement>, project: FinalCutAXMatch<AXUIElement>?)] = []
+        let window = FinalCutProjectWindow.resolve(main: Self.elementAttribute(root, kAXMainWindowAttribute),
+            windows: Self.rawAttribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? [], equals: { CFEqual($0, $1) }) { candidate in
+                let values = FinalCutAXAttributes.read(candidate, names: [kAXRoleAttribute, kAXSubroleAttribute, kAXModalAttribute, kAXTitleAttribute])
+                guard FinalCutProjectWindow.isWorkspace(role: values[kAXRoleAttribute] as? String,
+                    subrole: values[kAXSubroleAttribute] as? String, modal: (values[kAXModalAttribute] as? NSNumber)?.boolValue,
+                    title: values[kAXTitleAttribute] as? String) else { return false }
+                let lookup = Self.lookup(candidate, query: query)
+                let shouldContinue = { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline }
+                let project = lookup.resolve(shouldContinue: shouldContinue)
+                // Replacement may close the timeline entirely. Its Libraries
+                // sidebar still identifies the workspace without accepting an
+                // effect editor or secondary viewer as the project window.
+                if project == nil {
+                    guard allowEmptyTimeline else { return false }
+                    let sidebar = Self.lookup(candidate, query: .init(role: kAXOutlineRole,
+                        description: "Event media sidebar", containersOnly: true))
+                    guard sidebar.resolve(shouldContinue: shouldContinue) != nil else { return false }
+                }
+                workspaces.append((candidate, values[kAXTitleAttribute] as? String ?? "", lookup, project))
+                return true
+            }
+        try Task.checkCancellation()
+        guard ProcessInfo.processInfo.systemUptime < deadline, let window,
+              let workspace = workspaces.first(where: { CFEqual($0.window, window) }) else {
+            throw FinalCutCaptureError.projectWindowUnavailable
         }
         mainWindow = window
-        windowTitle = Self.rawAttribute(window, kAXTitleAttribute) as? String ?? ""
-        projectLookup = Self.lookup(window, query: .init(identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton",
-            containersOnly: true, additionalAttributes: [kAXTitleAttribute]))
+        windowTitle = workspace.title
+        projectLookup = workspace.lookup
         timelineLookup = Self.lookup(window, query: .init(role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true))
-        let project = Self.resolve(projectLookup)
-        let name = project?.values[kAXTitleAttribute] as? String ?? ""
+        let name = workspace.project?.values[kAXTitleAttribute] as? String ?? ""
         let timeline = Self.resolve(timelineLookup)?.element
         guard !windowTitle.isEmpty, allowEmptyTimeline || (!name.isEmpty && timeline != nil) else {
             throw FinalCutCaptureError.unavailable("The active project timeline could not be identified in this Final Cut layout.")
@@ -55,6 +81,21 @@ import Foundation
         // Import verification owns the bounded dialog-settling policy. Other
         // entry points still require an unobstructed project before any action.
         guard allowImportDialog || currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut dialog before continuing.") }
+    }
+
+    /// Import can temporarily remove the workspace from all AX attributes.
+    /// Wait only for that condition; permission, dialog and identity failures
+    /// propagate immediately. This never redelivers XML or confirms Replace.
+    static func forImport(allowImportDialog: Bool = true, allowEmptyTimeline: Bool) async throws -> FinalCutAXSession {
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while true {
+            try Task.checkCancellation()
+            do { return try Self(allowImportDialog: allowImportDialog, allowEmptyTimeline: allowEmptyTimeline) }
+            catch FinalCutCaptureError.projectWindowUnavailable {
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw FinalCutCaptureError.projectWindowUnavailable }
+                try await Task.sleep(for: .milliseconds(150))
+            }
+        }
     }
 
     func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? { Self.rawAttribute(element, name) }
