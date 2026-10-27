@@ -25,7 +25,7 @@ destination="$output/Silent Snip.app"
 check_stopped() {
   local result
   if [[ "$stage" == false ]]; then
-    for name in 'Final Cut Pro' SilentSnip Cutdown; do
+    for name in 'Final Cut Pro' SilentSnip; do
       if /usr/bin/pgrep -x "$name" >/dev/null; then
         echo 'Quit Final Cut Pro and Silent Snip before publishing the app, or use --stage.' >&2; exit 1
       else result=$?; [[ "$result" == 1 ]] || { echo 'Cannot inspect running apps; no bundle was replaced.' >&2; exit 1; }; fi
@@ -42,7 +42,7 @@ check_stopped
 [[ ! -L "$output" && ! -L "$destination" ]] || { echo 'The app output must not be a symbolic link.' >&2; exit 1; }
 if [[ -e "$destination" ]]; then
   identity=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$destination/Contents/Info.plist")
-  [[ "$identity" == local.silentsnip.app || "$identity" == local.cutdown.audio ]] || { echo 'An unrelated app occupies the output path; it was kept.' >&2; exit 1; }
+  [[ "$identity" == local.silentsnip.app ]] || { echo 'An unrelated app occupies the output path; it was kept.' >&2; exit 1; }
 fi
 if [[ "$reuse" == false ]]; then
   helper_args=(--stage)
@@ -85,10 +85,10 @@ fi
 if [[ "$stage" == true ]]; then
   candidate_extension="$app/Contents/PlugIns/SilentSnipAudio.appex"
   /usr/libexec/PlistBuddy -c 'Set :SilentSnipContainingApp:enabled false' "$candidate_extension/Contents/Info.plist"
-  codesign --force --preserve-metadata=entitlements --sign "${CUTDOWN_SIGNING_IDENTITY:--}" "$candidate_extension"
+  codesign --force --preserve-metadata=entitlements --sign "${SILENT_SNIP_SIGNING_IDENTITY:--}" "$candidate_extension"
 fi
 # Do not apply the extension's sandbox entitlements to the containing app.
-codesign --force --sign "${CUTDOWN_SIGNING_IDENTITY:--}" "$app"
+codesign --force --sign "${SILENT_SNIP_SIGNING_IDENTITY:--}" "$app"
 codesign --verify --deep --strict "$app"
 if [[ "$stage" == false ]]; then
   mkdir -p dist

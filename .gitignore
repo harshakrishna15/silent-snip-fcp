@@ -23,7 +23,7 @@ xcuserdata/
 *.fcpcache/
 *.fcpxmld/
 *.fcpxml
-!Tests/CutdownCoreTests/Fixtures/*.fcpxml
+!Tests/SilentSnipCoreTests/Fixtures/*.fcpxml
 /Fixtures/
 /Exports/
 /Recordings/

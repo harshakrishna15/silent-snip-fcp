@@ -10,7 +10,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 class AudioBuildTests(unittest.TestCase):
     def run_build(self, *args, process_status=1, fail_build=False, fail_sign=False):
-        with tempfile.TemporaryDirectory(prefix="cutdown audio build ") as directory:
+        with tempfile.TemporaryDirectory(prefix="silentsnip audio build ") as directory:
             root = Path(directory)
             (root / "Scripts").mkdir()
             tools = root / "tools"
@@ -47,7 +47,7 @@ echo binary > "$output/SilentSnipAudio.appex/Contents/MacOS/SilentSnipAudio"
         self.assertEqual(arguments[arguments.index("-configuration") + 1], "Release")
         self.assertIn("DONT_REGISTER_WITH_LAUNCH_SERVICES=YES", arguments)
         self.assertIn("SilentSnipAudio.appex", result.stdout)
-        self.assertNotIn("CutdownAudio.app", result.stdout)
+        self.assertFalse(any(Path(line).suffix == ".app" for line in result.stdout.splitlines()))
 
     def test_debug_and_legacy_stage_flags_are_supported(self):
         result, arguments = self.run_build("--stage", "--debug")

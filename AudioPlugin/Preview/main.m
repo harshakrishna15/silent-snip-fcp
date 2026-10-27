@@ -1,8 +1,8 @@
-#import "../Extension/CutdownAudioUnitFactory.h"
-#import "../Extension/CutdownAudioUnit.h"
-#import "../Extension/CutdownReviewConnection.h"
+#import "../Extension/SilentSnipAudioUnitFactory.h"
+#import "../Extension/SilentSnipAudioUnit.h"
+#import "../Extension/SilentSnipReviewConnection.h"
 
-@interface CutdownAudioUnitFactory (Preview)
+@interface SilentSnipAudioUnitFactory (Preview)
 - (void)analyze:(id)sender;
 - (void)receive:(NSNotification *)notification;
 - (void)updateInspectorSize;
@@ -12,14 +12,14 @@
 
 // Developer-only transport. This preview never opens Final Cut or the helper,
 // sends distributed commands, or writes the real last-used settings file.
-@interface PreviewFactory : CutdownAudioUnitFactory
+@interface PreviewFactory : SilentSnipAudioUnitFactory
 - (void)showState:(NSString *)state;
 - (void)previewState:(NSMenuItem *)sender;
 - (void)toggleAppearance:(id)sender;
 @end
 @implementation PreviewFactory
 - (void)previewState:(NSMenuItem *)sender {
-    [self setValue:[CutdownReviewConnection new] forKey:@"connection"];
+    [self setValue:[SilentSnipReviewConnection new] forKey:@"connection"];
     [self setValue:@NO forKey:@"settingsDirty"];
     [self setValue:@NO forKey:@"retryAvailable"];
     [self showState:sender.representedObject];
@@ -53,7 +53,7 @@
         return;
     }
     [self analyze:nil];
-    CutdownReviewConnection *connection = [self valueForKey:@"connection"];
+    SilentSnipReviewConnection *connection = [self valueForKey:@"connection"];
     NSMutableArray *cuts = [NSMutableArray array];
     NSUInteger count = [state isEqual:@"many"] ? 16 : 2;
     for (NSUInteger i = 0; i < count; i++) {
@@ -90,7 +90,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     PreviewFactory *factory = [PreviewFactory new];
     AudioComponentDescription description = {'aufx','ctdn','Ctdn',0,0};
     NSURL *settings = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
-    CutdownAudioUnit *unit = [[CutdownAudioUnit alloc] initWithComponentDescription:description options:0 settingsStore:[[CutdownAudioLastUsedSettingsStore alloc] initWithFileURL:settings] error:nil];
+    SilentSnipAudioUnit *unit = [[SilentSnipAudioUnit alloc] initWithComponentDescription:description options:0 settingsStore:[[SilentSnipAudioLastUsedSettingsStore alloc] initWithFileURL:settings] error:nil];
     [factory setValue:unit forKey:@"audioUnit"];
     NSArray *values = @[@-47,@.1,@.05,@.1];
     for (NSUInteger i = 0; i < 4; i++) [unit.analysisParameterTree parameterWithAddress:i+1].value = [values[i] floatValue];

@@ -20,9 +20,9 @@ a bounded JSON string as the notification's `object`.
 - [Apple: sandboxed distributed notifications](https://developer.apple.com/documentation/foundation/distributednotificationcenter/post(name:object:userinfo:))
 - [Apple: distributed notification delivery and security](https://developer.apple.com/documentation/foundation/distributednotificationcenter)
 
-`Sources/CutdownMac/ReviewTransport.swift` defines the schema.
+`Sources/SilentSnipMac/ReviewTransport.swift` defines the schema.
 `ReviewState.swift` defines typed helper states; the Objective-C
-`CutdownReviewConnection` owns validation, cached heartbeats, pending commands,
+`SilentSnipReviewConnection` owns validation, cached heartbeats, pending commands,
 and acknowledgment state independently of the view. Both implementations check
 their state policies against `AudioPlugin/Tests/review-states.json`.
 Commands use notification name
@@ -150,7 +150,7 @@ the coordinator also publishes a newer explanation. Retry restarts polling if a
 previous connection timed out. The helper's reliable in-process command path
 may omit `expectedRevision`.
 
-`verifying` and `navigating` are busy states; Controls disables detection fields and Apply for both. Settings recovery uses the exact selected imported occurrence's `cutdown.setting.0`–`.3`, `cutdown.saveSettings`, and `cutdown.status` controls, followed by host re-export checks.
+`verifying` and `navigating` are busy states; Controls disables detection fields and Apply for both. Settings recovery uses the exact selected imported occurrence's `silentsnip.setting.0`–`.3`, `silentsnip.saveSettings`, and `silentsnip.status` controls, followed by host re-export checks.
 
 
 ## Single-window reconnection
@@ -158,7 +158,7 @@ may omit `expectedRevision`.
 On appearance, a view with no request publishes a bounded string envelope to
 `local.silentsnip.review.reconnect.v1`: `{"version":1,"view":"UUID"}`. It retries
 while visible and unedited. The view exposes that UUID in its Cancel button's
-accessibility identifier, `cutdown.review.reconnect.UUID`.
+accessibility identifier, `silentsnip.review.reconnect.UUID`.
 
 The helper checks the pinned project, original selected clip and focused Silent Snip
 Controls window, then locates the exact button identifier in that window. Only

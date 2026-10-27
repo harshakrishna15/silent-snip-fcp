@@ -25,11 +25,11 @@ class UninstallTests(unittest.TestCase):
         self.apps = [
             self.bundle("build/SilentSnipHelper.app", HELPER),
             self.bundle("build/Candidate/SilentSnipHelper.app", HELPER + ".candidate"),
-            self.bundle("build/AudioPlugin/Build/Products/Debug/CutdownAudio.app", AUDIO),
-            self.bundle("build/Candidate/AudioPlugin/CutdownAudio.app", AUDIO),
-            self.bundle("build/Diagnostic/Candidate/CutdownAudio.app", AUDIO),
+            self.bundle("build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app", AUDIO),
+            self.bundle("build/Candidate/AudioPlugin/SilentSnipAudio.app", AUDIO),
+            self.bundle("build/Diagnostic/Candidate/SilentSnipAudio.app", AUDIO),
         ]
-        self.unrelated = self.bundle("build/Unrelated/CutdownAudio.app", "other.audio")
+        self.unrelated = self.bundle("build/Unrelated/SilentSnipAudio.app", "other.audio")
         self.media = self.root / "build/Fixtures/Recording.wav"
         self.media.parent.mkdir(parents=True)
         self.media.write_bytes(b"source media")
@@ -171,7 +171,7 @@ exec /bin/rm "$@"
         self.assert_protected_files()
 
     def test_running_apps_or_unreadable_process_list_block_all_changes(self):
-        for app in ["Final Cut Pro", "Cutdown", "CutdownAudio", "SilentSnipAudio"]:
+        for app in ["Final Cut Pro", "SilentSnip", "SilentSnipAudio", "SilentSnipAudio"]:
             result = self.run_uninstall("--remove-data", RUNNING_APP=app)
             self.assertNotEqual(result.returncode, 0)
         result = self.run_uninstall(PROCESS_STATUS="2")

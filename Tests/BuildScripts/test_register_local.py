@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[2]
 class RegistrationTests(unittest.TestCase):
     def run_registration(self, host_running=False, check_only=False, cleanup_failure=False,
                          missing_registration=False, add_failure=False, combined=False, explicit=False, candidate=False):
-        with tempfile.TemporaryDirectory(prefix="cutdown-register-") as directory:
+        with tempfile.TemporaryDirectory(prefix="silentsnip-register-") as directory:
             root = Path(directory)
             (root / "Scripts").mkdir()
             tools = root / "tools"
@@ -20,11 +20,11 @@ class RegistrationTests(unittest.TestCase):
             bundles = {
                 "build/SilentSnipHelper.app": "local.silentsnip.helper",
                 "build/Candidate/SilentSnipHelper.app": "local.silentsnip.helper.candidate",
-                "build/AudioPlugin/Build/Products/Debug/CutdownAudio.app": "local.silentsnip.app",
-                "build/AudioPlugin/Build/Products/Debug/CutdownAudio.app/Contents/PlugIns/SilentSnipAudio.appex": "local.silentsnip.app.audio",
-                "build/Candidate/AudioPlugin/CutdownAudio.app": "local.silentsnip.app",
-                "build/Diagnostic/Candidate/CutdownAudio.app": "local.silentsnip.app",
-                "build/Unrelated/Candidate/CutdownAudio.app": "other.audio",
+                "build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app": "local.silentsnip.app",
+                "build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app/Contents/PlugIns/SilentSnipAudio.appex": "local.silentsnip.app.audio",
+                "build/Candidate/AudioPlugin/SilentSnipAudio.app": "local.silentsnip.app",
+                "build/Diagnostic/Candidate/SilentSnipAudio.app": "local.silentsnip.app",
+                "build/Unrelated/Candidate/SilentSnipAudio.app": "other.audio",
             }
             combined_path = "Copied/Silent Snip.app" if explicit else "build/App/Silent Snip.app"
             if combined:
@@ -45,7 +45,7 @@ class RegistrationTests(unittest.TestCase):
                     (path.parent / "Resources/SilentSnip.sdef").write_text("fixture")
                 if identity == "local.silentsnip.app.audio":
                     data["NSExtension"] = {"NSExtensionPointIdentifier": "com.apple.AudioUnit-UI",
-                        "NSExtensionPrincipalClass": "CutdownAudioUnitFactory"}
+                        "NSExtensionPrincipalClass": "SilentSnipAudioUnitFactory"}
                 path.write_bytes(plistlib.dumps(data))
             stubs = {
                 "codesign": "#!/bin/bash\nexit 0\n",
@@ -75,7 +75,7 @@ exit 0
             path.write_text(script)
             log = root / "calls"
             options = (["--check-only"] if check_only else []) + (["--app", str(root / combined_path)] if explicit else [])
-            registered = (root / combined_path / "Contents/PlugIns/SilentSnipAudio.appex") if combined else (root / "build/AudioPlugin/Build/Products/Debug/CutdownAudio.app/Contents/PlugIns/SilentSnipAudio.appex")
+            registered = (root / combined_path / "Contents/PlugIns/SilentSnipAudio.appex") if combined else (root / "build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app/Contents/PlugIns/SilentSnipAudio.appex")
             result = subprocess.run(["/bin/bash", str(path)] + options,
                 env=dict(os.environ, HOST_STATUS="0" if host_running else "1", CALL_LOG=str(log),
                          CLEANUP_STATUS="1" if cleanup_failure else "0", ADD_STATUS="1" if add_failure else "0",

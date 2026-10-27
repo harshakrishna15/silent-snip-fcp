@@ -2,20 +2,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "Cutdown",
+    name: "SilentSnip",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "CutdownCore", targets: ["CutdownCore"]),
-        .library(name: "CutdownMac", targets: ["CutdownMac"]),
-        .executable(name: "Cutdown", targets: ["CutdownApp"]),
-        .executable(name: "CutdownVerify", targets: ["CutdownVerify"])
+        .library(name: "SilentSnipCore", targets: ["SilentSnipCore"]),
+        .library(name: "SilentSnipMac", targets: ["SilentSnipMac"]),
+        .executable(name: "SilentSnip", targets: ["SilentSnipApp"]),
+        .executable(name: "SilentSnipVerify", targets: ["SilentSnipVerify"])
     ],
     targets: [
-        .target(name: "CutdownCore"),
-        .target(name: "CutdownMac", dependencies: ["CutdownCore"]),
-        .executableTarget(name: "CutdownApp", dependencies: ["CutdownCore", "CutdownMac"]),
-        .executableTarget(name: "CutdownVerify", dependencies: ["CutdownCore", "CutdownMac"]),
-        .testTarget(name: "CutdownCoreTests", dependencies: ["CutdownCore"], resources: [.copy("Fixtures")]),
-        .testTarget(name: "CutdownMacTests", dependencies: ["CutdownCore", "CutdownMac"])
+        .target(name: "SilentSnipCore"),
+        .target(name: "SilentSnipMac", dependencies: ["SilentSnipCore"]),
+        .executableTarget(name: "SilentSnipApp", dependencies: ["SilentSnipCore", "SilentSnipMac"]),
+        .executableTarget(name: "SilentSnipVerify", dependencies: ["SilentSnipCore", "SilentSnipMac"]),
+        .testTarget(name: "SilentSnipCoreTests", dependencies: ["SilentSnipCore"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "SilentSnipMacTests", dependencies: ["SilentSnipCore", "SilentSnipMac"])
     ]
 )

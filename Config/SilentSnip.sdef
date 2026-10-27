@@ -3,7 +3,7 @@
 <dictionary title="Silent Snip Share Terminology">
   <suite name="Silent Snip Asset Management" code="pvam" description="Receive project XML and rendered audio from Final Cut Pro.">
     <command name="open" code="aevtodoc" description="Complete an exported asset delivery.">
-      <cocoa class="CutdownShareOpenCommand"/>
+      <cocoa class="SilentSnipShareOpenCommand"/>
       <access-group identifier="com.apple.proapps.assetmanagement.import" access="rw"/>
       <access-group identifier="com.apple.assetmanagement.import" access="rw"/>
       <direct-parameter><type type="file"/><type type="file" list="yes"/></direct-parameter>
@@ -14,7 +14,7 @@
       <direct-parameter type="specifier"/><result type="any"/>
     </command>
     <command name="make" code="corecrel" description="Prepare a new share export.">
-      <cocoa class="CutdownShareMakeCommand"/>
+      <cocoa class="SilentSnipShareMakeCommand"/>
       <access-group identifier="com.apple.proapps.assetmanagement.import" access="rw"/>
       <access-group identifier="com.apple.assetmanagement.import" access="rw"/>
       <parameter name="new" code="kocl" type="type"><cocoa key="ObjectClass"/></parameter>
@@ -28,7 +28,7 @@
       <access-group identifier="com.apple.proapps.assetmanagement.import" access="rw"/>
       <access-group identifier="com.apple.assetmanagement.import" access="rw"/>
       <property name="name" code="pnam" type="text" access="r"/>
-      <element type="asset" access="r"><cocoa key="cutdownShareAssets"/>
+      <element type="asset" access="r"><cocoa key="silentSnipShareAssets"/>
         <access-group identifier="com.apple.proapps.assetmanagement.import" access="rw"/>
         <access-group identifier="com.apple.assetmanagement.import" access="rw"/>
       </element>
@@ -47,7 +47,7 @@
     </record-type>
     <value-type name="user defined record" code="usrf"><cocoa class="NSDictionary"/></value-type>
     <class name="asset" code="aset" description="One pending or completed share export.">
-      <cocoa class="CutdownShareAsset"/>
+      <cocoa class="SilentSnipShareAsset"/>
       <access-group identifier="com.apple.proapps.assetmanagement.import" access="rw"/>
       <access-group identifier="com.apple.assetmanagement.import" access="rw"/>
       <property name="id" code="ID  " type="text" access="r"><cocoa key="uniqueID"/></property>

@@ -16,7 +16,7 @@ flicker. Automatic timeline cuts remain unverified.
 
 ## September 23 click flicker follow-up
 
-A later live Analyze in `Cutdown Preview Scrub 0923` completed and produced
+A later live Analyze in `Silent Snip Preview Scrub 0923` completed and produced
 two selected cuts (3.167 seconds total). Silent Snip's separate transparent panel
 contained four rendered boundary lines. A temporary WindowServer probe placed
 that panel above the verified Final Cut project window and confirmed that its
@@ -27,7 +27,7 @@ panel where Controls covered it. The probe and a forced repaint experiment were
 removed after capture. These checks do not yet prove the on-screen lines never
 flicker during clicking or hover skimming. Later ad hoc helper rebuilds again
 lost macOS Device Control and Data Access approval; the diagnostic evidence is
-retained under `~/Library/Application Support/Cutdown/Integration`.
+retained under `~/Library/Application Support/SilentSnip/Integration`.
 
 A later live retry found an intermittent false dialog blocker during Analyze.
 Final Cut's nonmodal Silent Snip Controls sometimes appears as `AXDialog` while its
@@ -89,7 +89,7 @@ Swift tests pass after this change; the helper was rebuilt and installed again.
 
 All 37 focused Mac tests pass, covering modal Controls recognition, temporary
 read gaps, and sustained unavailability. The Release helper was installed,
-relaunched, and its bundle signature verified. In the disposable `Cutdown Preview Scrub 0923`
+relaunched, and its bundle signature verified. In the disposable `Silent Snip Preview Scrub 0923`
 project inside the required integration library, the rebuilt helper got past
 the prior "open Final Cut dialog" error. Analysis then stopped at macOS Device
 Control and Data Access permission for this local build, so this run could not
@@ -160,7 +160,7 @@ in this investigation.
 ## September 23 Controls window verification
 
 The compact Controls window was checked in Final Cut using the disposable ten-second
-`Cutdown Audio Only Basic` project in the workspace `Cutdown Integration.fcpbundle`.
+`Silent Snip Audio Only Basic` project in the workspace `Cutdown Integration.fcpbundle`.
 The rebuilt Audio Unit opens, exposes the detection tooltips, shows the simplified
 More menu, and saves settings from its icon button. A live Analyze retry exposed
 an Accessibility mismatch that made the helper mistake Controls for an unrelated
@@ -175,7 +175,7 @@ this run. The existing permission was not changed.
 ## September 23 first-import navigation repair
 
 An observed Analyze attempt on the integration library stopped immediately after
-delivering its temporary `Cutdown Analysis` project; the next attempt on the same
+delivering its temporary `Silent Snip Analysis` project; the next attempt on the same
 clip reached review. The first job's timing report ended after render preparation,
 and its generated project remained in the original event. Final Cut's import log
 showed transient event creation. The previous error message was overwritten by
@@ -295,7 +295,7 @@ All eight findings from the later deep code audit are implemented, with live che
 - Controls harness passed including duplicate Analyze, precision, and minimum-boundary regressions: `build/AuditFixes/factory.log`.
 - Audio harness passed 60 render cases plus state/persistence checks: `build/AuditFixes/audio.log`.
 - 12 build-script regressions passed, including host launch during compilation and replacement rollback: `build/AuditFixes/build-scripts.log`.
-- Matching signed candidates built successfully at `build/Candidate/Cutdown.app` and `build/Candidate/AudioPlugin/CutdownAudio.app`; logs are `build/AuditFixes/helper-stage.log` and `build/AuditFixes/plugin-stage.log`.
+- Matching signed candidates built successfully at `build/Candidate/SilentSnip.app` and `build/Candidate/AudioPlugin/SilentSnipAudio.app`; logs are `build/AuditFixes/helper-stage.log` and `build/AuditFixes/plugin-stage.log`.
 - No current registered bundle, permission entry, or live Final Cut project was changed during this update. Current-build native Analyze, Apply, settings recovery, and navigation cleanup still require the user's checks in `Cutdown Integration.fcpbundle`.
 
 ## September 17 feature completion
@@ -370,8 +370,8 @@ already enabled, with no permission or binary changes. Request
 014C4F7A-A982-446B-BF39-5E3ABD359711 completed processed Analyze and visibly
 showed one selected 1.933-second cut in the helper window. No Apply was tested. See `build/AnalyzeVisibilityVerification/Notes.md`.
 
-Live process inspection found both `build/Cutdown.app` and the older staged
-`build/Candidate/Cutdown.app` running. Both received broadcast status requests;
+Live process inspection found both `build/SilentSnip.app` and the older staged
+`build/Candidate/SilentSnip.app` running. Both received broadcast status requests;
 the non-owning helper sent an `Int.max` failure revision that displaced the real
 owner's responses. Helpers now ignore commands for unknown jobs. The Controls
 timeout remains responsible for recovering after an owner exits. Staged helper
@@ -412,7 +412,7 @@ Evidence so far:
 - `build/all-fixes-tests-access.log`: 298 Swift tests passed (222 Mac, 76 Core). The earlier sandbox run could not start AVFoundation readers; preserved in `build/all-fixes-tests.log`.
 - `build/all-fixes-final-focused.log`: 97 focused tests passed after import-report parsing was changed to parse each document once.
 - `build/all-fixes-factory-tests.log`: Controls harness; `build/all-fixes-audio-tests.log`: 60 exact passthrough cases plus state/persistence checks.
-- Signed candidates: `build/Candidate/Cutdown.app`, `build/Candidate/AudioPlugin/CutdownAudio.app`; build logs `build/all-fixes-helper-stage.log` and `build/all-fixes-plugin-stage-safe.log`.
+- Signed candidates: `build/Candidate/SilentSnip.app`, `build/Candidate/AudioPlugin/SilentSnipAudio.app`; build logs `build/all-fixes-helper-stage.log` and `build/all-fixes-plugin-stage-safe.log`.
 - Automatic approval review rejected quitting Final Cut because closing it might interrupt unsaved work. Installation and live testing await the user's explicit choice.
 - The initial candidate plugin build reused the old Xcode build graph, which unexpectedly pruned the registered products. The signed candidate survives. The staging script now uses `build/AudioPluginStage` to prevent pruning registered products. The corrected staging build passed without stale-product pruning. Installation/registration now fail closed if the process list cannot be read. Restoring the registered bundle is pending Final Cut closure; no library/project media was deleted by this build.
 

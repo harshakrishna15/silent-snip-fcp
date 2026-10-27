@@ -10,7 +10,7 @@ The [current cleanup update](../docs/cleanup-fixes.md) also fixes dropped Retry 
 
 ## Window and sidebar
 
-The extension uses `com.apple.AudioUnit-UI` and `CutdownAudioUnitFactory`, an `AUViewController` implementing `AUAudioUnitFactory`. Final Cut hosts it in the effect's Controls window. The current request supersedes the earlier sidebar-only requirement.
+The extension uses `com.apple.AudioUnit-UI` and `SilentSnipAudioUnitFactory`, an `AUViewController` implementing `AUAudioUnitFactory`. Final Cut hosts it in the effect's Controls window. The current request supersedes the earlier sidebar-only requirement.
 
 The native AppKit inspector starts with Detection: all four settings, Output, Save Settings, and More remain visible. The large product heading and introductory block are removed; status is a small footer item. Review and its table appear only when analysis returns ranges, and stay available when every range is deselected. At 580 points wide, the preferred height is 220 points before analysis and about 400 points for a two-range review; hosts that keep a fixed window size can scroll the inspector. Output remains a standard pop-up menu. Before/after duration stays beside the Review heading, and each row combines the start and end timecodes with its duration. Restricted ranges retain an explanation below their timecodes.
 
@@ -44,7 +44,7 @@ Scripts/register-local.sh --check-only
 auval -v aufx ctdn Ctdn
 ```
 
-Project: `CutdownAudio.xcodeproj`, scheme **CutdownAudio**, now builds only **SilentSnipAudio**. `Scripts/build-app.sh` combines the Release extension with the existing background executable and Share definitions into `build/App/Silent Snip.app`; the ZIP is `dist/Silent Snip.zip`. The former empty wrapper target has been removed. The extension remains sandboxed; the containing app performs the existing Final Cut integration outside that sandbox. Both target Apple Silicon and macOS 14 or later. Build-script defaults use local ad hoc signing; a deployment target alone is not a toolchain or host compatibility claim.
+Project: `SilentSnipAudio.xcodeproj`, scheme **SilentSnipAudio**, now builds only **SilentSnipAudio**. `Scripts/build-app.sh` combines the Release extension with the existing background executable and Share definitions into `build/App/Silent Snip.app`; the ZIP is `dist/Silent Snip.zip`. The former empty wrapper target has been removed. The extension remains sandboxed; the containing app performs the existing Final Cut integration outside that sandbox. Both target Apple Silicon and macOS 14 or later. Build-script defaults use local ad hoc signing; a deployment target alone is not a toolchain or host compatibility claim.
 
 For a developer-only native UI preview, run `AudioPlugin/preview-ui.sh --build-only`, then open `build/NativePreview/Silent Snip UI Preview.app`. Its app menu provides review, restricted-range, long-list, failure, and progress fixtures, plus light/dark appearance. The preview uses the actual AppKit controller with an inert transport and a private temporary settings store; it cannot send timeline commands. It is excluded from the distributed app.
 

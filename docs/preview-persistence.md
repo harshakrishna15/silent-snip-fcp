@@ -1,6 +1,6 @@
 # Preview persistence and effect removal
 
-> Historical development record. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
+> Historical development record. Product names in this record are normalized to current branding; original evidence filenames and system labels may differ. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
 
 September 18, 2026. This update changes the helper only.
 
@@ -36,7 +36,7 @@ checks). Coverage includes transient read gaps, native window ordering,
 retained drawing pixels/layers, last-effect deletion, deletion between gate and
 limiter headers, incomplete/hidden/scrolled Inspector reads, collapsed Effects,
 and stale-result suppression. Evidence: `build/PreviewPersistence/swift.log`.
-The signed helper candidate is `build/Candidate/Cutdown.app`; build evidence is
+The signed helper candidate is `build/Candidate/SilentSnip.app`; build evidence is
 `build/PreviewPersistence/helper-stage.log`. The installed helper was not replaced.
 
 No live analysis, effect deletion or Apply test was performed. A read-only

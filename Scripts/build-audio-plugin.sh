@@ -26,10 +26,10 @@ else
   [[ "$status" == 1 ]] || { echo 'Cannot inspect the staged audio extension; no build was started.' >&2; exit 1; }
 fi
 mkdir -p build/AudioPluginStage build/module-cache build/Candidate/AudioPlugin
-xcodebuild -project CutdownAudio.xcodeproj -scheme CutdownAudio -configuration "$configuration" \
+xcodebuild -project SilentSnipAudio.xcodeproj -scheme SilentSnipAudio -configuration "$configuration" \
     -destination 'platform=macOS,arch=arm64' -derivedDataPath "$PWD/build/AudioPluginStage" \
     CLANG_MODULE_CACHE_PATH="$PWD/build/module-cache" \
-    CODE_SIGN_IDENTITY="${CUTDOWN_SIGNING_IDENTITY:--}" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="${CUTDOWN_DEVELOPMENT_TEAM:-}" \
+    CODE_SIGN_IDENTITY="${SILENT_SNIP_SIGNING_IDENTITY:--}" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="${SILENT_SNIP_DEVELOPMENT_TEAM:-}" \
     ${extra[@]+"${extra[@]}"} \
     "CONFIGURATION_BUILD_DIR=$PWD/build/Candidate/AudioPlugin" DONT_REGISTER_WITH_LAUNCH_SERVICES=YES build
 codesign --verify --deep --strict "$candidate"

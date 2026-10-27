@@ -12,7 +12,7 @@ The app contains both the existing background executable and `Contents/PlugIns/S
 
 Opening the copied app requests control access. Enable **Silent Snip** in **System Settings → Privacy & Security → Accessibility**, or the control-access pane named in Silent Snip's error on your macOS version. On macOS 27 the code names that pane **Device Control and Data Access**. macOS may also request Automation access when needed. Permissions are granted by you, not by the build or registration tools.
 
-If Silent Snip is missing from the list, click **+**, press **Command–Shift–G** in the app picker, enter `~/Applications/Silent Snip.app` (or `/Applications/Silent Snip.app` if you copied it there), and choose **Open**. Enable the resulting entry. Version 0.2 uses a fresh app identity and appears as **Silent Snip**. Remove obsolete **CutdownAudio** or **Cutdown** permission entries separately. The menu bar status confirms whether the new app has access.
+If Silent Snip is missing from the list, click **+**, press **Command–Shift–G** in the app picker, enter `~/Applications/Silent Snip.app` (or `/Applications/Silent Snip.app` if you copied it there), and choose **Open**. Enable the resulting entry. Version 0.2 uses a fresh app identity and appears as **Silent Snip**. Remove permission entries for obsolete app copies separately. The menu bar status confirms whether the new app has access.
 
 Select the actual copied app, rather than a staged candidate. Ad hoc rebuilds may require quitting and reopening the app, then refreshing its control-access entry if access remains unavailable. No signing or privacy protections are disabled by these instructions.
 
@@ -52,7 +52,7 @@ For in-place development, `Scripts/build.sh` builds Debug and registers the comb
 
 `Scripts/register-local.sh --check-only` checks the combined build. For a copied app, use `Scripts/register-local.sh --check-only --app "/absolute/path/Silent Snip.app"`. Omitting `--check-only` registers that exact copy while Final Cut is closed; ordinary recipients should not need this diagnostic command. If the combined build is absent, legacy developer helper/wrapper builds can still be inspected or registered for migration. Do not leave multiple app copies active in different locations.
 
-`CUTDOWN_SIGNING_IDENTITY` and `CUTDOWN_DEVELOPMENT_TEAM` accept existing developer signing settings; defaults are local ad hoc signing. Signing and notarization service setup is outside this change. No component downloads or external Swift dependencies are required.
+`SILENT_SNIP_SIGNING_IDENTITY` and `SILENT_SNIP_DEVELOPMENT_TEAM` accept existing developer signing settings; defaults are local ad hoc signing. Signing and notarization service setup is outside this change. No component downloads or external Swift dependencies are required.
 
 ## Integration-test library
 
@@ -68,19 +68,19 @@ Scripts/make-fixtures.sh
 
 The script writes generated WAV files, FCPXML bundles, and expected-results JSON under `build/Fixtures`. Its XML validation currently expects Final Cut at `/Applications/Final Cut Pro.app` with the FCPXML 1.14 DTD. A missing DTD is an environment/setup issue to resolve before relying on that validation.
 
-With the integration library open, import `build/Fixtures/Silent Snip Audio Only Basic.fcpxmld` into that library. Keep source files in place; disable copied, optimized, and proxy media. Use a fresh disposable test project for each run. The sanitized files under `Tests/CutdownCoreTests/Fixtures` use placeholder media URLs for offline regression tests; use the generated `build/Fixtures` files for live imports.
+With the integration library open, import `build/Fixtures/Silent Snip Audio Only Basic.fcpxmld` into that library. Keep source files in place; disable copied, optimized, and proxy media. Use a fresh disposable test project for each run. The sanitized files under `Tests/SilentSnipCoreTests/Fixtures` use placeholder media URLs for offline regression tests; use the generated `build/Fixtures` files for live imports.
 
 Follow [the workflow](workflow.md) to add Silent Snip Audio, open Controls, Analyze, review, and Apply. Check the resulting project's editable segments, source references, effects/settings, and total duration, as well as whether preview and recovery work. Merely seeing the effect or passing analysis is not evidence that automatic cuts work. Preserve exported evidence separately from build caches.
 
 ## Uninstall
 
-1. Remove **Silent Snip Audio** (or its older **Cutdown Audio** label) from projects you intend to keep using. Uninstalling does not undo applied cuts.
+1. Remove **Silent Snip Audio** from projects you intend to keep using. Uninstalling does not undo applied cuts.
 2. Remove the **Silent Snip** Share destination in **Final Cut Pro → Settings → Destinations**.
 3. Quit Final Cut, choose **Quit Silent Snip** from its menu bar icon, then move the copied **Silent Snip.app** to Trash. Remove its control-access and Automation entries in System Settings if listed. Previously installed setup apps and old app copies must be removed separately.
 
 Settings, results, and recovery XML are kept by default. New data uses `~/Library/Application Support/Silent Snip`; the extension keeps its settings in its `local.silentsnip.app.audio` sandbox. To erase all new data manually, review those locations and the matching preferences, caches, saved-state, and application-script folders for `local.silentsnip.app`, `local.silentsnip.app.audio`, and developer helper IDs under `local.silentsnip.helper`.
 
-Earlier versions may have left `~/Library/Application Support/Cutdown`, `~/Library/Application Support/Cutdown Audio`, or containers and preferences for `local.cutdown.audio`, `local.cutdown.audio.extension`, and `local.cutdown.helper`. The retired setup identity is `local.silentsnip.setup`. These legacy files are not migrated or erased by installing 0.2. Back up anything you want to keep before deleting data. macOS can deny access to protected container metadata; removing the app does not establish that all data was removed.
+Earlier versions may have left data under former app names and identities. Installing this release does not migrate or erase those files. Back up old results and recovery XML before removing legacy data manually. macOS can deny access to protected container metadata; removing an app does not establish that all its data was removed.
 
 For repository builds, `Scripts/uninstall-local.sh --dry-run` previews unregistration and removal, and `Scripts/uninstall-local.sh` performs it. `--remove-data` additionally erases this account's settings, results, recovery XML, and known component data; missing preferences are already clean, but real access failures remain errors. The script does not remove app copies outside the checkout. Source code, build caches, media, `Cutdown Integration.fcpbundle`, and exported integration evidence are kept.
 

@@ -30,7 +30,7 @@ if [[ -n "$app_path" ]]; then
   audio="$app_path"
 else
   helper="$PWD/build/SilentSnipHelper.app"
-  audio="$PWD/build/AudioPlugin/Build/Products/Debug/CutdownAudio.app"
+  audio="$PWD/build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app"
 fi
 audio_extension="$audio/Contents/PlugIns/SilentSnipAudio.appex"
 
@@ -68,7 +68,7 @@ fi
 check_bundle "$audio_extension" local.silentsnip.app.audio
 extension_point=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$audio_extension/Contents/Info.plist")
 factory_class=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$audio_extension/Contents/Info.plist")
-if [[ "$extension_point" != com.apple.AudioUnit-UI || "$factory_class" != CutdownAudioUnitFactory ]]; then
+if [[ "$extension_point" != com.apple.AudioUnit-UI || "$factory_class" != SilentSnipAudioUnitFactory ]]; then
   echo 'The audio build is missing the current custom effect window. Rebuild with build-audio-plugin.sh before registering.' >&2
   exit 1
 fi
@@ -109,7 +109,7 @@ fi
 # Xcode registers staged Audio Units too. Remove competing standard and isolated
 # diagnostic candidates while the host is stopped, then select the installed copy.
 # Only our audio bundle identity qualifies; preserve every bundle on disk.
-for audio_candidate in "$PWD/build/Candidate/App/Silent Snip.app" "$PWD/build/Candidate/AudioPlugin/CutdownAudio.app" "$PWD"/build/*/Candidate/CutdownAudio.app; do
+for audio_candidate in "$PWD/build/Candidate/App/Silent Snip.app" "$PWD/build/Candidate/AudioPlugin/SilentSnipAudio.app" "$PWD"/build/*/Candidate/SilentSnipAudio.app; do
   if [[ -f "$audio_candidate/Contents/Info.plist" ]]; then
     candidate_identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$audio_candidate/Contents/Info.plist")
     if [[ "$candidate_identifier" == local.silentsnip.app ]]; then

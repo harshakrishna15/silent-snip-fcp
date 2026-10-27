@@ -3,12 +3,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/NativePreview build/module-cache
 compile=(-fobjc-arc -fmodules -fmodules-cache-path="$PWD/build/module-cache" -mmacosx-version-min=14.0)
-xcrun clang "${compile[@]}" -c AudioPlugin/Extension/CutdownAudioUnitFactory.m -o build/NativePreview/Factory.o
-xcrun clang "${compile[@]}" -c AudioPlugin/Extension/CutdownReviewConnection.m -o build/NativePreview/Connection.o
+xcrun clang "${compile[@]}" -c AudioPlugin/Extension/SilentSnipAudioUnitFactory.m -o build/NativePreview/Factory.o
+xcrun clang "${compile[@]}" -c AudioPlugin/Extension/SilentSnipReviewConnection.m -o build/NativePreview/Connection.o
 xcrun clang "${compile[@]}" -c AudioPlugin/Preview/main.m -o build/NativePreview/Preview.o
 xcrun clang++ -std=c++20 "${compile[@]}" \
     -framework Foundation -framework AudioToolbox -framework AVFoundation -framework CoreAudioKit -framework AppKit -framework UniformTypeIdentifiers \
-    AudioPlugin/Extension/CutdownAudioUnit.mm build/NativePreview/{Factory,Connection,Preview}.o \
+    AudioPlugin/Extension/SilentSnipAudioUnit.mm build/NativePreview/{Factory,Connection,Preview}.o \
     -o build/NativePreview/Preview
 bundle="build/NativePreview/Silent Snip UI Preview.app"
 mkdir -p "$bundle/Contents/MacOS"

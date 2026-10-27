@@ -52,7 +52,7 @@ Start with **Silent Snip.zip**. You do not need the repository, Xcode, Terminal,
 5. **Set up Final Cut Share.** In **Final Cut Pro → Settings → Destinations**, add **Export File**, name it **Silent Snip**, and choose **Audio Only → WAV**. Under **Action → Other…**, select that same **Silent Snip.app** in Applications.
 6. **Add the effect.** In Final Cut’s Effects browser, add **Silent Snip Audio** to an audio-only clip. Open **Controls**, adjust detection, and choose **Analyze**. Review the ranges before choosing **Apply Cuts**.
 
-**Upgrading from Cutdown:** this release uses a fresh app identity. Grant access to **Silent Snip**, remove obsolete **CutdownAudio** permission entries, and reselect the new app as the Share action. Old settings are not migrated; old files are left on disk.
+**Upgrading from an older version:** this release uses a fresh app identity. Grant access to **Silent Snip**, remove obsolete app permission entries, and reselect the new app as the Share action. Old settings are not migrated; old files are left on disk.
 
 See [setup and troubleshooting](docs/setup.md) for detailed steps, migration, and complete removal. The Audio Unit’s **Controls** window is the main interface; the menu bar app stays running in the background.
 
@@ -153,10 +153,10 @@ These are historical results, not checks rerun for every commit. See [XML replac
 
 | Path | Purpose |
 | --- | --- |
-| `Sources/CutdownCore` | Time, timeline parsing, detection, and review |
-| `Sources/CutdownMac` | Audio analysis, Final Cut integration, XML, verification, and preview |
-| `Sources/CutdownApp` | Containing app executable and background workflow |
-| `Sources/CutdownVerify` | Offline developer verifier; does not import projects |
+| `Sources/SilentSnipCore` | Time, timeline parsing, detection, and review |
+| `Sources/SilentSnipMac` | Audio analysis, Final Cut integration, XML, verification, and preview |
+| `Sources/SilentSnipApp` | Containing app executable and background workflow |
+| `Sources/SilentSnipVerify` | Offline developer verifier; does not import projects |
 | `AudioPlugin` | Passthrough Audio Unit and Controls window |
 | `Tests` | Swift fixtures, regression tests, and build-script tests |
 | `Scripts` | Build, registration, and generated-media utilities |

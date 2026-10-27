@@ -11,7 +11,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 class HelperBuildTests(unittest.TestCase):
     def run_build(self, statuses, stage=False, release=False):
-        with tempfile.TemporaryDirectory(prefix="cutdown-build-test-") as directory:
+        with tempfile.TemporaryDirectory(prefix="silentsnip-build-test-") as directory:
             root = Path(directory)
             (root / "scripts").mkdir()
             (root / "Config").mkdir()
@@ -35,8 +35,8 @@ exit "$STUB_SECOND"
 echo swift >> "$STUB_ROOT/calls"
 [[ " $* " == *" -c $STUB_CONFIGURATION "* ]] || exit 12
 mkdir -p "$STUB_ROOT/build/bin"
-printf '#!/bin/bash\\nexit 0\\n' > "$STUB_ROOT/build/bin/Cutdown"
-chmod +x "$STUB_ROOT/build/bin/Cutdown"
+printf '#!/bin/bash\\nexit 0\\n' > "$STUB_ROOT/build/bin/SilentSnip"
+chmod +x "$STUB_ROOT/build/bin/SilentSnip"
 if [[ "$*" == *--show-bin-path* ]]; then echo "$STUB_ROOT/build/bin"; fi
 ''',
                 "codesign": "#!/bin/bash\nexit 0\n",

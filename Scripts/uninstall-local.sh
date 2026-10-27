@@ -58,7 +58,7 @@ delete_preferences() {
 require_stopped() {
   local name
   [[ "$dry_run" == false ]] || return 0
-  for name in 'Final Cut Pro' SilentSnip SilentSnipAudio Cutdown CutdownAudio CutdownAudioExtension; do
+  for name in 'Final Cut Pro' SilentSnip SilentSnipAudio; do
     if /usr/bin/pgrep -x "$name" >/dev/null; then
       fail 'Quit Final Cut Pro, Silent Snip, and its Audio Unit before uninstalling. No process was stopped.'
     else

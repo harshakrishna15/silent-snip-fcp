@@ -1,4 +1,4 @@
-#import "../Extension/CutdownAudioUnit.h"
+#import "../Extension/SilentSnipAudioUnit.h"
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -6,13 +6,13 @@
 #include <vector>
 
 static NSURL *testDirectory;
-static CutdownAudioLastUsedSettingsStore *store(NSString *name) {
-    return [[CutdownAudioLastUsedSettingsStore alloc] initWithFileURL:[testDirectory URLByAppendingPathComponent:name]];
+static SilentSnipAudioLastUsedSettingsStore *store(NSString *name) {
+    return [[SilentSnipAudioLastUsedSettingsStore alloc] initWithFileURL:[testDirectory URLByAppendingPathComponent:name]];
 }
-static CutdownAudioUnit *makeUnit(UInt32 channels=2, CutdownAudioLastUsedSettingsStore *settingsStore=nil) {
+static SilentSnipAudioUnit *makeUnit(UInt32 channels=2, SilentSnipAudioLastUsedSettingsStore *settingsStore=nil) {
     AudioComponentDescription description = {'aufx','ctdn','Ctdn',0,0};
     NSError *error = nil;
-    CutdownAudioUnit *unit = [[CutdownAudioUnit alloc] initWithComponentDescription:description options:0
+    SilentSnipAudioUnit *unit = [[SilentSnipAudioUnit alloc] initWithComponentDescription:description options:0
         settingsStore:settingsStore ?: store(@"empty.plist") error:&error];
     assert(unit && !error);
     AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:channels];
@@ -20,28 +20,28 @@ static CutdownAudioUnit *makeUnit(UInt32 channels=2, CutdownAudioLastUsedSetting
     assert([unit.outputBusses[0] setFormat:format error:&error]);
     return unit;
 }
-static void setValues(CutdownAudioUnit *unit, NSArray<NSNumber *> *values) {
+static void setValues(SilentSnipAudioUnit *unit, NSArray<NSNumber *> *values) {
     for (NSUInteger i=0;i<4;++i) [unit.analysisParameterTree parameterWithAddress:i+1].value = values[i].floatValue;
 }
-static void expectValues(CutdownAudioUnit *unit, NSArray<NSNumber *> *values) {
+static void expectValues(SilentSnipAudioUnit *unit, NSArray<NSNumber *> *values) {
     for (NSUInteger i=0;i<4;++i) assert([unit.analysisParameterTree parameterWithAddress:i+1].value == values[i].floatValue);
 }
 static void checkLastUsedSettings(void) {
     NSArray *factory = @[@-40,@.5,@.1,@.1], *analyzed = @[@-32,@.75,@.125,@.25], *other = @[@-55,@1.25,@.5,@.75];
-    CutdownAudioLastUsedSettingsStore *preferences = store(@"last-used.plist");
-    CutdownAudioUnit *first = makeUnit(2,preferences), *existing = makeUnit(1,preferences);
+    SilentSnipAudioLastUsedSettingsStore *preferences = store(@"last-used.plist");
+    SilentSnipAudioUnit *first = makeUnit(2,preferences), *existing = makeUnit(1,preferences);
     expectValues(first,factory); expectValues(existing,factory);
     NSDictionary *originalState = first.fullStateForDocument;
     setValues(first,analyzed);
     NSError *error = nil;
-    CutdownAudioAnalysisRequest *request = [first analysisRequestWithError:&error];
+    SilentSnipAudioAnalysisRequest *request = [first analysisRequestWithError:&error];
     assert(request && !error);
     // Capturing, editing and restoring state must not change new-instance defaults.
     expectValues(makeUnit(2,preferences),factory);
     setValues(first,other);
     assert([first rememberSettingsForRequest:request error:&error] && !error);
     // The remembered snapshot is the one submitted, not the later parameter values.
-    CutdownAudioUnit *newUnit = makeUnit(2,store(@"last-used.plist"));
+    SilentSnipAudioUnit *newUnit = makeUnit(2,store(@"last-used.plist"));
     expectValues(newUnit,analyzed); expectValues(existing,factory); expectValues(first,other);
     first.fullStateForDocument = originalState;
     expectValues(first,factory);
@@ -75,12 +75,12 @@ static void checkLastUsedSettings(void) {
     assert([[@"not a property list" dataUsingEncoding:NSUTF8StringEncoding] writeToURL:corruptURL atomically:YES]);
     expectValues(makeUnit(2,store(@"corrupt.plist")),factory);
     // Surface a filesystem error instead of claiming preferences were saved.
-    CutdownAudioLastUsedSettingsStore *unwritable = [[CutdownAudioLastUsedSettingsStore alloc] initWithFileURL:testDirectory];
+    SilentSnipAudioLastUsedSettingsStore *unwritable = [[SilentSnipAudioLastUsedSettingsStore alloc] initWithFileURL:testDirectory];
     error = nil;
     assert(![unwritable saveSettings:analyzed error:&error] && error);
 }
 static void checkRender(UInt32 channels, bool silence, bool hostBuffers, bool inPlace) {
-    CutdownAudioUnit *unit = makeUnit(channels);
+    SilentSnipAudioUnit *unit = makeUnit(channels);
     unit.maximumFramesToRender = 4096;
     NSError *error = nil;
     assert([unit allocateRenderResourcesAndReturnError:&error] && !error);
@@ -131,7 +131,7 @@ static void checkRender(UInt32 channels, bool silence, bool hostBuffers, bool in
 int main(void) {
     @autoreleasepool {
         testDirectory = [NSFileManager.defaultManager.temporaryDirectory URLByAppendingPathComponent:
-            [@"CutdownAudioTests-" stringByAppendingString:NSUUID.UUID.UUIDString] isDirectory:YES];
+            [@"SilentSnipAudioTests-" stringByAppendingString:NSUUID.UUID.UUIDString] isDirectory:YES];
         assert([NSFileManager.defaultManager createDirectoryAtURL:testDirectory withIntermediateDirectories:YES attributes:nil error:nullptr]);
         checkLastUsedSettings();
         for (UInt32 channels : {1u,2u}) for (bool silence : {false,true}) {
@@ -139,7 +139,7 @@ int main(void) {
             checkRender(channels,silence,false,false);
             checkRender(channels,silence,true,true);
         }
-        CutdownAudioUnit *first=makeUnit(), *second=makeUnit();
+        SilentSnipAudioUnit *first=makeUnit(), *second=makeUnit();
         float expected[] = {-32.f,.75f,.125f,.25f};
         for (NSUInteger i=0;i<4;++i) [first.analysisParameterTree parameterWithAddress:i+1].value = expected[i];
         assert([second.analysisParameterTree parameterWithAddress:1].value == -40);
@@ -155,7 +155,7 @@ int main(void) {
         assert([query[@"threshold"] floatValue]==-32 && [query[@"minimum"] floatValue]==.75 && [query[@"before"] floatValue]==.125 && [query[@"after"] floatValue]==.25);
         [second.analysisParameterTree parameterWithAddress:1].value=NAN;
         assert([second analysisRequestWithError:&error]==nil && error);
-        CutdownAudioUnit *mismatch=makeUnit(1);
+        SilentSnipAudioUnit *mismatch=makeUnit(1);
         AVAudioFormat *stereo=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
         assert([mismatch.outputBusses[0] setFormat:stereo error:&error]);
         assert(![mismatch allocateRenderResourcesAndReturnError:&error]);

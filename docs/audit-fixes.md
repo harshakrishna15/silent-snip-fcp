@@ -1,6 +1,6 @@
 # September 17 audit fixes
 
-> Historical development record. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
+> Historical development record. Product names in this record are normalized to current branding; original evidence filenames and system labels may differ. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
 
 All eight findings in `build/CodeAudit/Code-Audit.md` have implementation fixes. Automated validation is complete; current-build live Final Cut verification remains with the user. No live interaction, permission refresh, registration, or installation was performed for this update.
 
@@ -23,7 +23,7 @@ Validation:
 - Controls/Factory harness passed, including rapid Analyze and precision regressions (`build/AuditFixes/factory.log`).
 - Audio Unit harness passed 60 exact mono/stereo render cases and state/persistence checks (`build/AuditFixes/audio.log`).
 - **12 build-script tests passed** (`build/AuditFixes/build-scripts.log`).
-- Matching candidates: `build/Candidate/Cutdown.app` and `build/Candidate/AudioPlugin/CutdownAudio.app`. Build/signature results are in `build/AuditFixes/helper-stage.log` and `build/AuditFixes/plugin-stage.log`.
+- Matching candidates: `build/Candidate/SilentSnip.app` and `build/Candidate/AudioPlugin/SilentSnipAudio.app`. Build/signature results are in `build/AuditFixes/helper-stage.log` and `build/AuditFixes/plugin-stage.log`.
 
 For installation, first finish/save work and quit both Final Cut Pro and Silent Snip. From this workspace, run:
 

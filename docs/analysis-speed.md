@@ -1,6 +1,6 @@
 # Analysis speed and cache validation
 
-> Historical development record. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
+> Historical development record. Product names in this record are normalized to current branding; original evidence filenames and system labels may differ. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
 
 September 18, 2026. Implemented and checked offline; the user is performing live Final Cut testing.
 
@@ -20,7 +20,7 @@ After render, source, restored-project, and edit-representability checks pass, v
 
 ## Timing evidence
 
-Each run writes `Analysis-Timing.json` under `~/Library/Application Support/Cutdown/Temporary/<request UUID>/`. It records outcome, cache status, total seconds, time to verified preview, and stage durations. Stages distinguish capture, source validation, cache validation/recalculation, render preparation, rendering, render verification, returning to the original, measurement, detection, original-project verification, cache storage, cleanup, and Controls restoration. Failed and cancelled attempts also write reports; only reached stages appear.
+Each run writes `Analysis-Timing.json` under `~/Library/Application Support/SilentSnip/Temporary/<request UUID>/`. It records outcome, cache status, total seconds, time to verified preview, and stage durations. Stages distinguish capture, source validation, cache validation/recalculation, render preparation, rendering, render verification, returning to the original, measurement, detection, original-project verification, cache storage, cleanup, and Controls restoration. Failed and cancelled attempts also write reports; only reached stages appear.
 
 The offline fixture is 300 seconds of stereo 48 kHz PCM. Three decoding/hash runs and thirty detector recalculations were measured per build configuration. Debug and Release produced identical 60 cut ranges, and both source and rendered-file decoding paths agreed.
 
@@ -33,7 +33,7 @@ The offline fixture is 300 seconds of stereo 48 kHz PCM. Three decoding/hash run
 
 This benchmark excludes Final Cut exports, effect rendering, project transitions, cleanup, and the extra validation surrounding an actual cache hit. It is not a promise that Analyze finishes in these times. The remaining decoder CPU cost does not justify another implementation rewrite based on this fixture. Live stage reports are needed to identify the next host bottleneck.
 
-Evidence is in `build/AnalysisSpeed/`: `Benchmark-Summary.json`, raw `benchmark-debug.json` and `benchmark-release.json`, full test logs, Controls/build-script logs, and candidate-build logs. The opt-in benchmark test takes `CUTDOWN_BENCHMARK_INPUT` and `CUTDOWN_BENCHMARK_OUTPUT`; otherwise it skips. Reuse `build/swift` for sequential Debug/Release runs.
+Evidence is in `build/AnalysisSpeed/`: `Benchmark-Summary.json`, raw `benchmark-debug.json` and `benchmark-release.json`, full test logs, Controls/build-script logs, and candidate-build logs. The opt-in benchmark test takes `SILENT_SNIP_BENCHMARK_INPUT` and `SILENT_SNIP_BENCHMARK_OUTPUT`; otherwise it skips. Reuse `build/swift` for sequential Debug/Release runs.
 
 Offline verification: 358 full Release Swift tests pass (281 Mac, 77 Core); eight focused cache/timing checks pass after the final policy adjustment; 16 independent Controls scenarios plus the shared-state contract pass; 22 build/registration tests pass. The earlier full Debug run passed 357 tests before the host-session/alias case was added.
 

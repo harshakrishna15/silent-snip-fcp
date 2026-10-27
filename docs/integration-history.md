@@ -1,6 +1,6 @@
 # Historical integration record (through September 16, 2026)
 
-> Historical development record. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
+> Historical development record. Product names in this record are normalized to current branding; original evidence filenames and system labels may differ. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
 
 Product prose uses the current Silent Snip name; recorded project names and artifact paths keep their original spelling.
 
@@ -38,7 +38,7 @@ The render is temporary analysis media. Output segments reference the original a
 
 ## Missing cut-boundary preview — September 16
 
-The reported Analyze failure rejected Final Cut's newly assigned imported project UUID even though the semantic timeline fingerprints matched. The installed helper predated the existing host-assigned-identity correction. After rebuilding and refreshing its existing macOS access, live Analyze completed on the six-second generated-audio project **Cutdown Preview Return 0916** in the workspace **Cutdown Integration.fcpbundle**. Isolation and rendered-audio project verification passed; the review proposed one 1.933-second removal and enabled **Show Cut Preview**. No cuts were applied.
+The reported Analyze failure rejected Final Cut's newly assigned imported project UUID even though the semantic timeline fingerprints matched. The installed helper predated the existing host-assigned-identity correction. After rebuilding and refreshing its existing macOS access, live Analyze completed on the six-second generated-audio project **Silent Snip Preview Return 0916** in the workspace **Cutdown Integration.fcpbundle**. Isolation and rendered-audio project verification passed; the review proposed one 1.933-second removal and enabled **Show Cut Preview**. No cuts were applied.
 
 A live overlay capture remained blank. Diagnostics showed masks covering the full clip; the owning-window check and final on-screen verification remain incomplete. Separately, a regression test reproduced lost boundary pixels when the view's backing layer was replaced. The renderer now reattaches its retained drawing even when geometry is unchanged. All 43 focused capture, preview, review, and isolated-project tests passed. Optional preview diagnostics now include drawing attachment and window-surface metadata to distinguish rendering faults from intentional occlusion.
 
@@ -46,7 +46,7 @@ The updated helper is built and installed. **The user stopped live testing befor
 
 **Required workflow:** add Silent Snip Audio from Final Cut's Effects browser, open its Controls window, adjust the four detection settings, click **Analyze**, review, then click the separate **Apply Cuts** button. Settings belong in the window, not in the sidebar. After the one-time [Share destination setup](setup.md#create-the-silent-snip-share-destination), the intended Analyze/Apply workflow does not require a manual Share or export-method choice.
 
-**Current status:** Analyze reads an unprocessed clip directly from its source. Clips with volume adjustments, fades, channel changes, enhancements, or effects use a Final Cut WAV render so detection includes their processing. The rendered path currently requires Dialogue-only audio and no other enabled audio overlapping the target; ambiguous context stops explicitly. The new automatic render path still needs live button verification after restoring the helper’s existing macOS access. Apply now checks the project and source media again, generates all selected cuts in FCPXML, saves a separate `Before-Cuts.fcpxml` snapshot, and sends one new project to Final Cut Pro. The original timeline and media remain unchanged. The result is named separately in **Cutdown Results**. Remove Silence and one-second-gap output use the XML writer; no per-cut menu or keyboard commands are sent. The completion message confirms document delivery, not an automatically verified host import. Final Cut can drop Cutdown settings during XML import; the exact analysis settings are also saved in `Analysis-Settings.json`.
+**Current status:** Analyze reads an unprocessed clip directly from its source. Clips with volume adjustments, fades, channel changes, enhancements, or effects use a Final Cut WAV render so detection includes their processing. The rendered path currently requires Dialogue-only audio and no other enabled audio overlapping the target; ambiguous context stops explicitly. The new automatic render path still needs live button verification after restoring the helper’s existing macOS access. Apply now checks the project and source media again, generates all selected cuts in FCPXML, saves a separate `Before-Cuts.fcpxml` snapshot, and sends one new project to Final Cut Pro. The original timeline and media remain unchanged. The result is named separately in **Silent Snip Results**. Remove Silence and one-second-gap output use the XML writer; no per-cut menu or keyboard commands are sent. The completion message confirms document delivery, not an automatically verified host import. Final Cut can drop SilentSnip settings during XML import; the exact analysis settings are also saved in `Analysis-Settings.json`.
 
 The background analysis and editable FCPXML writer can be exercised together through `AudioProjectProcessor` and the developer-only verifier below. Successful processing of exported artifacts does not establish an effect-triggered operation, live result import, or edits in Final Cut's current timeline.
 
@@ -60,7 +60,7 @@ The current renderer exports the full Dialogue mix and measures the selected tar
 
 **Validation:** 43 focused tests pass, including source/processed routing, no mixing of overlapping audio, rendered-versus-source threshold behavior, stale effect changes, export completion/cancellation, and XML generation. The initial sandboxed run could not start AVFoundation readers; the same tests passed with access to the media service. The helper was rebuilt and restarted.
 
-**Manual Final Cut verification passed:** a disposable six-second `Cutdown Effects Processed` project in `Cutdown Integration.fcpbundle` references generated stereo PCM in place and has +12 dB gain plus Limiter. Export File was verified as Audio Only / WAV / All Dialogue / one file and one track. The source’s quiet tone measures about −53.9 dBFS; the host render measures about −42.4 dBFS. At −50 dBFS the source path would remove 1.033–4.967 s, while rendered analysis correctly removes only 3.033–4.967 s. XML generation from the rendered measurements produces a 4.067 s result; that result was not imported. Evidence: `build/EffectAwareVerification/Verification.json`, the manual WAV/XML, and `build/effect-aware-analysis-tests.log`.
+**Manual Final Cut verification passed:** a disposable six-second `SilentSnip Effects Processed` project in `Cutdown Integration.fcpbundle` references generated stereo PCM in place and has +12 dB gain plus Limiter. Export File was verified as Audio Only / WAV / All Dialogue / one file and one track. The source’s quiet tone measures about −53.9 dBFS; the host render measures about −42.4 dBFS. At −50 dBFS the source path would remove 1.033–4.967 s, while rendered analysis correctly removes only 3.033–4.967 s. XML generation from the rendered measurements produces a 4.067 s result; that result was not imported. Evidence: `build/EffectAwareVerification/Verification.json`, the manual WAV/XML, and `build/effect-aware-analysis-tests.log`.
 
 **Automatic button verification remains blocked:** Analyze on that test fixture reported missing macOS Device Control and Data Access after the local rebuild. The user’s earlier choice to test manually was honored; no permission was granted. Manual export and backend success do not establish automatic Analyze, automatic Apply, or host effect-state retention for this build.
 
@@ -76,7 +76,7 @@ A regression test failed before the fix. **82 targeted tests passed** afterward.
 
 The new `XMLProjectApply` prepares and validates all edits in one project, preserves a recovery copy and analysis settings, and refuses delivery if the XML changes or the destination library disappears. Cancellation before delivery sends nothing; an uncertain import is not retried. Existing result folders are never overwritten.
 
-**Live manual round trip passed for cut structure:** a fresh `Cutdown XML Apply Verification` project in the workspace's `Cutdown Integration.fcpbundle` contained the existing generated ten-second `Recording.wav`, referenced in place. Source decoding at −32 dBFS, 0.5 s minimum silence, and 0.1 s padding produced two removals totaling 3.1 s. The same XML preparation code used by Apply generated the result in approximately 0.009 s (generation/validation and artifact writes only; not source analysis or Final Cut import). Finder import created `Cutdown XML Verified Result` with three editable segments totaling **6.9 s**. A manual Final Cut re-export confirmed exact timeline offsets, source starts, durations, original media references, and the Silent Snip effect reference on each segment.
+**Live manual round trip passed for cut structure:** a fresh `SilentSnip XML Apply Verification` project in the workspace's `Cutdown Integration.fcpbundle` contained the existing generated ten-second `Recording.wav`, referenced in place. Source decoding at −32 dBFS, 0.5 s minimum silence, and 0.1 s padding produced two removals totaling 3.1 s. The same XML preparation code used by Apply generated the result in approximately 0.009 s (generation/validation and artifact writes only; not source analysis or Final Cut import). Finder import created `SilentSnip XML Verified Result` with three editable segments totaling **6.9 s**. A manual Final Cut re-export confirmed exact timeline offsets, source starts, durations, original media references, and the Silent Snip effect reference on each segment.
 
 **Effect state still fails round trip:** the generated XML preserved the original effect archive, but Final Cut re-exported three bare filter references. The verifier correctly reports `cutStructureVerified: true` and `effectPayloadUnchanged: false` and exits nonzero. This does not establish preserved settings. Check settings before analyzing an imported segment again.
 
@@ -86,19 +86,19 @@ The new `XMLProjectApply` prepares and validates all edits in one project, prese
 
 **Historical range shortcut optimization (superseded by XML Apply):** the native driver attempts the assigned keyboard shortcuts for Clear Selected Ranges, Set Range Start, and Set Range End, reading the retained Mark menu's Accessibility metadata without opening it. Unavailable, disabled, or incomplete assignments use the existing menu driver before any shortcut is sent. Preparation checks the cleared range, the new start, and the complete removal range; it stops on an unconfirmed shortcut instead of retrying through a menu. Delete, recovery snapshots, and final XML verification retain their existing checks. The 21 capture tests pass, including three new shortcut metadata tests (`build/range-shortcut-tests.log`). Live shortcut execution and timing remain unverified because Final Cut computer access was not approved; this is not evidence of automatic timeline cuts or a measured speedup. That native driver is no longer called by interactive Apply. XML capture still uses the Share confirmation; cuts and gaps are generated in code.
 
-Interactive Analyze and Apply use the configured **Cutdown** Share destination and Apple's Media Asset Protocol. The helper supplies a unique output folder and filename and requests XML only (`hasMedia=false`, no library archive). XML capture needs no Export XML Save panel or filename entry. Processed clips additionally use the Export File audio-only WAV flow, including its save panel, and a second XML capture to verify the project did not change during rendering. Final Cut still requires initiating the Share command and confirming its panel; Silent Snip performs those bounded Accessibility actions. Timeline focus uses an Accessibility property first, with the menu command as a compatibility fallback.
+Interactive Analyze and Apply use the configured **SilentSnip** Share destination and Apple's Media Asset Protocol. The helper supplies a unique output folder and filename and requests XML only (`hasMedia=false`, no library archive). XML capture needs no Export XML Save panel or filename entry. Processed clips additionally use the Export File audio-only WAV flow, including its save panel, and a second XML capture to verify the project did not change during rendering. Final Cut still requires initiating the Share command and confirming its panel; Silent Snip performs those bounded Accessibility actions. Timeline focus uses an Accessibility property first, with the menu command as a compatibility fallback.
 
 The current cycle captures XML for Analyze and for the changed-project check before generating the edited copy. It then sends the completed result through an Open Document request. A final host re-export is currently a developer verification step. Completion arrives through a dedicated Open Document scripting handler. If the host omits that callback, only a complete, parseable XML at the exact assigned job path is accepted after three seconds of stable reads. Late identical completion messages are harmless; replaced files and unrelated jobs fail validation. Cancellation never sends an old XML-only delivery to the legacy audio workflow.
 
-**Historical separate-project verification:** both buttons passed in `Cutdown Button Verification` inside `Cutdown Integration.fcpbundle`. Two XML-only deliveries produced no Save dialogs or rendered audio. Final Cut imported a separate result with three editable clips totaling 7.3 seconds. 33 exchange/capture tests passed. Evidence: `build/ProgrammaticVerification/`. The prior source-interval roundtrip evidence remains in `build/SourceVerification/`.
+**Historical separate-project verification:** both buttons passed in `SilentSnip Button Verification` inside `Cutdown Integration.fcpbundle`. Two XML-only deliveries produced no Save dialogs or rendered audio. Final Cut imported a separate result with three editable clips totaling 7.3 seconds. 33 exchange/capture tests passed. Evidence: `build/ProgrammaticVerification/`. The prior source-interval roundtrip evidence remains in `build/SourceVerification/`.
 
-The machine must have a Share destination named **Cutdown** targeting the installed helper; the historical test Mac already had it configured. New checkouts must complete [first-time setup](setup.md). A missing destination produces an explanation rather than silently switching to manual Save dialogs. The legacy Export XML save-panel driver was removed in the September 16 cleanup.
+The machine must have a Share destination named **SilentSnip** targeting the installed helper; the historical test Mac already had it configured. New checkouts must complete [first-time setup](setup.md). A missing destination produces an explanation rather than silently switching to manual Save dialogs. The legacy Export XML save-panel driver was removed in the September 16 cleanup.
 
 ## XML export repair (September 15)
 
-The live Analyze button now opens Export XML, selects the job folder, saves the FCPXML bundle, and parses the selected ten-second `Recording` in `Cutdown Button Verification`. Fixed retained closed-menu detection with hit testing, selected menu activation, and stale toolbar-object checks when native panels open. The effect is not explicitly closed. Evidence: `build/xml-save-fixed.fcpxml`, `build/xml-save-fix-build.log`, and `build/xml-save-fix-tests.log`.
+The live Analyze button now opens Export XML, selects the job folder, saves the FCPXML bundle, and parses the selected ten-second `Recording` in `SilentSnip Button Verification`. Fixed retained closed-menu detection with hit testing, selected menu activation, and stale toolbar-object checks when native panels open. The effect is not explicitly closed. Evidence: `build/xml-save-fixed.fcpxml`, `build/xml-save-fix-build.log`, and `build/xml-save-fix-tests.log`.
 
-The earlier controller-settings blocker was caused when Final Cut exported `<filter-audio ref="r4" name="Cutdown Audio"/>` without scalar parameters or `effectState` for this instance. The interactive path now accepts the explicit window request only for a verified, enabled, single Silent Snip effect whose exported entry is completely empty. Partial or malformed saved settings still fail. The source-analysis workflow replaces the subsequent rendered-audio export path.
+The earlier controller-settings blocker was caused when Final Cut exported `<filter-audio ref="r4" name="Silent Snip Audio"/>` without scalar parameters or `effectState` for this instance. The interactive path now accepts the explicit window request only for a verified, enabled, single Silent Snip effect whose exported entry is completely empty. Partial or malformed saved settings still fail. The source-analysis workflow replaces the subsequent rendered-audio export path.
 
 ## Scope
 
@@ -108,7 +108,7 @@ The earlier controller-settings blocker was caused when Final Cut exported `<fil
 - Other timeline items remain part of project validation and synchronization checks. Their presence does not expand the target's editing scope.
 - Retimed, nested, ambiguous, missing-media, disabled-audio, and entirely silent targets cannot be applied automatically.
 
-The only effect is the **Cutdown Audio AUv3** audio effect. The video plug-in, its Xcode project, Motion templates, build script, and video-fixture generation have been removed. Existing integration projects, source media, recovery snapshots, and exported evidence are preserved.
+The only effect is the **Silent Snip Audio AUv3** audio effect. The video plug-in, its Xcode project, Motion templates, build script, and video-fixture generation have been removed. Existing integration projects, source media, recovery snapshots, and exported evidence are preserved.
 
 ## Current interface and status
 
@@ -126,11 +126,11 @@ The four settings and **Analyze** are in **Audio Inspector → Silent Snip Audio
 Existing verification on this Apple Silicon Mac with Final Cut Pro 12.3 and Xcode 27:
 
 - The helper and Audio Unit build and sign locally. Apple's Audio Unit validation passed for `aufx / ctdn / Ctdn`.
-- **Current window build:** build 4 restores an Audio Unit custom view with four private settings, Analyze, and a separate gated Apply Cuts button. Factory tests, legacy native-state compatibility, 60 audio render cases, and `auval` pass. A fresh instance in `Cutdown Backend Verification` has no sidebar setting fields. A window setting survived a full Final Cut restart; Analyze received the helper’s current unavailable response and Apply stayed disabled. Existing instances retain Final Cut's cached controls until reapplied. Evidence: `build/audio-window-*.log` and `build/audio-window-verification.json`.
+- **Current window build:** build 4 restores an Audio Unit custom view with four private settings, Analyze, and a separate gated Apply Cuts button. Factory tests, legacy native-state compatibility, 60 audio render cases, and `auval` pass. A fresh instance in `SilentSnip Backend Verification` has no sidebar setting fields. A window setting survived a full Final Cut restart; Analyze received the helper’s current unavailable response and Apply stayed disabled. Existing instances retain Final Cut's cached controls until reapplied. Evidence: `build/audio-window-*.log` and `build/audio-window-verification.json`.
 - Final Cut loads Silent Snip Audio on an audio-only clip. Its four scalar settings and instance-state restoration passed live checks.
 - The audio render tests passed 60 passthrough cases plus persistence checks. The legacy custom-view harness also passed; its result does not establish the requested native Inspector interaction.
 - The September 15 background-processing regression run passed **213 tests** (138 Mac, 75 Core), including ten PCM-to-project tests and four decoded breath-like-noise tests. Evidence: `build/background-processing-tests.log`.
-- **Current backend/live-import evidence:** the processor decoded the existing ten-second Final Cut Dialogue WAV, measured 1,000 windows, and generated two cuts removing 2.7 seconds. The result was imported into **Cutdown Backend Verification** inside `Cutdown Integration.fcpbundle`. Final Cut displayed three editable audio segments totaling 7.3 seconds; its re-export confirmed their exact source starts, durations, timeline offsets, and original media references. No media copies were requested. Artifacts: `build/BackendVerification/`.
+- **Current backend/live-import evidence:** the processor decoded the existing ten-second Final Cut Dialogue WAV, measured 1,000 windows, and generated two cuts removing 2.7 seconds. The result was imported into **SilentSnip Backend Verification** inside `Cutdown Integration.fcpbundle`. Final Cut displayed three editable audio segments totaling 7.3 seconds; its re-export confirmed their exact source starts, durations, timeline offsets, and original media references. No media copies were requested. Artifacts: `build/BackendVerification/`.
 - **Live-import failure:** Final Cut discarded the imported Silent Snip parameter/state payload. The first segment's Inspector showed threshold −26 dB instead of the output's −32 dB. Effect references survived, but settings retention did not. A historical backend round-trip check reported a failed effect-payload comparison; this result must not be presented as a complete integration pass. The retired Python check is no longer part of this checkout; current import verification is implemented in Swift.
 - **Historical analysis evidence:** the shared pipeline processed an actual ten-second Final Cut Dialogue WAV and XML export, finding two frame-aligned cuts totaling 2.7 seconds with the effect's saved settings.
 - **Historical manual-edit evidence:** two manually performed native partial-range deletions left three editable audio segments totaling 7.3 seconds. A recovery snapshot and final XML confirmed the retained source intervals and effect on each segment. This establishes Final Cut's native behavior, not automatic editing by the helper.
@@ -170,10 +170,10 @@ Quit Final Cut before rebuilding or registering the audio plug-in. Re-registerin
 
 Products:
 
-- `build/Cutdown.app` — background helper with the `cutdown` application URL scheme.
-- `build/AudioPlugin/Build/Products/Debug/CutdownAudio.app` — audio wrapper containing `CutdownAudioExtension.appex`.
+- `build/SilentSnip.app` — background helper with the `silentsnip` application URL scheme.
+- `build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app` — audio wrapper containing `SilentSnipAudioExtension.appex`.
 
-The audio Xcode project is **CutdownAudio.xcodeproj**; the helper and shared libraries use **Package.swift**. Signing is local and ad hoc. No paid developer account, distribution service, or license server is configured.
+The audio Xcode project is **SilentSnipAudio.xcodeproj**; the helper and shared libraries use **Package.swift**. Signing is local and ad hoc. No paid developer account, distribution service, or license server is configured.
 
 Registration verifies both apps and the embedded audio extension before registering their existing build paths. It does not grant Accessibility access. Keep these bundles in place. Register or replace the Audio Unit while Final Cut is closed, then reopen Final Cut so it loads the updated extension. See [Audio Unit details](../AudioPlugin/README.md).
 
@@ -201,9 +201,9 @@ The core and Mac tests cover pause detection, channel handling, padding, exact t
 CLANG_MODULE_CACHE_PATH="$PWD/build/module-cache" \
 SWIFTPM_MODULECACHE_OVERRIDE="$PWD/build/module-cache" \
 swift run --disable-sandbox --scratch-path build/swift --cache-path build/swift-cache \
-  CutdownVerify \
-  --xml "build/Fixtures/Cutdown Audio Native - Before Cuts.fcpxmld" \
-  --audio "build/Fixtures/Cutdown Audio Native.wav" \
+  SilentSnipVerify \
+  --xml "build/Fixtures/Silent Snip Audio Native - Before Cuts.fcpxmld" \
+  --audio "build/Fixtures/Silent Snip Audio Native.wav" \
   --target-start 0s --target-end 10s --role dialogue \
   --controller-uid 'AudioUnit: 0x617566786374646e4374646e' \
   --threshold -32 --minimum 0.75 --before 0.125 --after 0.25
@@ -211,16 +211,16 @@ swift run --disable-sandbox --scratch-path build/swift --cache-path build/swift-
 
 Repeat `--role` for each included Dialogue role/subrole. Role metadata is an explicit caller assertion; a file hash cannot prove which mix was exported. This command reads exported artifacts and does not control Final Cut or edit timelines.
 
-The preserved **Before Cuts** XML and WAV describe the ten-second fixture. `Cutdown Audio Native Analysis.json` records cuts `34/15s–101/30s` and `79/15s–103/15s`, totaling `27/10s`. The unqualified native XML and later **Export Probe** XML contain a separate 74.6-second recording (title omitted for privacy).
+The preserved **Before Cuts** XML and WAV describe the ten-second fixture. `Silent Snip Audio Native Analysis.json` records cuts `34/15s–101/30s` and `79/15s–103/15s`, totaling `27/10s`. The unqualified native XML and later **Export Probe** XML contain a separate 74.6-second recording (title omitted for privacy).
 
 ### Background processing to an editable project
 
 This is **developer verification**, using existing XML and full-project Dialogue PCM artifacts. It is not a required manual export workflow for the finished app. `AudioProjectProcessor` runs actual PCM decoding, silence detection, eligibility review, and XML creation without a window. The verifier exposes it with `--output-directory NEWDIR`:
 
 ```sh
-build/swift/debug/CutdownVerify \
-  --xml "build/Fixtures/Cutdown Audio Native - Before Cuts.fcpxmld" \
-  --audio "build/Fixtures/Cutdown Audio Native.wav" \
+build/swift/debug/SilentSnipVerify \
+  --xml "build/Fixtures/Silent Snip Audio Native - Before Cuts.fcpxmld" \
+  --audio "build/Fixtures/Silent Snip Audio Native.wav" \
   --target-start 0s --target-end 10s --role dialogue \
   --controller-uid 'AudioUnit: 0x617566786374646e4374646e' \
   --threshold -32 --minimum 0.75 --before 0.125 --after 0.25 \
@@ -233,8 +233,8 @@ The output directory must be new and its parent must exist. Optional `--output-n
 
 When eligible cuts exist, the processor writes:
 
-- `Cutdown.fcpxml`: a new project containing editable retained audio segments, with source media referenced in place.
-- `Before-Cutdown.fcpxml`: the input XML before transformation.
+- `SilentSnip.fcpxml`: a new project containing editable retained audio segments, with source media referenced in place.
+- `Before-SilentSnip.fcpxml`: the input XML before transformation.
 - `Edit-Report.json`: decoded audio identity, measured-window count, settings, candidate eligibility, removed duration, and retained source intervals. It explicitly records that the detector does not classify breaths.
 
 No qualifying or eligible cuts produces no output project. The processor checks input consistency before publishing a completed result and never overwrites an existing result directory. It does not modify source audio, the input XML, or any open Final Cut timeline. Live import and effect-triggered processing are separate verification steps.
@@ -250,7 +250,7 @@ The writer currently rejects unsupported topology, including target connections,
 ```sh
 ./Scripts/make-fixtures.sh
 # For an isolated generator check without replacing existing fixture media:
-./Scripts/make-fixtures.sh --output-dir /tmp/cutdown-audio-fixtures
+./Scripts/make-fixtures.sh --output-dir /tmp/silentsnip-audio-fixtures
 ```
 
 The generator creates only original PCM audio and these three projects:
@@ -273,14 +273,14 @@ FFmpeg is a development fixture dependency, not an application dependency. The s
 
 ## Source layout
 
-- `AudioPlugin`, `CutdownAudio.xcodeproj`: audio passthrough, native scalar parameters, factory without a custom editor.
-- `Sources/CutdownApp`: background helper entry point.
-- `Sources/CutdownCore`: rational time, detector, timeline validation, review and markers.
-- `Sources/CutdownMac`: audio decoding, background processing, edited XML writer, AU settings, and experimental capture/Share integrations.
-- `Sources/CutdownVerify`: read-only analysis or explicit edited-project output from existing artifacts.
+- `AudioPlugin`, `SilentSnipAudio.xcodeproj`: audio passthrough, native scalar parameters, factory without a custom editor.
+- `Sources/SilentSnipApp`: background helper entry point.
+- `Sources/SilentSnipCore`: rational time, detector, timeline validation, review and markers.
+- `Sources/SilentSnipMac`: audio decoding, background processing, edited XML writer, AU settings, and experimental capture/Share integrations.
+- `Sources/SilentSnipVerify`: read-only analysis or explicit edited-project output from existing artifacts.
 - `Tests`: regression tests and XML fixtures.
 
-The latest integration report is at `~/Library/Application Support/Cutdown/Integration/latest.json`.
+The latest integration report is at `~/Library/Application Support/SilentSnip/Integration/latest.json`.
 
 The retired video source, app bundles, and installed templates were moved to Trash for recovery. `build/audio-only-retirement.json` records the exact locations. Their unused build cache and the redundant `.build` cache were removed; the shared `build/swift` cache remains in use.
 
@@ -297,11 +297,11 @@ Overlapping review windows mask only the covered portion. The overlay follows th
 
 The original preview helper build and 10 coordinator tests passed. The subsequent
 labeled/persistent preview build passed and live Analyze reported both boundary
-types while the review window remained open. In `Cutdown Button Verification`
+types while the review window remained open. In `SilentSnip Button Verification`
 inside `Cutdown Integration.fcpbundle`, live analysis produced two cuts and four
 normalized boundaries (0.226667, 0.336667, 0.526667, 0.686667); the reported overlay
 width followed timeline zoom from 1215 to 608 screen points. The helper's status
-was recorded in `~/Library/Application Support/Cutdown/Integration/TimelinePreview.txt` (now written only during explicitly enabled diagnostics).
+was recorded in `~/Library/Application Support/SilentSnip/Integration/TimelinePreview.txt` (now written only during explicitly enabled diagnostics).
 Final Cut's window-only screenshot excludes the separate helper surface, so
 visual appearance/compositing has not been independently confirmed. Partial
 visibility, multiple displays, and rapid scrolling require further integration
@@ -334,15 +334,15 @@ The preview also reacquires the live timeline Accessibility object within the pi
 
 Final preview stability build: existing Accessibility permission refreshed, Analyze returned review, and the helper reported a visible overlay on the fitted integration clip. Evidence: `build/PreviewStabilityVerification/`.
 
-Preview visibility control: **Show Cut Preview** is installed. Fifteen coordinator/transport tests and the custom-view harness passed, including JSON-boolean command validation. Live testing in `Cutdown Audio Native` confirmed seven cuts, hide/show, continued Apply availability, and the checked state surviving window close/reopen. No cuts were applied. The helper confirmed hiding on request; after restoring and closing the window it reported foreground/geometry unavailable, so persistent visible compositing remains unverified. Evidence: `build/PreviewToggleVerification/`.
+Preview visibility control: **Show Cut Preview** is installed. Fifteen coordinator/transport tests and the custom-view harness passed, including JSON-boolean command validation. Live testing in `Silent Snip Audio Native` confirmed seven cuts, hide/show, continued Apply availability, and the checked state surviving window close/reopen. No cuts were applied. The helper confirmed hiding on request; after restoring and closing the window it reported foreground/geometry unavailable, so persistent visible compositing remains unverified. Evidence: `build/PreviewToggleVerification/`.
 
-Effect-removal preview cleanup: the helper checks the analyzed occurrence when it is the sole selected timeline item and its Audio Inspector is readable. If Silent Snip is absent for at least 0.5 seconds, it clears the overlay and stops its refresh timer. That analysis cannot restore the overlay after Undo/re-adding the effect; Analyze creates a fresh preview. Hidden Inspectors, other selections, and collapsed Effects groups do not establish removal. This uses Inspector observation, not a plugin deletion callback; removal through other workflows is detected once the target is selected with its Audio Inspector visible. Sixteen focused capture tests passed. Live testing in `Cutdown Audio Native` confirmed effect removal clears the preview, Undo restores the effect and all four settings, and the previous preview stays dismissed. No cuts were applied. Evidence: `build/EffectRemovalVerification/`.
+Effect-removal preview cleanup: the helper checks the analyzed occurrence when it is the sole selected timeline item and its Audio Inspector is readable. If Silent Snip is absent for at least 0.5 seconds, it clears the overlay and stops its refresh timer. That analysis cannot restore the overlay after Undo/re-adding the effect; Analyze creates a fresh preview. Hidden Inspectors, other selections, and collapsed Effects groups do not establish removal. This uses Inspector observation, not a plugin deletion callback; removal through other workflows is detected once the target is selected with its Audio Inspector visible. Sixteen focused capture tests passed. Live testing in `Silent Snip Audio Native` confirmed effect removal clears the preview, Undo restores the effect and all four settings, and the previous preview stays dismissed. No cuts were applied. Evidence: `build/EffectRemovalVerification/`.
 
-Preview refresh consistency: timer callbacks now run directly on the main run loop instead of queuing asynchronous refresh tasks. Each verified frame restores the nonactivating overlay above Final Cut, even if AppKit still reports the obscured panel as visible. The panel follows Spaces, and coordinate conversion uses the fixed main-display origin. Hidden status now records specific causes (foreground app, modal dialog, clip match, or viewport geometry). Twenty-eight capture/coordinator tests passed, including foreground-independent window matching and occlusion masking. Diagnostics identified foreground-app changes as the recurring hide reason; preview visibility now uses the visible project window instead. Live verification passed in `Cutdown Audio Native`: the helper reported visibility after closing the effect window and switching focus to Codex; Zoom In updated the clip rectangle from width 1292 to 2584 with a negative offscreen origin. No cuts were applied. Evidence: `build/PreviewConsistencyVerification/`. Window-only captures still do not independently verify composed overlay appearance.
+Preview refresh consistency: timer callbacks now run directly on the main run loop instead of queuing asynchronous refresh tasks. Each verified frame restores the nonactivating overlay above Final Cut, even if AppKit still reports the obscured panel as visible. The panel follows Spaces, and coordinate conversion uses the fixed main-display origin. Hidden status now records specific causes (foreground app, modal dialog, clip match, or viewport geometry). Twenty-eight capture/coordinator tests passed, including foreground-independent window matching and occlusion masking. Diagnostics identified foreground-app changes as the recurring hide reason; preview visibility now uses the visible project window instead. Live verification passed in `Silent Snip Audio Native`: the helper reported visibility after closing the effect window and switching focus to Codex; Zoom In updated the clip rectangle from width 1292 to 2584 with a negative offscreen origin. No cuts were applied. Evidence: `build/PreviewConsistencyVerification/`. Window-only captures still do not independently verify composed overlay appearance.
 
 Preview drawing regression correction: the previous “visible” status only established that the panel was ordered in, not that boundary pixels existed. Live drawing capture reproduced a blank image. Masking now excludes non-application utility/system surfaces and surfaces at menu-bar level or higher, which had supplied a full-screen obstruction. The overlay renders a bitmap explicitly and assigns its CGImage to a backing layer, avoiding the blank live view-cache path. Eighteen capture/rendering tests passed, including an assertion that real colored pixels reach the layer. Live analysis produced seven visible boundary pairs in the actual rendering image after closing Controls; no timeline cuts were applied. Before/after drawing evidence: `build/PreviewMaskVerification/`. The user subsequently confirmed the green START and orange END lines are visible on the actual Final Cut timeline.
 
-Docked-browser clipping: preview geometry now intersects the analyzed clip with every enclosing timeline scroll viewport. This excludes the Effects/Transitions browser inside the same Final Cut window while preserving the full clip rectangle for time mapping. Nineteen focused capture/rendering tests passed. Live testing in `Cutdown Audio Native` confirmed the overlay width is 1439 points with either browser open and expands to 1840 when closed, while the full zoomed clip stays 5168 points wide. Visible boundary pixels were inspected; no cuts were applied. Evidence: `build/BrowserPreviewVerification/`.
+Docked-browser clipping: preview geometry now intersects the analyzed clip with every enclosing timeline scroll viewport. This excludes the Effects/Transitions browser inside the same Final Cut window while preserving the full clip rectangle for time mapping. Nineteen focused capture/rendering tests passed. Live testing in `Silent Snip Audio Native` confirmed the overlay width is 1439 points with either browser open and expands to 1840 when closed, while the full zoomed clip stays 5168 points wide. Visible boundary pixels were inspected; no cuts were applied. Evidence: `build/BrowserPreviewVerification/`.
 
 ### Preview performance update (September 15)
 
@@ -350,9 +350,9 @@ The preview now uses retained `CAShapeLayer` lines and `CATextLayer` labels inst
 
 A serial background worker reads cached Accessibility handles and window geometry. Accessibility notifications wake the sampler; fallback polling runs up to 30 times per second while active and about 7 times per second when idle. Identity/effect checks refresh every 0.5 seconds. Only one read may be in flight, and generation tokens discard late results after dismissal or a new analysis. An unresponsive host hides stale geometry. Final Cut read latency still limits how quickly lines can follow movement; this is not a guaranteed 30 FPS overlay.
 
-Normal preview operation writes no diagnostic PNGs or status logs. For explicit profiling, create `~/Library/Application Support/Cutdown/Integration/EnablePreviewDiagnostics`, then Analyze. The first 120 samples produce one timing report and one drawing PNG; diagnostic failure/removal status remains available for that session. Remove the flag and Analyze again to return to normal operation. These files describe helper rendering and do not independently prove desktop compositing.
+Normal preview operation writes no diagnostic PNGs or status logs. For explicit profiling, create `~/Library/Application Support/SilentSnip/Integration/EnablePreviewDiagnostics`, then Analyze. The first 120 samples produce one timing report and one drawing PNG; diagnostic failure/removal status remains available for that session. Remove the flag and Analyze again to return to normal operation. These files describe helper rendering and do not independently prove desktop compositing.
 
-Validation: 32 focused coordinator/capture/rendering tests passed, including layer reuse, real boundary pixels, overlapping masks, and rejection of late callbacks. The installed helper was tested only in `Cutdown Audio Native` in `Cutdown Integration.fcpbundle`. Analyze returned seven ranges; Show Cut Preview remained usable; effect removal logged dismissal, and Undo restored the effect and settings. Final analysis completed with profiling disabled. No cuts were applied in this preview test.
+Validation: 32 focused coordinator/capture/rendering tests passed, including layer reuse, real boundary pixels, overlapping masks, and rejection of late callbacks. The installed helper was tested only in `Silent Snip Audio Native` in `Cutdown Integration.fcpbundle`. Analyze returned seven ranges; Show Cut Preview remained usable; effect removal logged dismissal, and Undo restored the effect and settings. Final analysis completed with profiling disabled. No cuts were applied in this preview test.
 
 A 120-sample live capture measured mean background read time of 7.34 ms (maximum 93.93 ms) and mean main-thread presentation/update time of 0.125 ms (maximum 10.97 ms). Presentation samples include unchanged frames and initial layer construction, and exclude compositor work. Forty AX notification registrations succeeded. There is no comparable pre-change timing capture, so these are current measurements, not a speedup ratio. Evidence: `build/PreviewPerformanceVerification/`.
 
@@ -364,7 +364,7 @@ A 120-sample live capture measured mean background read time of 7.34 ms (maximum
 - Vector redraws compare the boundary list once per update instead of once per boundary, avoiding quadratic list-comparison work when scrolling or zooming many cuts.
 - The helper's startup status correctly describes native timeline cuts and the recovery snapshot.
 
-Two review-state regressions were reproduced before the fixes. The complete Swift suite then passed: 164 Mac tests and 75 core tests (239 total), including new throttling and real PCM source-trim/render checks. The helper compiled and was installed. Existing macOS access was refreshed, and live Analyze passed in `Cutdown Audio Native` inside the workspace `Cutdown Integration.fcpbundle`: seven proposed cuts, stable completion, preview enabled, and separate Apply available. The temporary test effect was removed afterward, leaving the original audio clip and duration intact. No cuts were applied; no native Apply test is claimed for this maintenance pass. Logs: `build/maintenance-regression-before.log`, `build/maintenance-tests.log`, and `build/maintenance-build.log`.
+Two review-state regressions were reproduced before the fixes. The complete Swift suite then passed: 164 Mac tests and 75 core tests (239 total), including new throttling and real PCM source-trim/render checks. The helper compiled and was installed. Existing macOS access was refreshed, and live Analyze passed in `Silent Snip Audio Native` inside the workspace `Cutdown Integration.fcpbundle`: seven proposed cuts, stable completion, preview enabled, and separate Apply available. The temporary test effect was removed afterward, leaving the original audio clip and duration intact. No cuts were applied; no native Apply test is claimed for this maintenance pass. Logs: `build/maintenance-regression-before.log`, `build/maintenance-tests.log`, and `build/maintenance-build.log`.
 
 ### Apply failure on compact retained segments (September 15)
 
@@ -372,7 +372,7 @@ The seven-cut recording stopped after two verified removals because Final Cut om
 
 Native verification now snapshots each item's attributes once and accepts this compact representation only for supported primary-storyline audio clips with exact name, start, and duration. Any conflicting exposed title/edge, missing/duplicate Item position, or ambiguous match still fails. The selected deletion range retains its complete boundary/focus checks, and final source/effect/project verification still compares the full XML fingerprint. Errors now identify the unmatched interval or clip-count discrepancy.
 
-Validation: 38 focused tests passed. A separate `Cutdown Apply Compact Regression` project in the existing workspace `Cutdown Integration.fcpbundle` reproduced the same source/settings. All seven native cuts completed and the final XML fingerprint matched: 74.6 seconds became 58.7 seconds, with eight editable audio segments and Silent Snip retained on each segment, including four-frame ends. The original partially edited project and its original recovery snapshot were preserved. No source media was copied. Final Cut crashed in AppKit text-control recursion after the test XML import; the imported project survived reopening, and the subsequent Apply completed without that interruption. Evidence: `build/ApplyCompactVerification/`; test/build logs: `build/apply-compact-tests.log` and `build/apply-compact-build.log`.
+Validation: 38 focused tests passed. A separate `SilentSnip Apply Compact Regression` project in the existing workspace `Cutdown Integration.fcpbundle` reproduced the same source/settings. All seven native cuts completed and the final XML fingerprint matched: 74.6 seconds became 58.7 seconds, with eight editable audio segments and Silent Snip retained on each segment, including four-frame ends. The original partially edited project and its original recovery snapshot were preserved. No source media was copied. Final Cut crashed in AppKit text-control recursion after the test XML import; the imported project survived reopening, and the subsequent Apply completed without that interruption. Evidence: `build/ApplyCompactVerification/`; test/build logs: `build/apply-compact-tests.log` and `build/apply-compact-build.log`.
 
 ### One-second gap output
 
@@ -380,22 +380,22 @@ The audio effect window offers **Output → Remove Silence** (existing ripple cu
 
 Gap Apply uses Final Cut's native **Edit → Replace with Gap**, verifies the intermediate timeline, selects the exact new gap, then changes its duration to one second and verifies again. It proceeds latest first, keeps the existing before-cuts snapshot and final XML fingerprint checks, and preserves the same supported topology restrictions as ripple mode. Cancellation/failure can leave a same-length gap if interrupted before resizing; recovery reporting identifies the completed ranges and attempted range edits. Do not assume an interrupted gap has already reached one second.
 
-Validation: the full Swift suite passed 246 tests, the output-selector harness passed, and the native menu correction passed 43 focused tests. A manual native gap probe confirmed Final Cut's `start="3600s"` gap source clock and one-second duration. Gap evidence is in `build/GapVerification/`. The full live test passed in `Cutdown Gap Regression` inside the existing `Cutdown Integration.fcpbundle`: seven one-second gaps, eight retained audio segments with their effects, 74.6 → 65.7 seconds, and an exact final XML fingerprint match. The retained source intervals also match the previously verified ripple result. No source media was copied.
+Validation: the full Swift suite passed 246 tests, the output-selector harness passed, and the native menu correction passed 43 focused tests. A manual native gap probe confirmed Final Cut's `start="3600s"` gap source clock and one-second duration. Gap evidence is in `build/GapVerification/`. The full live test passed in `SilentSnip Gap Regression` inside the existing `Cutdown Integration.fcpbundle`: seven one-second gaps, eight retained audio segments with their effects, 74.6 → 65.7 seconds, and an exact final XML fingerprint match. The retained source intervals also match the previously verified ripple result. No source media was copied.
 
 # Same-event analysis import probe — September 22, 2026
 
-The processed-audio isolation XML now keeps the captured project's library and event identity while assigning a unique temporary project name and UID. A manual probe imported a six-second generated-audio project into the existing `Cutdown Integration Fixtures` event of this checkout's `Cutdown Integration.fcpbundle`. Final Cut showed the new project alongside the original `test` project, without creating another event. Its host XML export retained event UID `11875B77-A0C2-4E08-8A3D-209F8F698166` and assigned the imported project a new UID. The disposable project was moved to Trash through Final Cut; the event returned from ten to nine browser items. Source audio was referenced from `build/XMLReplacementVerification/replacement-tone.wav` in place. Probe XML and host export are preserved under `build/XMLReplacementVerification/`.
+The processed-audio isolation XML now keeps the captured project's library and event identity while assigning a unique temporary project name and UID. A manual probe imported a six-second generated-audio project into the existing `SilentSnip Integration Fixtures` event of this checkout's `Cutdown Integration.fcpbundle`. Final Cut showed the new project alongside the original `test` project, without creating another event. Its host XML export retained event UID `11875B77-A0C2-4E08-8A3D-209F8F698166` and assigned the imported project a new UID. The disposable project was moved to Trash through Final Cut; the event returned from ten to nine browser items. Source audio was referenced from `build/XMLReplacementVerification/replacement-tone.wav` in place. Probe XML and host export are preserved under `build/XMLReplacementVerification/`.
 
-Final Cut quit during import, as it did during an earlier XML probe; the project was present after restart. This establishes same-event import behavior for the manual probe, not an automatic Analyze → render → cleanup run. The helper's event-scoped cleanup still needs live verification, and the pre-existing `Cutdown Analysis` event was not changed.
+Final Cut quit during import, as it did during an earlier XML probe; the project was present after restart. This establishes same-event import behavior for the manual probe, not an automatic Analyze → render → cleanup run. The helper's event-scoped cleanup still needs live verification, and the pre-existing `Silent Snip Analysis` event was not changed.
 
 ## Installed helper and Share destination retest — September 22, 2026
 
-The installed helper and Audio Unit were rebuilt and registered from this checkout. A stale PlugInKit registration from another checkout was removed, and `auval -v aufx ctdn Ctdn` passed. After macOS control access was refreshed, Final Cut's Cutdown Share destination was set to this checkout's `build/Cutdown.app`.
+The installed helper and Audio Unit were rebuilt and registered from this checkout. A stale PlugInKit registration from another checkout was removed, and `auval -v aufx ctdn Ctdn` passed. After macOS control access was refreshed, Final Cut's SilentSnip Share destination was set to this checkout's `build/SilentSnip.app`.
 
-Live **Analyze** then passed on `A Hard Middle Ground` in project `test` inside the workspace `Cutdown Integration.fcpbundle`. The helper received the project XML and rendered audio, removed its temporary analysis project, and returned a review with 28 selected ranges totaling 21.600 seconds; the 74.600-second project would become 53.000 seconds if those ranges were applied. The effect Controls window reconnected and displayed the ranges with **Apply Cuts** available. Request `78C96F47-DEF6-4B76-8EA9-639EB0879FA5` and its timing, render-verification, and cleanup artifacts are under `~/Library/Application Support/Cutdown/Temporary/`. No cuts were applied in this retest; automatic timeline edits and post-import verification were not exercised.
+Live **Analyze** then passed on `A Hard Middle Ground` in project `test` inside the workspace `Cutdown Integration.fcpbundle`. The helper received the project XML and rendered audio, removed its temporary analysis project, and returned a review with 28 selected ranges totaling 21.600 seconds; the 74.600-second project would become 53.000 seconds if those ranges were applied. The effect Controls window reconnected and displayed the ranges with **Apply Cuts** available. Request `78C96F47-DEF6-4B76-8EA9-639EB0879FA5` and its timing, render-verification, and cleanup artifacts are under `~/Library/Application Support/SilentSnip/Temporary/`. No cuts were applied in this retest; automatic timeline edits and post-import verification were not exercised.
 
 ## Preview dismissal after effect removal — September 22, 2026
 
 The preview reader now completes Final Cut's Audio Inspector scan across bounded samples, accepts unrelated controls without Accessibility descriptions, and reads the Effects toggle's help text. A disabled Inspector scrollbar means all controls fit; the Audio Configuration section is outside the Inspector scroll area and cannot serve as an effect-section boundary. These corrections let the reader verify that the analyzed clip's Silent Snip effect has been removed and dismiss its dotted cut preview.
 
-Live verification used the disposable ten-second `Cutdown Audio Only Basic` project inside this checkout's existing `Cutdown Integration.fcpbundle`, with source media referenced in place. Analyze returned two selected cuts and showed the dotted preview. Final Cut's **Edit → Remove Effects** removed Silent Snip from the selected clip; the Inspector then showed **No Effects Applied**, and the helper recorded `Dismissed: Cutdown effect removed`. No cuts were applied. This verifies preview dismissal for effect removal, not automatic timeline cuts.
+Live verification used the disposable ten-second `Silent Snip Audio Only Basic` project inside this checkout's existing `Cutdown Integration.fcpbundle`, with source media referenced in place. Analyze returned two selected cuts and showed the dotted preview. Final Cut's **Edit → Remove Effects** removed Silent Snip from the selected clip; the Inspector then showed **No Effects Applied**, and the helper recorded `Dismissed: SilentSnip effect removed`. No cuts were applied. This verifies preview dismissal for effect removal, not automatic timeline cuts.

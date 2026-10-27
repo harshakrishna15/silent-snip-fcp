@@ -1,6 +1,6 @@
 # September 17 command fixes and code cleanup
 
-> Historical development record. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
+> Historical development record. Product names in this record are normalized to current branding; original evidence filenames and system labels may differ. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
 
 Both confirmed command-delivery bugs are fixed, and the eight requested cleanup items are implemented. Current builds remain staged for the user's live Final Cut checks; registered apps and permission entries were not changed.
 
@@ -11,7 +11,7 @@ Both confirmed command-delivery bugs are fixed, and the eight requested cleanup 
 
 ## Cleanup completed
 
-1. Extracted validation, cached heartbeats, pending commands, retry selection, and timeout checking into the AppKit-independent `CutdownReviewConnection`. The view retains control rendering and timer lifecycle.
+1. Extracted validation, cached heartbeats, pending commands, retry selection, and timeout checking into the AppKit-independent `SilentSnipReviewConnection`. The view retains control rendering and timer lifecycle.
 2. Split the former 1,454-line `FinalCutProjectCapture.swift` into focused capture, session, timecode, selection, policy, menu, timeline, settings-recovery, sharing, browser, and review-window files. The capture entry point is now 85 lines. Session extensions remain internal; shared helpers widened only from private to internal where required. A move audit found zero missing or extra executable lines, allowing visibility changes.
 3. Moved historical full-project export helpers and obsolete preview-mask geometry into test fixtures. Historical behavior remains testable without shipping inactive workflow code.
 4. Centralized exact Float32 settings equality in `AudioControllerSettings.equivalent` for verification and recovery.
@@ -27,7 +27,7 @@ Both confirmed command-delivery bugs are fixed, and the eight requested cleanup 
 - The Audio Unit harness passed 60 exact mono/stereo render cases plus state and persistence checks (`audio.log`).
 - All 12 build-script tests passed (`build-scripts.log`).
 - The Final Cut source move is recorded in `capture-move-audit.json`.
-- Matching signed candidates are at `build/Candidate/Cutdown.app` and `build/Candidate/AudioPlugin/CutdownAudio.app`; build/signature logs are `helper-stage.log` and `plugin-stage.log`.
+- Matching signed candidates are at `build/Candidate/SilentSnip.app` and `build/Candidate/AudioPlugin/SilentSnipAudio.app`; build/signature logs are `helper-stage.log` and `plugin-stage.log`.
 
 Logs above are under `build/CleanupFixes/`. An initial build caught a missing accessibility import after the file split; that was corrected before the successful full run. Tests use offline fixtures; decoding tests had normal macOS media-service access. No Final Cut UI was operated.
 

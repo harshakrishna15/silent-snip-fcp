@@ -1,8 +1,8 @@
-#import "../Extension/CutdownAudioUnitFactory.h"
-#import "../Extension/CutdownAudioUnit.h"
-#import "../Extension/CutdownReviewConnection.h"
+#import "../Extension/SilentSnipAudioUnitFactory.h"
+#import "../Extension/SilentSnipAudioUnit.h"
+#import "../Extension/SilentSnipReviewConnection.h"
 
-@interface CutdownAudioUnitFactory (Testing)
+@interface SilentSnipAudioUnitFactory (Testing)
 - (BOOL)openAnalysisURL:(NSURL *)URL;
 - (void)reconnect:(NSNotification *)notification;
 - (void)analyze:(id)sender;
@@ -24,7 +24,7 @@
 - (void)sendSettingsPreview;
 @end
 
-@interface TestFactory : CutdownAudioUnitFactory
+@interface TestFactory : SilentSnipAudioUnitFactory
 @property(nonatomic) NSURL *openedURL;
 @property(nonatomic) BOOL rejectLaunch;
 @property(nonatomic) NSDictionary *previewCommand;
@@ -60,7 +60,7 @@ static NSString *json(NSDictionary *value) {
 static void deliver(TestFactory *factory, NSString *object) {
     [factory receive:[NSNotification notificationWithName:@"test" object:object]];
 }
-static CutdownReviewConnection *connection(TestFactory *factory) { return [factory valueForKey:@"connection"]; }
+static SilentSnipReviewConnection *connection(TestFactory *factory) { return [factory valueForKey:@"connection"]; }
 static void response(TestFactory *factory, NSInteger revision, NSString *state, NSDictionary *changes) {
     NSMutableDictionary *packet = [@{@"version":@1, @"request":connection(factory).requestID, @"revision":@(revision),
         @"state":state, @"message":@"Test response", @"canApply":@YES, @"previewVisible":@YES, @"canChangeSelection":@YES,
@@ -80,7 +80,7 @@ static BOOL containsViewIdentifier(NSView *view, NSString *identifier) {
 /// Each scenario owns a fresh processor, private settings store, view and job.
 @interface Fixture : NSObject
 @property(nonatomic) TestFactory *factory;
-@property(nonatomic) CutdownAudioUnit *unit;
+@property(nonatomic) SilentSnipAudioUnit *unit;
 @property(nonatomic) NSURL *settingsFile;
 @property(nonatomic) NSArray<NSTextField *> *fields;
 @property(nonatomic) NSButton *analyze;
@@ -96,8 +96,8 @@ static BOOL containsViewIdentifier(NSView *view, NSString *identifier) {
         NSError *error = nil;
         require([self.factory createAudioUnitWithComponentDescription:description error:&error] != nil && !error, @"Factory creates processor");
         self.settingsFile = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
-        self.unit = [[CutdownAudioUnit alloc] initWithComponentDescription:description options:0
-            settingsStore:[[CutdownAudioLastUsedSettingsStore alloc] initWithFileURL:self.settingsFile] error:&error];
+        self.unit = [[SilentSnipAudioUnit alloc] initWithComponentDescription:description options:0
+            settingsStore:[[SilentSnipAudioLastUsedSettingsStore alloc] initWithFileURL:self.settingsFile] error:&error];
         require(self.unit && !error, @"Independent settings store");
         [self.factory setValue:self.unit forKey:@"audioUnit"];
         NSArray *values = @[@-26,@.75,@.125,@.25];
@@ -134,21 +134,21 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     NSMutableDictionary *contract = [@{@"bundleIdentifier":@"local.silentsnip.app", @"executable":@"SilentSnip", @"enabled":@YES} mutableCopy];
     NSMutableDictionary *info = [@{@"CFBundleIdentifier":@"local.silentsnip.app.audio", @"SilentSnipContainingApp":contract} mutableCopy];
     [info writeToURL:infoFile atomically:YES];
-    require([CutdownContainingApplicationURL(bundledExtension).path isEqual:app.path], @"Requests target their own app without reading sandbox-inaccessible parent metadata");
+    require([SilentSnipContainingApplicationURL(bundledExtension).path isEqual:app.path], @"Requests target their own app without reading sandbox-inaccessible parent metadata");
     contract[@"bundleIdentifier"] = @"other.app"; [info writeToURL:infoFile atomically:YES];
-    require(!CutdownContainingApplicationURL(bundledExtension), @"Unrelated containing-app contracts are rejected");
+    require(!SilentSnipContainingApplicationURL(bundledExtension), @"Unrelated containing-app contracts are rejected");
     contract[@"bundleIdentifier"] = @"local.silentsnip.app"; contract[@"enabled"] = @NO; [info writeToURL:infoFile atomically:YES];
-    require(!CutdownContainingApplicationURL(bundledExtension), @"An inert candidate cannot receive analysis requests");
+    require(!SilentSnipContainingApplicationURL(bundledExtension), @"An inert candidate cannot receive analysis requests");
     [info removeObjectForKey:@"SilentSnipContainingApp"]; [info writeToURL:infoFile atomically:YES];
-    require(!CutdownContainingApplicationURL(bundledExtension), @"A legacy extension has no combined-app contract");
-    require(!CutdownContainingApplicationURL(package), @"A loose extension has no containing app");
+    require(!SilentSnipContainingApplicationURL(bundledExtension), @"A legacy extension has no combined-app contract");
+    require(!SilentSnipContainingApplicationURL(package), @"A loose extension has no containing app");
     [NSFileManager.defaultManager removeItemAtURL:package error:nil];
     puts("PASS: sandbox-safe copied app routing and invalid/candidate/legacy contract rejection");
     require(argc == 2, @"Pass extension Info.plist");
     NSDictionary *extension = [NSDictionary dictionaryWithContentsOfFile:@(argv[1])][@"NSExtension"];
     require([extension[@"NSExtensionPointIdentifier"] isEqual:@"com.apple.AudioUnit-UI"], @"Custom effect window registration");
-    require(NSClassFromString(extension[@"NSExtensionPrincipalClass"]) == CutdownAudioUnitFactory.class, @"Registered view factory");
-    require([CutdownAudioUnitFactory isSubclassOfClass:AUViewController.class], @"Factory supplies the Audio Unit view");
+    require(NSClassFromString(extension[@"NSExtensionPrincipalClass"]) == SilentSnipAudioUnitFactory.class, @"Registered view factory");
+    require([SilentSnipAudioUnitFactory isSubclassOfClass:AUViewController.class], @"Factory supplies the Audio Unit view");
     NSDictionary *component = [extension[@"NSExtensionAttributes"][@"AudioComponents"] firstObject];
     require([component[@"name"] isEqual:@"Silent Snip: Silent Snip Audio"] &&
             [component[@"description"] isEqual:@"Silent Snip Audio"], @"Silent Snip effect discovery names");
@@ -161,11 +161,11 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         TestFactory *factory = [TestFactory new];
         if (preload.boolValue) (void)factory.view;
         dispatch_semaphore_t finished = dispatch_semaphore_create(0);
-        __block CutdownAudioUnit *created = nil;
+        __block SilentSnipAudioUnit *created = nil;
         __block NSError *creationError = nil;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             AudioComponentDescription description = {'aufx','ctdn','Ctdn',0,0};
-            created = (CutdownAudioUnit *)[factory createAudioUnitWithComponentDescription:description error:&creationError];
+            created = (SilentSnipAudioUnit *)[factory createAudioUnitWithComponentDescription:description error:&creationError];
             [created.analysisParameterTree parameterWithAddress:1].value = -37;
             dispatch_semaphore_signal(finished);
         });
@@ -196,7 +196,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         f.unit.fullStateForDocument = saved;
         require([f.unit.analysisParameterTree parameterWithAddress:1].value == -26, @"Private values survive document state restore");
         NSError *error = nil;
-        NSXMLDocument *fixture = [[NSXMLDocument alloc] initWithContentsOfURL:[NSURL fileURLWithPath:@"Tests/CutdownCoreTests/Fixtures/final-cut-12-3-native-audio.fcpxml"] options:NSXMLNodeLoadExternalEntitiesNever error:&error];
+        NSXMLDocument *fixture = [[NSXMLDocument alloc] initWithContentsOfURL:[NSURL fileURLWithPath:@"Tests/SilentSnipCoreTests/Fixtures/final-cut-12-3-native-audio.fcpxml"] options:NSXMLNodeLoadExternalEntitiesNever error:&error];
         NSString *encoded = [[fixture nodesForXPath:@"//filter-audio/data[@key='effectState']" error:&error].firstObject stringValue];
         NSData *archive = [[NSData alloc] initWithBase64EncodedString:encoded options:NSDataBase64DecodingIgnoreUnknownCharacters];
         NSKeyedUnarchiver *decoder = [[NSKeyedUnarchiver alloc] initForReadingFromData:archive error:&error];
@@ -210,7 +210,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 
     run(@"settings validation, document notification and exact Float32 precision", ^(Fixture *f) {
         require(!f.apply.enabled && !f.factory.openedURL, @"Opening view performs no action");
-        require(!containsViewIdentifier(f.factory.view, @"cutdown.preview") && [[f.factory valueForKey:@"cancelButton"] isHidden],
+        require(!containsViewIdentifier(f.factory.view, @"silentsnip.preview") && [[f.factory valueForKey:@"cancelButton"] isHidden],
             @"Opening view hides actions that need an active analysis");
         StateObserver *observer = [StateObserver new];
         [f.unit addObserver:observer forKeyPath:@"allParameterValues" options:0 context:NULL];
@@ -276,7 +276,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 
     run(@"review has no hide-preview control", ^(Fixture *f) {
         [f review];
-        require(!containsViewIdentifier(f.factory.view, @"cutdown.preview") && f.apply.enabled,
+        require(!containsViewIdentifier(f.factory.view, @"silentsnip.preview") && f.apply.enabled,
             @"Valid guidelines cannot be hidden from Controls");
     });
 
@@ -288,7 +288,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         NSDictionary *apply = f.factory.previewCommand;
         require([apply[@"expectedRevision"] isEqual:@1] && [apply[@"view"] isKindOfClass:NSString.class] &&
             [apply[@"applyGesture"] isKindOfClass:NSString.class] &&
-            [f.apply.identifier isEqual:[@"cutdown.apply.requested." stringByAppendingString:apply[@"applyGesture"]]] && !f.apply.hidden &&
+            [f.apply.identifier isEqual:[@"silentsnip.apply.requested." stringByAppendingString:apply[@"applyGesture"]]] && !f.apply.hidden &&
             [f.apply.title isEqual:@"Apply 1 Cut"],
             @"A counted Apply button carries the fresh gesture independently of its title");
         NSDate *before = [NSDate dateWithTimeIntervalSinceNow:-5]; connection(f.factory).lastResponse = before;
@@ -297,7 +297,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f.factory pollStatus]; require(commandCount(f.factory, @"apply") == 2 &&
             [f.factory.previewCommand isEqual:apply], @"Unacknowledged Apply retries the same gesture and revision");
         response(f.factory, 2, @"applying", @{@"canApply":@NO});
-        require([f.apply.identifier isEqual:@"cutdown.apply"] && connection(f.factory).pendingApply == nil,
+        require([f.apply.identifier isEqual:@"silentsnip.apply"] && connection(f.factory).pendingApply == nil,
             @"Acknowledgment consumes the Apply gesture");
         connection(f.factory).lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16];
         deliver(f.factory, connection(f.factory).lastResponseObject); [f.factory pollStatus];
@@ -318,7 +318,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         NSDictionary *apply = f.factory.previewCommand;
         require([apply[@"expectedRevision"] isEqual:@2] && !f.apply.enabled && !f.apply.hidden &&
             [f.apply.title isEqual:@"Apply 35 Cuts"] &&
-            [f.apply.identifier isEqual:[@"cutdown.apply.requested." stringByAppendingString:apply[@"applyGesture"]]],
+            [f.apply.identifier isEqual:[@"silentsnip.apply.requested." stringByAppendingString:apply[@"applyGesture"]]],
             @"The plural counted label preserves the fresh disabled gesture required by the helper");
     });
 
@@ -375,7 +375,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 
     run(@"selection waits for exact acknowledgments", ^(Fixture *f) {
         [f review];
-        require(!containsViewIdentifier(f.factory.view, @"cutdown.preview"), @"Review has no hide-preview control");
+        require(!containsViewIdentifier(f.factory.view, @"silentsnip.preview"), @"Review has no hide-preview control");
         NSTableView *table = [f.factory valueForKey:@"resultsView"];
         NSButton *cut = (NSButton *)[(id<NSTableViewDelegate>)f.factory tableView:table viewForTableColumn:table.tableColumns[0] row:0];
         require(cut.enabled && cut.state == NSControlStateValueOn, @"Eligible cuts have checkboxes");
@@ -430,7 +430,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         NSTableView *table = [f.factory valueForKey:@"resultsView"];
         require(table.tableColumns.count == 2 && table.headerView != nil &&
             !f.analyze.hidden && !f.apply.hidden, @"Review keeps reanalysis beside the primary Apply action");
-        require(!containsViewIdentifier(f.factory.view, @"cutdown.preview"), @"Guidelines stay on during review");
+        require(!containsViewIdentifier(f.factory.view, @"silentsnip.preview"), @"Guidelines stay on during review");
         [f.factory updateMoreMenuVisibility];
         NSMenu *more = [f.factory valueForKey:@"moreMenu"];
         [more update];
@@ -540,7 +540,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
             @"The relevant footer action stays visible with a long notice");
         NSButton *more = [f.factory valueForKey:@"moreButton"];
         require(NSContainsRect(f.factory.view.bounds, [more convertRect:more.bounds toView:f.factory.view]), @"More actions stay inside the single window");
-        require([more.identifier isEqual:[@"cutdown.review.reconnect." stringByAppendingString:[f.factory valueForKey:@"viewID"]]] &&
+        require([more.identifier isEqual:[@"silentsnip.review.reconnect." stringByAppendingString:[f.factory valueForKey:@"viewID"]]] &&
             !more.hidden && [more isKindOfClass:NSButton.class], @"Reconnection keeps an always-visible native button anchor");
         NSMenu *menu = [f.factory valueForKey:@"moreMenu"];
         [f.factory updateMoreMenuVisibility];
@@ -563,7 +563,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 
     run(@"always-visible detection and full status details", ^(Fixture *f) {
         require(![(NSView *)[f.factory valueForKey:@"settingsView"] isHidden] && f.fields.count == 4 &&
-            [[(NSButton *)[f.factory valueForKey:@"saveButton"] identifier] isEqual:@"cutdown.saveSettings"],
+            [[(NSButton *)[f.factory valueForKey:@"saveButton"] identifier] isEqual:@"silentsnip.saveSettings"],
             @"All four settings and the original recovery Save action remain visible");
         [f review];
         NSString *message = @"Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts. Threshold uses RMS. Original audio has processing effects.";
@@ -607,7 +607,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require([newest[@"settingsSequence"] isEqual:@2], @"Edits use increasing sequence numbers");
         response(f.factory, 2, @"review", @{@"settingsEdit":old[@"settingsEdit"], @"settings":old[@"settings"], @"output":old[@"output"]});
         require(!f.apply.enabled, @"An old verified result cannot enable new settings");
-        CutdownReviewConnection *connection = [f.factory valueForKey:@"connection"];
+        SilentSnipReviewConnection *connection = [f.factory valueForKey:@"connection"];
         require([[connection commandsToRetry] containsObject:newest], @"Dropped settings request retries unchanged");
         response(f.factory, 3, @"review", @{@"settingsEdit":newest[@"settingsEdit"], @"settings":newest[@"settings"], @"output":newest[@"output"]});
         require(f.apply.enabled && !connection.pendingSettings, @"Newest settings acknowledgment clears retry");
@@ -623,7 +623,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         [f.factory controlTextDidEndEditing:[NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:f.fields[2]]];
         [f.factory sendSettingsPreview];
         require(f.factory.packets.count == count && [f.factory.previewCommand[@"settingsEdit"] isEqual:command[@"settingsEdit"]], @"Ending the editor during host verification cannot replace its acknowledgment identity");
-        CutdownAudioAnalysisRequest *request = [f.unit analysisRequestWithError:nil];
+        SilentSnipAudioAnalysisRequest *request = [f.unit analysisRequestWithError:nil];
         for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO].queryItems) {
             NSNumber *wire = command[@"settings"][item.name];
             if (wire) require(wire.doubleValue == item.value.doubleValue, @"Preview and Analyze use identical numeric settings at frame boundaries");
@@ -667,7 +667,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     run(@"unacknowledged settings edits time out despite replayed review heartbeat", ^(Fixture *f) {
         [f review];
         f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
-        CutdownReviewConnection *connection = [f.factory valueForKey:@"connection"];
+        SilentSnipReviewConnection *connection = [f.factory valueForKey:@"connection"];
         connection.lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16];
         response(f.factory, 1, @"review", nil);
         [f.factory pollStatus];
@@ -692,7 +692,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     });
     run(@"reconnect uses the processor's full supported minimum range", ^(Fixture *f) {
         for (NSNumber *minimum in @[@0.0001, @0.01, @0.1, @0.00001]) {
-            [f.factory setValue:[CutdownReviewConnection new] forKey:@"connection"];
+            [f.factory setValue:[SilentSnipReviewConnection new] forKey:@"connection"];
             NSDictionary *packet = @{@"version":@1, @"view":[f.factory valueForKey:@"viewID"], @"request":NSUUID.UUID.UUIDString,
                 @"output":@"gaps", @"settings":@{@"threshold":@-35, @"minimum":minimum, @"before":@0.1, @"after":@0.1}};
             [f.factory reconnect:[NSNotification notificationWithName:@"test" object:json(packet)]];
@@ -720,9 +720,9 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     NSArray *states = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:@"AudioPlugin/Tests/review-states.json"] options:0 error:nil];
     require(states.count == 13, @"Shared protocol state fixture loaded");
     for (NSDictionary *entry in states) {
-        require(CutdownReviewStateIsBusy(entry[@"state"]) == [entry[@"busy"] boolValue] &&
-            CutdownReviewStateIsTerminal(entry[@"state"]) == [entry[@"terminal"] boolValue] &&
-            CutdownReviewStateCanRetry(entry[@"state"]) == [entry[@"retry"] boolValue], @"Objective-C state policy matches Swift contract");
+        require(SilentSnipReviewStateIsBusy(entry[@"state"]) == [entry[@"busy"] boolValue] &&
+            SilentSnipReviewStateIsTerminal(entry[@"state"]) == [entry[@"terminal"] boolValue] &&
+            SilentSnipReviewStateCanRetry(entry[@"state"]) == [entry[@"retry"] boolValue], @"Objective-C state policy matches Swift contract");
     }
     puts("PASS: shared protocol state contract");
     return 0;

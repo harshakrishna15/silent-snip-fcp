@@ -25,12 +25,12 @@ check_helper_stopped
 mkdir -p build/module-cache build/swift-cache
 export CLANG_MODULE_CACHE_PATH="$PWD/build/module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/build/module-cache"
-swift build --disable-sandbox --scratch-path build/swift --cache-path build/swift-cache -c "$configuration" --product Cutdown "$@"
+swift build --disable-sandbox --scratch-path build/swift --cache-path build/swift-cache -c "$configuration" --product SilentSnip "$@"
 binary_dir=$(swift build --disable-sandbox --scratch-path build/swift --cache-path build/swift-cache -c "$configuration" --show-bin-path "$@")
 # Build and verify a complete candidate before replacing the registered bundle.
 # Personal builds default to ad hoc. An existing identity can be supplied without
 # creating certificates or changing keychain/accessibility permissions.
-signing_identity="${CUTDOWN_SIGNING_IDENTITY:--}"
+signing_identity="${SILENT_SNIP_SIGNING_IDENTITY:--}"
 installed_app="$PWD/build/SilentSnipHelper.app"
 if [[ "$stage" == true ]]; then
   mkdir -p build/Candidate
@@ -40,7 +40,7 @@ staging_dir=$(mktemp -d "$PWD/build/helper-stage.XXXXXX")
 trap 'rm -rf "$staging_dir"' EXIT
 app="$staging_dir/SilentSnipHelper.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$binary_dir/Cutdown" "$app/Contents/MacOS/SilentSnip"
+cp "$binary_dir/SilentSnip" "$app/Contents/MacOS/SilentSnip"
 cp Config/Info.plist "$app/Contents/Info.plist"
 cp Config/SilentSnip.sdef "$app/Contents/Resources/SilentSnip.sdef"
 expected_identifier=local.silentsnip.helper

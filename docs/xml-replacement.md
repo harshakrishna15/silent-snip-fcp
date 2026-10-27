@@ -2,7 +2,7 @@
 
 Interactive Apply now sends one edited project using the current project's name,
 original event name/identity, and source library location. Final Cut replaces the
-matching item instead of accumulating `— Cutdown ABC123` result projects. The
+matching item instead of accumulating `— SilentSnip ABC123` result projects. The
 standalone writer and developer verifier retain their separate-output default;
 interactive Apply explicitly selects replacement.
 
@@ -28,7 +28,7 @@ If the browser is elsewhere, select the original event before Retry Verification
 
 ## Live evidence — September 22, 2026
 
-All probes used disposable `Cutdown Replacement Probe` in `XML Replacement Probe`
+All probes used disposable `Silent Snip Replacement Probe` in `XML Replacement Probe`
 inside this checkout's `Cutdown Integration.fcpbundle`. The library was created
 because it was absent here; the other checkout's same-named library was not used
 for tests. Generated six-second WAV audio was referenced in place, without copied,
@@ -62,7 +62,7 @@ Generation and verification Swift probes are retained alongside them.
   wrong destination/original rejection, receipt recovery, missing recovery XML,
   exact dialog matching, cancellation/readiness, and existing copy behavior.
 - Audio Controls factory harness passed (`factory-tests.log`).
-- Release helper is staged at `build/Candidate/Cutdown.app`; it is not registered
+- Release helper is staged at `build/Candidate/SilentSnip.app`; it is not registered
   for live Analyze/Share routes. No installed app bundle was replaced.
 
 Final Cut crashed once while opening the last imported result. The macOS report

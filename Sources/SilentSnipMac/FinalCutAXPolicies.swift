@@ -1,0 +1,224 @@
+import AppKit
+import ApplicationServices
+import SilentSnipCore
+import Foundation
+
+enum FinalCutProjectWindow {
+    static func isWorkspace(role: String?, subrole: String?, modal: Bool?, title: String?) -> Bool {
+        role == kAXWindowRole && subrole == kAXStandardWindowSubrole && modal != true && title?.isEmpty == false
+    }
+
+    /// AXMainWindow can be absent while Final Cut is inactive or replacing a
+    /// timeline. Accept only a uniquely identified project workspace, never a
+    /// focused effect editor or an arbitrary first window.
+    static func resolve<Element>(main: Element?, windows: @autoclosure () -> [Element], equals: (Element, Element) -> Bool,
+                                 isWorkspace: (Element) -> Bool) -> Element? {
+        if let main, isWorkspace(main) { return main }
+        let windows = windows()
+        // An incomplete scan cannot establish that the workspace is unique.
+        guard windows.count <= 32 else { return nil }
+        var checked = main.map { [$0] } ?? []
+        var match: Element?
+        for window in windows where !checked.contains(where: { equals($0, window) }) {
+            checked.append(window)
+            guard isWorkspace(window) else { continue }
+            guard match == nil else { return nil }
+            match = window
+        }
+        return match
+    }
+}
+
+enum FinalCutWindowPolicy {
+    /// Effect editors are nonmodal dialogs. WindowServer already keeps their
+    /// visible content above the preview; opening one must not hide all lines.
+    static func blocksPreview(role: String?, subrole: String?, modal: Bool?, containsSilentSnipReview: Bool) -> Bool {
+        if role == kAXSheetRole { return true }
+        if containsSilentSnipReview { return false }
+        if modal == false { return false }
+        return isBlockingDialog(role: role, subrole: subrole, modal: modal, containsSilentSnipReview: containsSilentSnipReview)
+    }
+
+    static func isBlockingDialog(role: String? = nil, subrole: String?, modal: Bool?, containsSilentSnipReview: Bool) -> Bool {
+        if role == kAXSheetRole { return true }
+        // Audio Unit editors are nonmodal even when Final Cut labels them
+        // AXDialog. Their child controls can temporarily be unavailable to AX.
+        if modal == false { return false }
+        // Final Cut can mark an Audio Unit editor as modal even though its
+        // verified Silent Snip Controls content is safe to leave open during a
+        // review. Only an exact Silent Snip window receives this exemption.
+        if containsSilentSnipReview { return false }
+        if modal == true { return true }
+        return subrole == kAXDialogSubrole
+    }
+}
+
+enum FinalCutControlAction {
+    /// Standard buttons expose Press; Final Cut menu items can expose Pick.
+    /// Never try a second action after a failed call: its effect may be uncertain.
+    static func preferred(from supported: [String]) -> String? {
+        if supported.contains(kAXPressAction) { return kAXPressAction }
+        if supported.contains(kAXPickAction) { return kAXPickAction }
+        return nil
+    }
+
+    static func confirmsPickedMenuItem(action: String, menuOpen: Bool, itemSelected: Bool, itemEnabled: Bool) -> Bool {
+        [kAXPickAction, kAXPressAction].contains(action) && menuOpen && itemSelected && itemEnabled
+    }
+}
+
+enum FinalCutApplyGesture {
+    /// The counted/localized button title is presentation, not confirmation.
+    /// The owning Controls window must expose this exact fresh gesture and
+    /// disable the button while its Apply request is awaiting acknowledgment.
+    static func isPending(identifier: String?, enabled: Bool?, gesture: UUID) -> Bool {
+        identifier == "silentsnip.apply.requested.\(gesture.uuidString)" && enabled == false
+    }
+}
+
+/// AX menu modifiers use Command by default; they are not CGEvent flag bits.
+/// Require a complete, advertised shortcut instead of guessing a keyboard layout.
+struct FinalCutMenuShortcut {
+    let keyCode: CGKeyCode
+    let flags: CGEventFlags
+
+    init?(virtualKey: Int?, modifiers: Int?, character: String?, glyph: Int?, enabled: Bool?) {
+        guard enabled == true, let virtualKey, (0...127).contains(virtualKey),
+              let modifiers, (0...15).contains(modifiers),
+              character?.isEmpty == false || (glyph ?? 0) > 0 else { return nil }
+        keyCode = CGKeyCode(virtualKey)
+        var flags: CGEventFlags = []
+        if modifiers & 8 == 0 { flags.insert(.maskCommand) }
+        if modifiers & 1 != 0 { flags.insert(.maskShift) }
+        if modifiers & 2 != 0 { flags.insert(.maskAlternate) }
+        if modifiers & 4 != 0 { flags.insert(.maskControl) }
+        self.flags = flags
+    }
+}
+
+enum FinalCutRangeCommand: String {
+    case clear = "Clear Selected Ranges"
+}
+
+enum FinalCutPreviewError: Error, LocalizedError {
+    case unavailable(String)
+    case transient(String)
+    case effectRemoved
+    var errorDescription: String? {
+        switch self {
+        case .unavailable(let reason), .transient(let reason): return reason
+        case .effectRemoved: return "Silent Snip effect removed"
+        }
+    }
+}
+
+enum FinalCutPreviewGeometry {
+    static func visibleFrame(clip: CGRect, timeline: CGRect, scrollViewports: [CGRect]) -> CGRect? {
+        guard !scrollViewports.isEmpty else { return nil }
+        let visible = scrollViewports.reduce(clip.intersection(timeline)) { $0.intersection($1) }
+        return !visible.isNull && visible.width > 0 && visible.height > 0 ? visible : nil
+    }
+}
+
+/// WindowServer returns front-to-back rectangles without requiring pixel capture.
+/// Identify the pinned project for native window ordering.
+struct FinalCutPreviewSurface {
+    let pid: Int32
+    let frame: CGRect
+    let layer: Int
+    let alpha: Double
+    var number: Int = 0
+
+    static func projectWindowNumber(in windows: [Self], projectPID: Int32, projectFrame: CGRect) -> Int? {
+        let matches = windows.filter {
+            $0.pid == projectPID && $0.layer == 0 && $0.alpha > 0 &&
+            abs($0.frame.minX - projectFrame.minX) < 2 && abs($0.frame.minY - projectFrame.minY) < 2 &&
+            abs($0.frame.width - projectFrame.width) < 2 && abs($0.frame.height - projectFrame.height) < 2
+        }
+        return matches.count == 1 ? matches[0].number : nil
+    }
+
+
+}
+
+enum FinalCutReviewWindowShell {
+    /// A verified remote editor can lose its view or disappear from AXWindows
+    /// during Share. Only its exact retained element and unchanged clip title
+    /// qualify; real modal dialogs and child sheets still block input.
+    static func isOwned(role: String?, modal: Bool?, title: String?, recordedTitle: String,
+                        sameElement: Bool) -> Bool {
+        sameElement && role == kAXWindowRole && modal != true && !recordedTitle.isEmpty && title == recordedTitle
+    }
+}
+
+enum FinalCutReviewInspector {
+    // Final Cut can retain the previous effect label in existing projects.
+    static func isControllerName(_ name: String?) -> Bool {
+        guard let name else { return false }
+        return name == "Silent Snip Audio"
+    }
+
+    static func isControllerCheckbox(_ description: String?) -> Bool {
+        guard let description else { return false }
+        return ["silent snip audio check box", "silentsnip audio check box"].contains(description.lowercased())
+    }
+
+    static func controllerCount(in controls: [AccessibilityNode]) -> Int {
+        controls.filter {
+            $0.role == kAXCheckBoxRole && isControllerCheckbox($0.description)
+        }.count
+    }
+
+    /// Audio effects are flat siblings in Final Cut's Inspector. Bind the editor
+    /// to its own exact checkbox and label, stopping before another effect.
+    static func editorIndex(in controls: [AccessibilityNode]) -> Int? {
+        let anchors = controls.indices.filter {
+            controls[$0].role == kAXCheckBoxRole
+                && isControllerCheckbox(controls[$0].description)
+        }
+        guard anchors.count == 1, let start = anchors.first else { return nil }
+        let end = controls.indices.dropFirst(start + 1).first { controls[$0].role == kAXCheckBoxRole } ?? controls.count
+        let group = Array(controls.indices[(start + 1)..<end])
+        guard group.contains(where: { index in
+            controls[index].role == kAXStaticTextRole
+                && (isControllerName(controls[index].value) || isControllerName(controls[index].title))
+        }) else { return nil }
+        let editors = group.filter {
+            controls[$0].role == kAXButtonRole && controls[$0].description == "Show effect editor"
+                && controls[$0].enabled != false
+        }
+        return editors.count == 1 ? editors[0] : nil
+    }
+}
+
+struct FinalCutSheetPath<Element> {
+    let element: Element
+    let lineage: [Element]
+}
+
+enum FinalCutSheetTraversal {
+    /// The same panel can appear both in AXWindows and beneath another panel.
+    /// Revisit its children when a longer parent chain is found so descendants
+    /// retain their connection to the main or focused window.
+    static func paths<Element>(roots: [Element], equals: (Element, Element) -> Bool,
+                               children: (Element) -> [Element],
+                               shouldContinue: () -> Bool = { true }) -> [FinalCutSheetPath<Element>] {
+        var queue = roots.prefix(32).map { FinalCutSheetPath(element: $0, lineage: [$0]) }
+        var result: [FinalCutSheetPath<Element>] = []
+        var cursor = 0
+        while cursor < queue.count, cursor < 64, shouldContinue() {
+            let current = queue[cursor]
+            cursor += 1
+            if let index = result.firstIndex(where: { equals($0.element, current.element) }) {
+                guard result[index].lineage.count < current.lineage.count else { continue }
+                result[index] = current
+            } else { result.append(current) }
+            guard current.lineage.count < 5 else { continue }
+            for child in children(current.element).prefix(48) {
+                guard queue.count < 64, !current.lineage.contains(where: { equals($0, child) }) else { continue }
+                queue.append(FinalCutSheetPath(element: child, lineage: current.lineage + [child]))
+            }
+        }
+        return result
+    }
+}

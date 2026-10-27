@@ -1,6 +1,6 @@
 # Missing preview and misleading helper timeout
 
-> Historical development record. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
+> Historical development record. Product names in this record are normalized to current branding; original evidence filenames and system labels may differ. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
 
 September 17, 2026. Live Final Cut testing remains with the user.
 
@@ -48,8 +48,8 @@ Logs are in `build/PreviewConnection/`:
   contract, including hidden-view deadlines, late failures and retry timeouts.
 - `build-scripts.log`: 18 simulated build/registration checks pass.
 - `helper-stage.log` and `plugin-build.log`: successful builds and signed bundle
-  verification. The helper is at `build/Candidate/Cutdown.app`; the diagnostic
-  audio build is at `build/PreviewConnection/Candidate/CutdownAudio.app` because
+  verification. The helper is at `build/Candidate/SilentSnip.app`; the diagnostic
+  audio build is at `build/PreviewConnection/Candidate/SilentSnipAudio.app` because
   Final Cut was using the standard candidate. Xcode registered that diagnostic
   build; the next stopped-host registration removes the competing registration.
 

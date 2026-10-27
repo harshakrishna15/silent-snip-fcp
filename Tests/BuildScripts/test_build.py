@@ -10,7 +10,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 class BuildTests(unittest.TestCase):
     def run_build(self, *arguments, fail=""):
-        with tempfile.TemporaryDirectory(prefix="cutdown build ") as directory:
+        with tempfile.TemporaryDirectory(prefix="silentsnip build ") as directory:
             root = Path(directory)
             scripts = root / "Scripts"
             scripts.mkdir()
