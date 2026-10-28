@@ -183,6 +183,24 @@ final class AudioControllerSettingsTests: XCTestCase {
         }
     }
 
+    func testNativeAuxiliaryControlRequiresMatchingCompleteArchivedValues() throws {
+        let saved = try archive(values: [-39, 0.75, 0.125, 0.25])
+        let control = "<param name=\"Silence Threshold\" key=\"4037165010\" auxValue=\"-39\"/>"
+        let f = try fixture(filter: "<filter-audio ref=\"au\">\(saved)\(control)</filter-audio>")
+        let values = try AudioControllerSettings.read(projectData: f.data, target: f.target)
+        XCTAssertEqual(Float(values.thresholdDBFS), -39)
+        XCTAssertEqual(Float(values.minimumSilenceDuration), 0.75)
+        XCTAssertEqual(Float(values.beforeSpeechPadding), 0.125)
+        XCTAssertEqual(Float(values.afterSpeechPadding), 0.25)
+        for invalid in [control, saved + control.replacingOccurrences(of: "-39", with: "-38"),
+                        saved + control.replacingOccurrences(of: "auxValue=\"-39\"", with: "auxValue=\"-39\" value=\"-39\""),
+                        saved + control.replacingOccurrences(of: "/>", with: "><keyframeAnimation/></param>"),
+                        saved + control + control] {
+            let bad = try fixture(filter: "<filter-audio ref=\"au\">\(invalid)</filter-audio>")
+            XCTAssertThrowsError(try AudioControllerSettings.read(projectData: bad.data, target: bad.target))
+        }
+    }
+
     func testValidArchiveDoesNotRescueAnimatedDuplicateOrUnknownExplicitControls() throws {
         let saved = try archive()
         for controls in [

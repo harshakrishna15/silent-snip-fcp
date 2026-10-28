@@ -26,6 +26,23 @@ A failed/cancelled Apply after delivery reports that replacement may already hav
 happened and points to recovery XML; it does not claim the original is unchanged.
 If the browser is elsewhere, select the original event before Retry Verification.
 
+## Current development checks — October 28, 2026
+
+The Final Cut 12.4 prototype recognizes the observed Silent Snip sender/library
+Replace dialog and records its once-only AX result. It waits for the original
+same-name timeline to transition and accepts only a fresh same-window handoff
+to the exact result in the original event. Semantic XML verification remains
+required after opening it.
+
+An existing cut result passed timeline, effects, exact controller settings,
+source fingerprints, and replacement identity checks after document-state
+notifications were added. An earlier manual settings probe preceded that retry.
+Fresh nondefault cuts and gaps produced matching host timelines, but automatic
+settings recovery has not completed a fresh pass. Failed receipts and recovery
+XML remain available; none was automatically reimported. The user removed the
+covering window, so Final Cut Share remains visible. See the
+[current prototype evidence](quiet-share-feasibility.md) for request IDs and limits.
+
 ## Live evidence — September 22, 2026
 
 All probes used disposable `Silent Snip Replacement Probe` in `XML Replacement Probe`

@@ -60,6 +60,32 @@ final class FinalCutImportCompletionTests: XCTestCase {
         XCTAssertTrue(failure.localizedDescription.contains("Before-Cuts.fcpxml"))
     }
 
+    func testSenderIdentifiedReplacementPromptAcceptsOnlyOurExactDelivery() {
+        let message = "Application “Silent Snip” sent an XML document that is about to replace existing items with matching names in the library “Fixture”."
+        let question = "Do you want to replace them?"
+        let buttons = ["Keep Both", "Replace", "Cancel"]
+        for text in [[message, question], ["\(message) \(question)"]] {
+            XCTAssertTrue(FinalCutImportDialog(title: "", text: text, buttons: buttons)
+                .isReplacementConfirmation(libraryName: "Fixture"))
+            XCTAssertFalse(FinalCutImportDialog(title: "", text: text, buttons: buttons)
+                .isReplacementConfirmation(libraryName: "Other"))
+        }
+        for text in [
+            [message.replacingOccurrences(of: "Silent Snip", with: "Other App"), question],
+            [message.replacingOccurrences(of: "“Fixture”", with: "“Fixture Copy”"), question],
+            [message],
+            [question],
+            ["Missing media in Fixture", question]
+        ] {
+            XCTAssertFalse(FinalCutImportDialog(title: "", text: text, buttons: buttons)
+                .isReplacementConfirmation(libraryName: "Fixture"))
+        }
+        for wrongButtons in [["Replace", "Cancel"], buttons + ["Replace"], ["Keep Both", "Replace", "Delete"]] {
+            XCTAssertFalse(FinalCutImportDialog(title: "", text: [message, question], buttons: wrongButtons)
+                .isReplacementConfirmation(libraryName: "Fixture"))
+        }
+    }
+
     func testDeliveryWithoutVisibleProjectDoesNotCountAsImportCompletion() {
         var readiness = FinalCutImportReadiness()
         XCTAssertFalse(readiness.observe(projectVisible: false, hasDialog: false, elapsed: 0))
@@ -96,6 +122,18 @@ final class FinalCutImportCompletionTests: XCTestCase {
                                          awaitingReplacement: true, originalTimelineClosed: true))
         XCTAssertTrue(readiness.observe(projectVisible: true, hasDialog: false, elapsed: 22,
                                         awaitingReplacement: true, originalTimelineClosed: true))
+    }
+
+    func testReplaceAcknowledgmentCannotStandInForTheTimelineTransition() {
+        var readiness = FinalCutImportReadiness()
+        for elapsed in [0.0, 1, 5] {
+            XCTAssertFalse(readiness.observe(projectVisible: true, hasDialog: false, elapsed: elapsed,
+                awaitingReplacement: true, replacementConfirmed: true, requiresTimelineTransition: true))
+        }
+        XCTAssertFalse(readiness.observe(projectVisible: true, hasDialog: false, elapsed: 6,
+            awaitingReplacement: true, replacementConfirmed: true, originalTimelineClosed: true, requiresTimelineTransition: true))
+        XCTAssertTrue(readiness.observe(projectVisible: true, hasDialog: false, elapsed: 7,
+            awaitingReplacement: true, replacementConfirmed: true, originalTimelineClosed: true, requiresTimelineTransition: true))
     }
 
     func testPostImportFailureIsPersistedWithoutDuplicateErrorPrefixOrSuccessClaim() throws {

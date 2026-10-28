@@ -8,8 +8,9 @@ import FoundationXML
 
 extension FinalCutAXSession {
     func openImportedProject(named name: String, importedXML: URL, replacement: XMLReplacementTarget? = nil,
-                             acceptReplacement: Bool = false) async throws -> FinalCutAXSession {
-        try await waitForImportCompletion(named: name, importedXML: importedXML, replacement: replacement, acceptReplacement: acceptReplacement)
+                             acceptReplacement: Bool = false, originalTimelineSignature: [String]? = nil) async throws -> FinalCutAXSession {
+        try await waitForImportCompletion(named: name, importedXML: importedXML, replacement: replacement,
+                                          acceptReplacement: acceptReplacement, originalTimelineSignature: originalTimelineSignature)
         if let replacement {
             // Replace closes the old timeline and may expose a previous project
             // or an empty timeline. Re-pin solely to navigate the browser, then
@@ -18,9 +19,34 @@ extension FinalCutAXSession {
             guard browserSession.application.processIdentifier == application.processIdentifier,
                   CFEqual(browserSession.mainWindow, mainWindow) else { throw FinalCutCaptureError.changedProject }
             try browserSession.assertReplacementEvent(replacement)
-            _ = try await browserSession.selectBrowserProject(named: name)
-            try await browserSession.pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
-            return try await browserSession.waitForProject(named: name)
+            // Retry can start with the result already open. Reopening it only
+            // rebuilds the toolbar and invalidates this session. A fresh export
+            // still has to prove the replacement UID, edits and settings.
+            if browserSession.projectName == name {
+                let current = try FinalCutAXSession()
+                try await current.activate()
+                try await current.suspendReviewWindow()
+                return current
+            }
+            do {
+                _ = try await browserSession.selectBrowserProject(named: name)
+                try await browserSession.pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
+                return try await browserSession.waitForProject(named: name)
+            } catch FinalCutCaptureError.changedProject {
+                // Final Cut can present the exact imported result between
+                // sampling its previous timeline and navigating the browser.
+                // Accept only that same-window, same-process handoff in the
+                // original event; do not repeat navigation or import delivery.
+                let current = try await FinalCutAXSession.forImport(allowImportDialog: false, allowEmptyTimeline: false)
+                guard current.application.processIdentifier == application.processIdentifier,
+                      CFEqual(current.mainWindow, mainWindow), current.projectName == name else {
+                    throw FinalCutCaptureError.changedProject
+                }
+                try current.assertReplacementEvent(replacement)
+                try await current.activate()
+                try await current.suspendReviewWindow()
+                return current
+            }
         }
         // Import can replace the toolbar and briefly leave an empty timeline.
         // Re-pin after delivery rather than using pre-import AX objects for
@@ -48,9 +74,10 @@ extension FinalCutAXSession {
     }
 
     private func waitForImportCompletion(named name: String, importedXML: URL, replacement: XMLReplacementTarget?,
-                                         acceptReplacement: Bool) async throws {
+                                         acceptReplacement: Bool, originalTimelineSignature: [String]?) async throws {
         let started = Date()
         var replacementAccepted = false
+        var timelineTransitionObserved = false
         var readiness = FinalCutImportReadiness()
         var browserReveal = FinalCutImportBrowserReveal()
         var observed: [FinalCutImportDialog] = []
@@ -96,7 +123,15 @@ extension FinalCutAXSession {
                         // This delivery contains exactly one project, in its
                         // original event/library, after a fresh baseline check.
                         replacementAccepted = true
-                        guard AXUIElementPerformAction(replace, kAXPressAction as CFString) == .success else {
+                        let confirmationURL = importedXML.deletingLastPathComponent().appendingPathComponent("Replacement-Confirmation.json")
+                        var confirmation = FinalCutReplacementConfirmation(projectName: replacement.projectName,
+                            libraryName: replacement.libraryURL.deletingPathExtension().lastPathComponent)
+                        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                        try encoder.encode(confirmation).write(to: confirmationURL, options: .atomic)
+                        let result = AXUIElementPerformAction(replace, kAXPressAction as CFString)
+                        confirmation.axResult = result.rawValue
+                        try encoder.encode(confirmation).write(to: confirmationURL, options: .atomic)
+                        guard result == .success else {
                             throw FinalCutCaptureError.unavailable("Final Cut could not confirm project replacement. Check the result before retrying verification.")
                         }
                     }
@@ -129,10 +164,16 @@ extension FinalCutAXSession {
             // Some deliveries complete without leaving the confirmation visible
             // to us. Closing the original timeline is also an import transition;
             // the subsequent export must still prove a new UID and exact edits.
-            let replacementTransition = replacement != nil && currentName != name
+            if replacement != nil {
+                if currentName != name { timelineTransitionObserved = true }
+                else if let originalTimelineSignature, let current = timelineLayoutSignature(), current != originalTimelineSignature {
+                    timelineTransitionObserved = true
+                }
+            }
             if readiness.observe(projectVisible: visible, hasDialog: panel != nil, elapsed: Date().timeIntervalSince(started),
                                  awaitingReplacement: acceptReplacement, replacementConfirmed: replacementAccepted,
-                                 originalTimelineClosed: replacementTransition) { return }
+                                 originalTimelineClosed: timelineTransitionObserved,
+                                 requiresTimelineTransition: acceptReplacement && originalTimelineSignature != nil) { return }
             if replacement == nil, browserReveal.observe(projectVisible: visible, originalProjectCurrent: currentName == projectName,
                                      hasDialog: panel != nil, elapsed: Date().timeIntervalSince(started)) {
                 // The generated project may open between sampling the toolbar

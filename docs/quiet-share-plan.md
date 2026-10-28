@@ -1,5 +1,7 @@
 # Quiet Share Integration Rebuild
 
+> **Direction changed October 28, 2026:** the user requested removal of the covering window. Final Cut's native Share panels remain visible, and progress stays in the effect's existing Controls. The concealment and covering-window work below is retained as the original design, not an active release requirement. Current work preserves automated Share, processed-audio fidelity, exact settings recovery, cancellation, and verified project replacement. There is no claim of background-only Final Cut operation.
+
 ## Summary
 
 Preserve **Select clip → Controls → Analyze → review → Apply**, while concealing Final Cut’s temporary export panels and project transitions behind one stable progress layer.

@@ -73,7 +73,7 @@ BOOL validSettings(id settings) {
 }
 @end
 
-// Use Apple's own parameter-state codec on the private tree so existing presets
+// Use Apple's own parameter-state codec on the shared tree so existing presets
 // and FCPXML effectState archives retain their exact format. This object is never
 // registered with a host and never allocates or renders audio.
 @interface SilentSnipAudioStateCodec : AUAudioUnit
@@ -87,7 +87,6 @@ BOOL validSettings(id settings) {
     AUAudioUnitBusArray *_inputs;
     AUAudioUnitBusArray *_outputs;
     AUParameterTree *_tree;
-    AUParameterTree *_hostTree;
     SilentSnipAudioStateCodec *_stateCodec;
     RenderStorage *_storage;
     SilentSnipAudioLastUsedSettingsStore *_settingsStore;
@@ -132,7 +131,6 @@ BOOL validSettings(id settings) {
         [parameters addObject:parameter];
     }
     _tree = [AUParameterTree createTreeWithChildren:parameters];
-    _hostTree = [AUParameterTree createTreeWithChildren:@[]];
     _stateCodec = [[SilentSnipAudioStateCodec alloc] initWithComponentDescription:description options:options error:error];
     if (!_stateCodec) return nil;
     _stateCodec.stateTree = _tree;
@@ -153,14 +151,19 @@ BOOL validSettings(id settings) {
 - (void)dealloc { delete _storage; }
 - (AUAudioUnitBusArray *)inputBusses { return _inputs; }
 - (AUAudioUnitBusArray *)outputBusses { return _outputs; }
-- (AUParameterTree *)parameterTree { return _hostTree; }
+- (AUParameterTree *)parameterTree { return _tree; }
 - (AUParameterTree *)analysisParameterTree { return _tree; }
 - (BOOL)setAnalysisSettings:(NSArray<NSNumber *> *)settings error:(NSError **)error {
+    return [self setAnalysisSettings:settings notifyHostEvenIfUnchanged:NO error:error];
+}
+- (BOOL)setAnalysisSettings:(NSArray<NSNumber *> *)settings notifyHostEvenIfUnchanged:(BOOL)notifyHost error:(NSError **)error {
     if (!validSettings(settings)) return fail(error, kAudio_ParamError, @"Invalid analysis settings.");
     BOOL changed = NO;
     for (NSUInteger i=0; i<4; i++)
         changed |= [_tree parameterWithAddress:i+1].value != settings[i].floatValue;
-    if (!changed) return YES;
+    // Explicit Save/Analyze must materialize this instance's state even when
+    // an older project only contained a bare effect reference and defaults.
+    if (!changed && !notifyHost) return YES;
     [self willChangeValueForKey:@"fullState"];
     [self willChangeValueForKey:@"fullStateForDocument"];
     [self willChangeValueForKey:@"allParameterValues"];
@@ -171,6 +174,14 @@ BOOL validSettings(id settings) {
     return YES;
 }
 - (NSDictionary *)fullState { return _stateCodec.fullState; }
+- (void)notifyHostOfParameterState {
+    [self willChangeValueForKey:@"fullState"];
+    [self willChangeValueForKey:@"fullStateForDocument"];
+    [self willChangeValueForKey:@"allParameterValues"];
+    [self didChangeValueForKey:@"allParameterValues"];
+    [self didChangeValueForKey:@"fullStateForDocument"];
+    [self didChangeValueForKey:@"fullState"];
+}
 - (void)setFullState:(NSDictionary *)state { _stateCodec.fullState = state; }
 - (NSDictionary *)fullStateForDocument { return self.fullState; }
 - (void)setFullStateForDocument:(NSDictionary *)state { self.fullState = state; }

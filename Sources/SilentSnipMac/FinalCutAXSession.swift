@@ -172,6 +172,31 @@ import Foundation
 
     func currentProjectTitle() -> String? { Self.resolve(projectLookup)?.values[kAXTitleAttribute] as? String }
 
+    /// A bounded, read-only layout signature distinguishes a replacement from
+    /// its still-visible original with the same name. Exclude playhead and
+    /// selection state; semantic XML verification still proves the actual edit.
+    func timelineLayoutSignature() -> [String]? {
+        guard !application.isTerminated, let layout = Self.resolve(timelineLookup)?.element else { return nil }
+        let items = children(layout)
+        guard items.count <= 2_000 else { return nil }
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.5
+        var result: [String] = []
+        for item in items {
+            guard !Task.isCancelled, ProcessInfo.processInfo.systemUptime < deadline else { return nil }
+            guard string(item, kAXRoleAttribute) == kAXLayoutItemRole else { continue }
+            let description = string(item, kAXDescriptionAttribute) ?? ""
+            if description == "Range Selection" { continue }
+            let handles = children(item)
+            guard handles.count <= 100 else { return nil }
+            let leading = handles.filter { string($0, kAXDescriptionAttribute) == "Leading Edge" }
+            let trailing = handles.filter { string($0, kAXDescriptionAttribute) == "Trailing Edge" }
+            guard leading.count == 1, trailing.count == 1,
+                  let start = string(leading[0], kAXValueAttribute), let end = string(trailing[0], kAXValueAttribute) else { return nil }
+            result.append([description, start, end, string(item, kAXValueAttribute) ?? ""].joined(separator: "\u{1f}"))
+        }
+        return result.isEmpty ? nil : result.sorted()
+    }
+
     func refreshTimeline() throws {
         guard let current = Self.resolve(timelineLookup)?.element else {
             throw FinalCutCaptureError.unavailable("The active project timeline is no longer accessible.")

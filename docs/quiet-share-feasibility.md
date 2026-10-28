@@ -1,57 +1,39 @@
-# Quiet Share feasibility
+# Share prototype: current status and evidence
 
-Status: focus-required plugin prototype built, signed, installed, and registered for manual testing on October 28, 2026. Its existing macOS control-access grant was refreshed and background startup reports Ready. Quiet presentation is not enabled in normal Release builds. The production gate remains open.
+Updated October 28, 2026. The user requested removal of the covering window. The installed development prototype now uses Final Cut's visible Share interface, with no cover or separate progress window. Progress and review remain in the Audio Unit's existing Controls. The former concealment design is retained in [the original plan](quiet-share-plan.md), with its changed scope marked explicitly.
 
-The installed prototype remains commit `9ed26ad`. The later source hardening described below is queued for the next build and has not replaced that installed copy.
+## Implemented behavior
 
-The full requirements remain in [the implementation plan](quiet-share-plan.md). The current user-requested checkpoint is a prototype operated from Final Cut's existing Silent Snip controls. The discarded standalone test-window approach is not part of the prototype.
+The containing app still supplies background analysis and the sandboxed Audio Unit. Decoding, detection, cut planning, XML generation, source checks, caching, and cleanup are programmatic. Share setup, temporary-project navigation, import, settings recovery, and host re-export verification are automated through Final Cut's interface and require foreground focus. Removing the cover does not make these operations headless or reduce Final Cut's rendering work.
 
-## Environment and retained evidence
+The prototype retains request ownership, bounded waits, cancellation, exact workspace-library checks, verified menu invocation, and the visible legacy path. It never retries a dispatched export after an uncertain result. Processed-audio Share uses the visible Settings and Roles panels to prove Audio Only, WAV, and one All Dialogue output. Audio delivered without that proof is rejected.
 
-The host inspected for the isolated probes was Final Cut Pro 12.4, build 454072, on macOS 27.0.1, build 26A434. All generated projects and exports belong to the exact workspace-root `Cutdown Integration.fcpbundle`. Generated source media, Share deliveries, reports, and rollback ZIPs remain preserved under `build/QuietSharePrototype` and the existing application-support Share Inbox.
+The four detection parameters now appear in the native Inspector as approved by the user. Their addresses and native state format are preserved. Main-thread document-state notifications let Final Cut archive unchanged defaults and Inspector edits. Recovery uses numeric fields because native slider writes round some custom values. Fresh automatic recovery still needs a completed live pass; UI text alone is not proof of saved state.
 
-- `plain-visible-xml-8/Report.json` records a completed, parsed XML capture with verified project/library identity. Final Cut delivered XML without a confirmation panel; the prototype now recognizes the exact owned response instead of timing out waiting for that panel.
-- `plain-covered-xml-2/Report.json` records foreground movement from Final Cut to `local.silentsnip.app` and safe cancellation with the cover dismissed. The probe was launched through Computer Use app selection. A manual test without selecting the helper during the cover is still needed to distinguish host activation from a harness effect. This is not proof of a general platform restriction.
-- Earlier covered audio produced late XML/WAV files after cancellation. Those files were preserved as evidence, but their processing settings were not verified. They do not count as a passed processed-audio test.
-- The later visible-audio check was stopped at the user's request to continue offline, before any new Share activity. It has no successful result.
+## Native evidence
 
-These isolated probes precede the current plugin-connected prototype. They do not establish that its complete Analyze or Apply flow works.
+Environment: Final Cut Pro 12.4, build 454072, on macOS 27.0.1, build 26A434. Every live check used disposable projects in the exact workspace-root `Cutdown Integration.fcpbundle`, with generated audio referenced in place. No other library was used.
 
-## Prototype behavior
+Current local evidence is under `build/QuietSharePrototype/Live-ff87b5b/`. That directory name identifies the starting commit, not a claim that the payload contains only that commit. Runtime originals and recovery artifacts remain in the existing Silent Snip application-support directories.
 
-The prototype ZIP retains the normal background containing app and sandboxed Audio Unit. Analyze, review, Apply, and errors remain in the existing Final Cut effect controls. Only the prototype build enables the experimental presentation; Release excludes it.
-
-A request-scoped development lease wraps existing coordinator operations. It attaches to a freshly checked Final Cut workspace, follows the same surface across session re-pinning, and releases on completion/error/cancellation. Cancel routes the same request UUID through the existing coordinator command. Cancellation blocks further host input before the main-actor panel dismissal is scheduled. Late callbacks cannot restart a finished or revealed cover.
-
-Menu dispatch uses a freshly advertised shortcut or a supported Accessibility action. Return is allowed once for the exact uniquely selected enabled command in its verified open menu. An accepted Share request prevents another Return. No dispatch is retried after ambiguity or timeout.
-
-Unproven menu paths and browser-coordinate fallbacks reveal Final Cut before dispatch and remain visible for the rest of the operation. Show Final Cut does the same without cancelling. External focus loss stops the operation; an already matched Share response activating its own receiver reveals the host for the existing verified return path. Keep Final Cut in front for this prototype.
-
-The prototype verifies the sole open library before host actions and checks returned XML again. Existing processed-audio settings validation, conservative cache eligibility, source verification, recovery files, and import verification remain in use. An audio delivery without a verified live settings panel is rejected.
-
-## Verification limits
-
-Automated checks cover exact library restriction, guarded Return, request ownership, cancellation, late callbacks, and visible fallback selection. Full Swift, Audio Unit, Controls, and build-script results are recorded with the packaged prototype. Bundle/signature and ZIP verification are separate from editing verification.
-
-The final Swift suite executed 431 tests with one existing skip and no failures. The 53 build-script tests passed. The unchanged Audio Unit and Controls sources retain the earlier passing 60-case audio and 33-check factory/Controls evidence; those are offline harness results. The installed containing app and its sandboxed extension passed strict signature checks, and the ZIP passed integrity checks. `build/QuietSharePrototype/Plugin-Prototype-Package.json` records the payload and verified rollback archive; check logs are preserved under `build/QuietSharePrototype/Checks`.
-
-| Native case | Current evidence |
+| Case | Observed result |
 | --- | --- |
-| Isolated visible XML | Passed before plugin-connected prototype |
-| Current plugin-connected covered XML | Manual check needed |
-| Covered Noise Gate/Limiter audio | Not verified |
-| Cancel before confirmation / during delivery | Not verified in the current plugin-connected build |
-| Show Final Cut, application switching, moved/resized windows | Manual checks needed |
-| Full-screen / secondary display / unsupported layout | Not verified |
-| Fresh Apply: cuts and gaps, recovery and source checks | Not verified for this build |
-| Paired cold/warm latency and transition measurements | Not verified; no speed claim |
+| Source-audio Analyze | Passed through the plugin Controls; native XML returned and review opened. Recorded runs were approximately 3.8–4.6 seconds. These are diagnostic timings, not paired performance comparisons. |
+| Noise Gate and Limiter Analyze | Passed through visible Share in request `914B5EF7-5E40-459C-AB43-CFEF3AD7F86B`, including live export-format/role validation, original-project restoration, and owned temporary-project cleanup. Total approximately 17.60 seconds. Evidence: `Processed-Visible-Passed`. |
+| Render delivered without live settings proof | Rejected in request `40E33616-2402-449D-83FE-DAAA154A4F29`. The delivered files were preserved. This did not count as successful processed-audio analysis. |
+| Existing cut result verification | Request `F3146624-B4BA-4B3C-8E2C-911A58F53E44` passed timeline, effects, controller-state, source-fingerprint, and destination verification after the document-state notification fix. An earlier manual native-parameter probe preceded the successful retry. This is not a fresh unattended Apply pass. Evidence: `Final-Cuts-Verified`. |
+| Nondefault cuts | Request `EF01F50B-FA90-40F9-AB56-3586D5B366CA` replaced the disposable project with the expected 2.2667-second timeline. Native slider recovery rounded custom settings, so verification stopped. No second import was attempted. Numeric-entry recovery was added afterward. |
+| Current visible flow | Request `B45C1EDF-C4B5-4361-9646-42C9BEC90827` completed Analyze with -42.5 dBFS, 0.25-second minimum, and 0.125-second padding. The user clicked Apply Cuts. Automatic Replace returned AX success and the host timeline matched the intended two audio segments plus one-second gap, totaling 3.2667 seconds. Settings recovery stopped on a selection-ownership check; full verification did not pass. Evidence: `Visible-Share-No-Cover`. |
+| Cover removal | The cover/card/window-tracking implementation is removed. The current native operation reports `visible-plugin-prototype` and zero cover transitions. |
 
-The full `FinalCutShareTransaction` refactor, conservative settings-observation shortcut, production timing schema, validated-host enablement, and production rollout remain gated work. This prototype is not a claim that the complete implementation plan has passed. See [manual test steps](quiet-share-prototype.md).
+Final Cut's 12.4 replacement dialog is handled only for the exact observed Silent Snip sender, required library, question, and button set. `Replacement-Confirmation.json` records the once-only press. Retry Verification has no import or replacement-confirmation step.
 
-## Source hardening after installation
+The generated source WAV retained SHA-256 `66a8102d26d926b8e7715df3073e9ff404669e7482b88a0935a4dbe581f8436e`. Original media, recovery XML, saved results, manual exports, integration evidence, and rollback ZIPs remain preserved. The exact last-used settings backup from before the nondefault test was restored after Final Cut and the helper exited.
 
-An offline review found that the presentation held its current session weakly even when a project-handoff caller could discard the returned session. The source now retains that pin for the request, releases it at finish, and re-pins a newly focused session before host input even when no activation call was needed. This prevents a temporary session's lifetime or an outdated project name from deciding cover behavior.
+## Build and remaining work
 
-The source also verifies the exact workspace library in both returned XML-only and rendered-audio XML before the plugin prototype accepts them. A new test rejects a different library with the same filename and XML without a library location. The resulting Swift suite executes 432 tests with one existing skip and no failures.
+The current Swift suite executed 442 tests with one existing skip and zero failures. The audio harness passed 60 render/persistence cases, Controls passed 35 checks, and the build-script suite passed 53 tests. These are automated checks. The signed prototype ZIP passed integrity checks; the copied app and contained extension passed strict signature verification. `Visible-Share-Installed.json` records the installed executable hash and rollback archive.
 
-These are source checks, not a new installed build or a native editing pass. The user has not yet tested the installed prototype. The covered XML, processed-audio, cancellation, restoration, and Apply gate remains pending that manual test.
+The remaining editing gate is a fresh complete cuts-and-gaps pass with exact controller settings and source verification. Current failed/pending result receipts must be retried through verification, not imported again. Full-screen, secondary-display, cancellation, and application-switching behavior have not received a complete native matrix for this revision.
+
+The planned production Share-transaction refactor and the complete single-observation settings fast path have not been implemented. The covering-window work is superseded by the user's visible-Share direction. No background-only export or measured speedup is claimed. See [testing steps](quiet-share-prototype.md).

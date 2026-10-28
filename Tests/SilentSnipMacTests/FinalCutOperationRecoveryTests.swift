@@ -41,8 +41,17 @@ import XCTest
                 let text = try XCTUnwrap(formatter.string(from: NSNumber(value: value)))
                 let restored = try XCTUnwrap(formatter.number(from: text)).floatValue
                 XCTAssertEqual(restored, value, "\(locale): \(text)")
+                let compact = try XCTUnwrap(SilentSnipSettingText.string(value, locale: Locale(identifier: locale)))
+                XCTAssertEqual(formatter.number(from: compact)?.floatValue, value, "\(locale): \(compact)")
             }
         }
+    }
+
+    func testRecoveryUsesTheSameCompactFloatTextAsControls() {
+        let locale = Locale(identifier: "en_US")
+        XCTAssertEqual(SilentSnipSettingText.string(-40, locale: locale), "-40")
+        XCTAssertEqual(SilentSnipSettingText.string(0.0001, locale: locale), "0.0001")
+        XCTAssertEqual(SilentSnipSettingText.string(0.1, locale: locale), "0.1")
     }
 
     private enum Failure: Error { case entry, cleanup }

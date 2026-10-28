@@ -4,6 +4,20 @@ import XCTest
 @testable import SilentSnipMac
 
 final class QuietShareFeasibilityTests: XCTestCase {
+    func testVisibleContinuationRequiresTheOwnedShareReceiver() {
+        let helper = "local.silentsnip.app"
+        XCTAssertTrue(QuietSharePrototypeVisibilityRecovery.mayContinueVisibly(loss: .foregroundChanged(helper),
+            helperBundle: helper, matchingShare: true))
+        XCTAssertFalse(QuietSharePrototypeVisibilityRecovery.mayContinueVisibly(loss: .foregroundChanged(helper),
+            helperBundle: helper, matchingShare: false))
+        XCTAssertFalse(QuietSharePrototypeVisibilityRecovery.mayContinueVisibly(loss: .foregroundChanged("com.openai.codex"),
+            helperBundle: helper, matchingShare: true))
+        XCTAssertFalse(QuietSharePrototypeVisibilityRecovery.mayContinueVisibly(loss: .foregroundChanged(nil),
+            helperBundle: nil, matchingShare: true))
+        XCTAssertFalse(QuietSharePrototypeVisibilityRecovery.mayContinueVisibly(loss: .hostExited,
+            helperBundle: helper, matchingShare: true))
+    }
+
     @MainActor func testDeliveredXMLMustNameTheExactWorkspaceLibrary() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuietDelivery-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -21,11 +35,11 @@ final class QuietShareFeasibilityTests: XCTestCase {
         XCTAssertThrowsError(try QuietSharePrototype.verifyLibrary(xml))
     }
 
-    @MainActor func testOffActorCancellationBlocksInputBeforeTheDismissalCallbackRuns() async {
+    @MainActor func testOffActorCancellationBlocksInputBeforeTheCleanupCallbackRuns() async {
         let lease = QuietSharePluginPrototypeLease(request: UUID(), cancel: { _ in })
         await Task.detached { lease.cancellation.cancel() }.value
         XCTAssertTrue(lease.inputStopped)
-        XCTAssertFalse(lease.revealed, "The main-actor panel callback has not run yet")
+        XCTAssertFalse(lease.revealed, "The main-actor cleanup callback has not run yet")
         XCTAssertThrowsError(try lease.assertMayContinue()) { XCTAssertTrue($0 is CancellationError) }
         lease.finish()
     }
@@ -44,10 +58,10 @@ final class QuietShareFeasibilityTests: XCTestCase {
         XCTAssertEqual(cancellations, [id])
     }
 
-    @MainActor func testShowFinalCutKeepsOperationAvailableAndFinishRejectsLateChanges() throws {
+    @MainActor func testOwnedHandoffKeepsOperationAvailableAndFinishRejectsLateChanges() throws {
         var cancellations = 0
         let lease = QuietSharePluginPrototypeLease(request: UUID(), cancel: { _ in cancellations += 1 })
-        lease.reveal(reason: "Show Final Cut selected.")
+        lease.reveal(reason: "Owned Share handoff.")
         XCTAssertTrue(lease.revealed)
         XCTAssertFalse(lease.inputStopped)
         XCTAssertNoThrow(try lease.assertMayContinue())

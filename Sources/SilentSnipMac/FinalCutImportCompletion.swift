@@ -24,16 +24,35 @@ struct FinalCutImportDialog: Codable, Equatable {
             && text.contains(fileName)
     }
 
-    /// The live Final Cut 12.3 replacement prompt names only the library.
+    /// The observed Final Cut replacement prompts name only the library.
     /// Call only during the one fresh, scoped replacement delivery, never retry.
     func isReplacementConfirmation(libraryName: String) -> Bool {
-        Set(buttons) == Set(["Keep Both", "Replace", "Cancel"]) && buttons.count == 3
-            && text.contains("Final Cut Pro has received an XML document that is about to replace existing items with matching names in the library “\(libraryName)”. Do you want to replace them?")
+        guard Set(buttons) == Set(["Keep Both", "Replace", "Cancel"]), buttons.count == 3 else { return false }
+        let question = "Do you want to replace them?"
+        let target = "an XML document that is about to replace existing items with matching names in the library “\(libraryName)”."
+        let legacy = "Final Cut Pro has received \(target) \(question)"
+        // Final Cut 12.4 identifies the Apple-event sender and exposes the
+        // question as a separate text element. Do not accept another sender,
+        // a partial library name, or an unrelated destructive confirmation.
+        let sentByUs = "Application “Silent Snip” sent \(target)"
+        return text.contains(legacy)
+            || (text.contains(sentByUs) && text.contains(question))
+            || text.contains("\(sentByUs) \(question)")
     }
 
     var explanation: String {
         ([title] + text).filter { !$0.isEmpty }.prefix(8).joined(separator: " — ")
     }
+}
+
+/// Persist the exact once-only replacement decision independently of dialog
+/// observations. A nil AX result means delivery was prepared but its outcome
+/// is unknown; neither that state nor an AX error permits a second press.
+struct FinalCutReplacementConfirmation: Encodable {
+    let projectName: String
+    let libraryName: String
+    let button = "Replace"
+    var axResult: Int32?
 }
 
 struct FinalCutImportReadiness {
@@ -43,8 +62,9 @@ struct FinalCutImportReadiness {
     /// project to appear and a quiet interval without a modal import panel.
     mutating func observe(projectVisible: Bool, hasDialog: Bool, elapsed: TimeInterval,
                           awaitingReplacement: Bool = false, replacementConfirmed: Bool = false,
-                          originalTimelineClosed: Bool = false) -> Bool {
+                          originalTimelineClosed: Bool = false, requiresTimelineTransition: Bool = false) -> Bool {
         guard !awaitingReplacement || replacementConfirmed || originalTimelineClosed,
+              !requiresTimelineTransition || originalTimelineClosed,
               projectVisible, !hasDialog else { readySince = nil; return false }
         if readySince == nil { readySince = elapsed }
         return elapsed - readySince! >= 0.6

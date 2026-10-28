@@ -14,14 +14,14 @@ The extension uses `com.apple.AudioUnit-UI` and `SilentSnipAudioUnitFactory`, an
 
 The native AppKit inspector starts with Detection: all four settings, Output, Save Settings, and More remain visible. The large product heading and introductory block are removed; status is a small footer item. Review and its table appear only when analysis returns ranges, and stay available when every range is deselected. At 580 points wide, the preferred height is 220 points before analysis and about 400 points for a two-range review; hosts that keep a fixed window size can scroll the inspector. Output remains a standard pop-up menu. Before/after duration stays beside the Review heading, and each row combines the start and end timecodes with its duration. Restricted ranges retain an explanation below their timecodes.
 
-**Analyze Again** stays beside the separate **Apply** button during review. Cancel and Retry Verification appear when relevant. Successful analysis has a short status; **More… → Analysis Details…** retains the complete explanation. Errors open a native alert sheet; the inspector retains a short status and **More… → Error Details…** reopens the complete message. Repeated status packets do not repeat the same alert. Long messages scroll inside the alert. **More…** also provides cut navigation, bulk selection, Restore Saved Settings, and Verify Existing Result. Common decimals display as `0.1` without changing stored Float32 values. Automatic settings recovery continues to use the original visible fields and Save button.
+**Analyze Again** stays beside the separate **Apply** button during review. Cancel and Retry Verification appear when relevant. Successful analysis has a short status; **More… → Analysis Details…** retains the complete explanation. Errors open a native alert sheet; the inspector retains a short status and **More… → Error Details…** reopens the complete message. Repeated status packets do not repeat the same alert. Long messages scroll inside the alert. **More…** also provides cut navigation, bulk selection, Restore Saved Settings, and Verify Existing Result. Common decimals display as `0.1` without changing stored Float32 values. Automatic settings recovery prefers the host's native numeric fields while Controls is waiting for verification; the custom fields and Save button remain a fallback.
 
 The factory harness and staged plug-in build pass, including long-notice layout, menu availability, settings precision, and existing analysis/review behavior. The combined app's Controls opened inside Final Cut and retained saved values across closing/reopening the window. The complete Analyze → Apply workflow remains unverified after the sandbox-safe containing-app launch fix; offline checks do not establish automatic timeline cuts. The staged extension is at `build/Candidate/AudioPlugin/SilentSnipAudio.appex`; `Scripts/build-app.sh` embeds it into the containing app.
 
-- The host-facing `parameterTree` is empty. The four settings live in Silent Snip's private `analysisParameterTree` and are edited only in the window.
+- The host-facing `parameterTree` exposes the same four detection parameters as Controls. The user approved these additional Inspector rows for reliable host persistence. Parameter addresses, identifiers, ranges, and the existing native state codec are unchanged.
 - Controls requests that its window center each time the view appears. Placement in Final Cut's hosted window still needs live verification.
-- Final Cut may retain an empty **Parameters** heading; it supplies that heading itself.
-- Final Cut caches the old parameter layout on existing effect instances. A newly added instance has no setting fields in the sidebar. Reapplying an old instance is a one-time migration; note its window settings first, because the new instance inherits last-used settings rather than the removed instance's individual settings.
+- Final Cut supplies its own **Parameters** disclosure in the Inspector. Host parameter changes notify document state and refresh idle Controls without overwriting an edited field or an active review.
+- Use the matching containing-app and extension build. Final Cut can cache parameter layouts across builds; quit the host before replacing the app.
 - Stable parameter IDs and Apple's AU state serialization are retained through an internal, non-rendering state codec. The codec is not a second installed effect. Legacy native Final Cut state restores in tests with identical data bytes.
 - Settings edits immediately disable Apply. Analyze validates all four values and sends an immutable request. Analyze never sends Apply automatically.
 - Preview guidelines stay visible during review. Closing the Controls window leaves the preview active. Apply or cancellation clears the preview. Removing Silent Snip from the selected clip’s Audio Inspector also clears its preview; Analyze again after restoring or re-adding it. Lines remain tied to the verified clip and the visible Final Cut project window. Switching app focus keeps uncovered lines visible; macOS composites windows above the project naturally; Silent Snip no longer treats their rectangles as opaque masks. The overlay also clips to the timeline scroll area, excluding the docked Effects and Transitions browsers.
@@ -56,7 +56,7 @@ Live verification uses small disposable projects inside the workspace `Cutdown I
 
 ## Settings and processing
 
-| Setting | Private address | Default |
+| Setting | Parameter address | Default |
 |---|---|---|
 | Silence Threshold | 1 | −40 dBFS |
 | Minimum Silence | 2 | 0.5 seconds |
@@ -67,13 +67,13 @@ Live verification uses small disposable projects inside the workspace `Cutdown I
 - Component type/subtype/manufacturer: `aufx / ctdn / Ctdn`.
 - The AU passes mono/stereo Float32 audio through unchanged, with zero latency and tail.
 - Rendering, window creation, and state restoration never initiate processing or timeline edits.
-- Private settings serialize in `fullState` and `fullStateForDocument`. New instances use last-used settings saved after submitting Analyze; existing state restoration does not change those defaults.
+- Settings serialize in `fullState` and `fullStateForDocument`. New instances use last-used settings saved after submitting Analyze; existing state restoration does not change those defaults. Main-thread document-state notifications ensure unchanged defaults and native parameter edits can be archived; rendering never initiates a notification or timeline edit.
 
 `InteractiveAudioSession` connects this window to capture, analysis, review, and verified XML Apply. `AudioProjectProcessor` provides the separate offline artifact-processing API. Detection is level-based; no speech/breath classifier is implemented.
 
 ## Known import limitation
 
-The earlier September 15 FCPXML import test produced the correct three audio segments, but Final Cut discarded copied effect parameter/state payloads. Generated results now embed the submitted settings and report host retention separately. If the host discards state, the helper now restores affected imported segments through their exact Controls windows and verifies another host export. **Save Settings** commits values without Analyze. **More… → Restore Saved Settings…** remains a manual fallback. This recovery path is implemented and tested with injected host captures; live native persistence still needs validation. Native document-state persistence is not proof of XML-import settings retention. See the root README for backend and import evidence.
+Final Cut can discard copied effect state during XML import. Generated results embed the submitted settings and report host retention separately. Recovery selects each exact imported occurrence, writes its four native numeric fields, commits the edits, and verifies another host export. Native sliders round some values on Final Cut 12.4 and are not used to restore precise settings. **Save Settings** commits custom Controls values without Analyze; **More… → Restore Saved Settings…** remains a manual fallback. An existing cut result has passed native verification after document-state notification was added; fresh automatic Apply remains a separate check. See the [current native evidence](../docs/quiet-share-feasibility.md).
 
 Historical XML-only Media Asset Protocol checks reported live Analyze and Apply success; see [integration history](../docs/integration-history.md). The referenced `build/ProgrammaticVerification/` artifacts are not included in Git, and those results do not verify the current build. The configured Silent Snip Share destination is initiated and confirmed automatically. File paths, XML delivery, audio decoding, output creation, and result import are programmatic.
 

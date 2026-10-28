@@ -245,20 +245,24 @@ public enum AudioControllerSettings {
             parameters.contains { $0.key == control.attribute(forName: "key")?.stringValue }
         }) else { throw AudioControllerSettingsError.invalidParameter("Unknown control") }
         var exportedValues: [String: Double] = [:]
+        var auxiliaryValues: [String: Double] = [:]
         for expected in parameters {
             let matching = controls.filter { $0.attribute(forName: "key")?.stringValue == expected.key }
             guard matching.count <= 1 else { throw AudioControllerSettingsError.invalidParameter(expected.name) }
             guard !matching.isEmpty else { continue }
             let control = matching[0]
+            let attributes = Set((control.attributes ?? []).compactMap(\.name))
+            let auxiliary = attributes == ["name", "key", "auxValue"]
             guard control.attribute(forName: "name")?.stringValue == expected.name,
-                  Set((control.attributes ?? []).compactMap(\.name)) == ["name", "key", "value"],
+                  auxiliary || attributes == ["name", "key", "value"],
                   elements(in: control).isEmpty,
                   (control.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  let text = control.attribute(forName: "value")?.stringValue,
+                  let text = control.attribute(forName: auxiliary ? "auxValue" : "value")?.stringValue,
                   let exported = Double(text), exported.isFinite, expected.range.contains(exported) else {
                 throw AudioControllerSettingsError.invalidParameter(expected.name)
             }
-            exportedValues[expected.key] = exported
+            if auxiliary { auxiliaryValues[expected.key] = exported }
+            else { exportedValues[expected.key] = exported }
         }
         if exportedValues.count < parameters.count {
             // FCP omits unchanged scalars, including values inherited from the
@@ -266,6 +270,14 @@ public enum AudioControllerSettings {
             // verified saved state. Explicit scalars take precedence because
             // FCP can update those before updating the archived AU state.
             let saved = try archivedValues(in: effect)
+            // Observed FCP 12.4 host controls publish auxValue with a complete
+            // native archive. Never infer a raw value from that representation
+            // alone: require the known archive and exact Float32 agreement.
+            for (index, parameter) in parameters.enumerated() {
+                if let auxiliary = auxiliaryValues[parameter.key], Float(auxiliary) != Float(saved[index]) {
+                    throw AudioControllerSettingsError.invalidParameter(parameter.name)
+                }
+            }
             for (index, parameter) in parameters.enumerated() where exportedValues[parameter.key] == nil {
                 exportedValues[parameter.key] = saved[index]
             }

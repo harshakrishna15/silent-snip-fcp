@@ -78,6 +78,8 @@ static BOOL booleanValue(id value) {
 @interface SilentSnipAudioUnitFactory () <NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
 @property(nonatomic) SilentSnipReviewConnection *connection;
 @property(nonatomic) SilentSnipAudioUnit *audioUnit;
+@property(nonatomic) AUParameterTree *observedParameterTree;
+@property(nonatomic) AUParameterObserverToken parameterObserver;
 @property(nonatomic) NSArray<NSTextField *> *fields;
 @property(nonatomic) NSButton *analyzeButton;
 @property(nonatomic) NSButton *applyButton;
@@ -136,6 +138,34 @@ static BOOL booleanValue(id value) {
     return _connection;
 }
 
+- (void)setAudioUnit:(SilentSnipAudioUnit *)unit {
+    if (_parameterObserver) [_observedParameterTree removeParameterObserver:_parameterObserver];
+    _audioUnit = unit;
+    self.observedParameterTree = unit.analysisParameterTree;
+    __weak SilentSnipAudioUnitFactory *weakView = self;
+    __weak SilentSnipAudioUnit *weakUnit = unit;
+    self.parameterObserver = [self.observedParameterTree tokenByAddingParameterObserver:^(AUParameterAddress address, AUValue value) {
+        // Host restoration and Inspector edits can arrive after the view first
+        // appears. Keep active reviews and the user's current edit unchanged.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SilentSnipAudioUnitFactory *view = weakView;
+            SilentSnipAudioUnit *processor = weakUnit;
+            if (!view || view.audioUnit != processor) return;
+            [processor notifyHostOfParameterState];
+            if (!view.isViewLoaded || view.settingsDirty || view.connection.requestID) return;
+            for (NSTextField *field in view.fields) if (field.currentEditor) return;
+            [view refreshSettings];
+        });
+    }];
+    // A host can omit an unchanged/default effect state until notified. Queue
+    // this after the factory has returned and the host can attach its observers.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SilentSnipAudioUnitFactory *view = weakView;
+        if (view && view.audioUnit == weakUnit) [weakUnit notifyHostOfParameterState];
+    });
+    if (self.isViewLoaded) { [self refreshSettings]; [self updatePrimaryAction]; }
+}
+
 - (nullable AUAudioUnit *)createAudioUnitWithComponentDescription:(AudioComponentDescription)description
                                                           error:(NSError **)error {
     SilentSnipAudioUnit *unit = [[SilentSnipAudioUnit alloc] initWithComponentDescription:description options:0 error:error];
@@ -144,7 +174,6 @@ static BOOL booleanValue(id value) {
     // without blocking the audio host while it waits for this method to return.
     void (^connectView)(void) = ^{
         self.audioUnit = unit;
-        if (self.isViewLoaded) { [self refreshSettings]; [self updatePrimaryAction]; }
     };
     if (NSThread.isMainThread) connectView();
     else dispatch_async(dispatch_get_main_queue(), connectView);
@@ -660,7 +689,7 @@ static BOOL booleanValue(id value) {
 - (BOOL)commitSettings {
     NSArray *values = [self readFields];
     if (!values) return NO;
-    return [self.audioUnit setAnalysisSettings:values error:nil];
+    return [self.audioUnit setAnalysisSettings:values notifyHostEvenIfUnchanged:YES error:nil];
 }
 
 - (void)saveSettings:(id)sender {
@@ -1135,6 +1164,7 @@ static BOOL booleanValue(id value) {
     [self sendPreviewCommand:self.connection.pendingApply];
 }
 - (void)dealloc {
+    if (_parameterObserver) [_observedParameterTree removeParameterObserver:_parameterObserver];
     [_settingsTimer invalidate];
     [_pollTimer invalidate];
     [NSDistributedNotificationCenter.defaultCenter removeObserver:self];

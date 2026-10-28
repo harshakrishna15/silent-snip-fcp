@@ -20,9 +20,14 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 @interface SilentSnipAudioUnit : AUAudioUnit
-// Private to Silent Snip's custom view. The host-facing parameterTree is empty.
+// Controls and the host share the same four stable parameters. Advertising
+// them lets Final Cut serialize their values through XML imports and exports.
 @property(nonatomic, readonly) AUParameterTree *analysisParameterTree;
 - (BOOL)setAnalysisSettings:(NSArray<NSNumber *> *)settings error:(NSError **)error;
+- (BOOL)setAnalysisSettings:(NSArray<NSNumber *> *)settings notifyHostEvenIfUnchanged:(BOOL)notifyHost error:(NSError **)error;
+// Main-thread document notification after host parameter changes. Never call
+// from the render callback; it does not change values or last-used defaults.
+- (void)notifyHostOfParameterState;
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)description
                                     options:(AudioComponentInstantiationOptions)options
                               settingsStore:(SilentSnipAudioLastUsedSettingsStore *)settingsStore

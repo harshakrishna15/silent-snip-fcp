@@ -4,7 +4,7 @@ Remove quiet pauses from audio-only clips in Final Cut Pro, with control over wh
 
 Silent Snip combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes audio and prepares an editable project that still references your original media.
 
-> **Integration in progress:** Manual XML replacement, live Analyze, and settings-preview verification have passed on test fixtures. The full automatic Apply, import verification, and settings-recovery flow still needs a complete live editing pass. Builds and analysis alone do not establish that automatic cuts work.
+> **Integration in progress:** Live source analysis, Noise Gate/Limiter analysis through visible Share, and verification of an existing cut result have passed on disposable fixtures. Fresh automatic Apply and precise settings recovery still need a complete live editing pass. Builds and analysis alone do not establish that automatic cuts work.
 
 ## How it works
 
@@ -14,6 +14,8 @@ Silent Snip combines a passthrough audio effect with a background macOS helper. 
 4. Click **Apply Cuts** to replace the project in its original event.
 
 Silent Snip saves recovery XML before replacement. Your source media stays unchanged.
+
+Final Cut's native Share panels remain visible during automation; no window covers them. Keep Final Cut in front while Silent Snip operates it. Detection settings are available in both Controls and the Audio Inspector so Final Cut can persist them.
 
 See the [full workflow and recovery guide](docs/workflow.md) for detection settings, preview controls, and recovery steps.
 
@@ -37,7 +39,7 @@ Targets must be normal-speed, audio-only clips. Retimed or nested targets, linke
 - **macOS 14 or later** — the deployment target; Xcode and Final Cut may require a newer version.
 - **Final Cut Pro in English** — automation currently matches English interface labels.
 
-Recorded builds used Xcode 27.0 / Swift 6.4; historical integration reports used Final Cut Pro 12.3. Other toolchain and host combinations have not been verified here.
+Recorded builds used Xcode 27.0 / Swift 6.4. Current development checks use Final Cut Pro 12.4 on macOS 27.0.1; historical reports used Final Cut Pro 12.3. Other combinations have not been verified here.
 
 A prebuilt app needs no Xcode, repository, or Terminal. Building from source requires full Xcode with first-launch setup completed. There are no external Swift packages or separate plug-in SDKs. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
 
@@ -117,7 +119,7 @@ Follow [integration-test setup](docs/setup.md#integration-test-library) and [AGE
 
 ## Verified in this repository copy
 
-Recorded validation includes successful builds, offline tests, and manual XML replacement probes. End-to-end automatic editing remains unverified for the current build.
+Recorded validation includes 442 Swift tests (one existing skip, no failures), 60 audio render/persistence cases, 35 Controls checks, and 53 build-script tests. Current native results and their limits are recorded in [the prototype report](docs/quiet-share-feasibility.md). A verified retry of an existing result does not establish a fresh unattended Analyze → Apply pass.
 
 <details>
 <summary>Recorded results — September 2026</summary>
@@ -145,7 +147,7 @@ These are historical results, not checks rerun for every commit. See [XML replac
 | [Setup and troubleshooting](docs/setup.md) | Installation, permissions, Share destination, and test library |
 | [Workflow and recovery](docs/workflow.md) | Detection settings, review, Apply, and settings recovery |
 | [Analysis and caching](docs/analysis-speed.md) | Source versus processed audio and measurement reuse |
-| [Quiet Share prototype](docs/quiet-share-prototype.md) | Experimental progress cover, testing inside Final Cut, and verification limits |
+| [Visible Share prototype](docs/quiet-share-prototype.md) | Automated native Share, testing inside Final Cut, and verification limits |
 | [Integration evidence](docs/xml-replacement.md) | Manual replacement results and remaining verification |
 | [Audio plug-in](AudioPlugin/README.md) | Implementation and [Controls/helper protocol](AudioPlugin/REVIEW_PROTOCOL.md) |
 

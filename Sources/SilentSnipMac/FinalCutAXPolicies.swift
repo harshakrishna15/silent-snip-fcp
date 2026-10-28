@@ -172,23 +172,79 @@ enum FinalCutReviewInspector {
     /// Audio effects are flat siblings in Final Cut's Inspector. Bind the editor
     /// to its own exact checkbox and label, stopping before another effect.
     static func editorIndex(in controls: [AccessibilityNode]) -> Int? {
-        let anchors = controls.indices.filter {
-            controls[$0].role == kAXCheckBoxRole
-                && isControllerCheckbox(controls[$0].description)
-        }
-        guard anchors.count == 1, let start = anchors.first else { return nil }
-        let end = controls.indices.dropFirst(start + 1).first { controls[$0].role == kAXCheckBoxRole } ?? controls.count
-        let group = Array(controls.indices[(start + 1)..<end])
-        guard group.contains(where: { index in
-            controls[index].role == kAXStaticTextRole
-                && (isControllerName(controls[index].value) || isControllerName(controls[index].title))
-        }) else { return nil }
+        guard let group = controllerRange(in: controls) else { return nil }
         let editors = group.filter {
             controls[$0].role == kAXButtonRole && controls[$0].description == "Show effect editor"
                 && controls[$0].enabled != false
         }
         return editors.count == 1 ? editors[0] : nil
     }
+
+    static func controllerRange(in controls: [AccessibilityNode]) -> Range<Int>? {
+        let anchors = controls.indices.filter {
+            controls[$0].role == kAXCheckBoxRole
+                && isControllerCheckbox(controls[$0].description)
+        }
+        guard anchors.count == 1, let start = anchors.first else { return nil }
+        // Final Cut exposes the effect's own Hide/Show toggle as AXCheckBox.
+        // Its parameter disclosure and sliders follow that toggle. Only a new
+        // effect/unknown checkbox ends this block; don't stop at visibility.
+        let end = controls.indices.dropFirst(start + 1).first {
+            let control = controls[$0]
+            let visibility = ["Hide", "Show"].contains(control.title ?? "")
+                && (control.description ?? "").isEmpty
+            return control.role == kAXCheckBoxRole && !visibility
+        } ?? controls.count
+        let group = (start + 1)..<end
+        guard group.contains(where: { index in
+            controls[index].role == kAXStaticTextRole
+                && (isControllerName(controls[index].value) || isControllerName(controls[index].title))
+        }) else { return nil }
+        return group
+    }
+}
+
+enum FinalCutNativeSettings {
+    static let descriptions = ["silence threshold slider", "minimum silence slider", "before speech slider", "after speech slider"]
+    static let fieldDescriptions = ["silence threshold scrubber", "minimum silence scrubber", "before speech scrubber", "after speech scrubber"]
+
+    static func binaryValue(_ value: Any?) -> String? {
+        let number = (value as? NSNumber)?.doubleValue ?? (value as? String).flatMap(Double.init)
+        if number == 0 { return "0" }
+        if number == 1 { return "1" }
+        return nil
+    }
+
+    static func sliderIndices(in controls: [AccessibilityNode]) -> [Int]? {
+        indices(in: controls, role: kAXSliderRole, descriptions: descriptions)
+    }
+
+    static func fieldIndices(in controls: [AccessibilityNode]) -> [Int]? {
+        guard sliderIndices(in: controls) != nil else { return nil }
+        return indices(in: controls, role: kAXTextFieldRole, descriptions: fieldDescriptions)
+    }
+
+    private static func indices(in controls: [AccessibilityNode], role: String, descriptions: [String]) -> [Int]? {
+        guard let group = FinalCutReviewInspector.controllerRange(in: controls),
+              controls[group.lowerBound - 1].value == "1" else { return nil }
+        let candidates = group.filter { controls[$0].role == role }
+        guard candidates.count == descriptions.count else { return nil }
+        var result: [Int] = []
+        for description in descriptions {
+            let matches = candidates.filter { controls[$0].description == description && controls[$0].enabled == true }
+            guard matches.count == 1 else { return nil }
+            result.append(matches[0])
+        }
+        return result
+    }
+
+    static func disclosureIndex(in controls: [AccessibilityNode]) -> Int? {
+        guard let group = FinalCutReviewInspector.controllerRange(in: controls),
+              controls[group.lowerBound - 1].value == "1" else { return nil }
+        let matches = group.filter { controls[$0].role == kAXDisclosureTriangleRole && controls[$0].description == "toggle parameters" }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
 }
 
 struct FinalCutSheetPath<Element> {

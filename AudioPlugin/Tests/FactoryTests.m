@@ -189,10 +189,38 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     }
     puts("PASS: background AudioToolbox creation before and after view loading");
 
+    run(@"late host changes update idle Controls", ^(Fixture *f) {
+        StateObserver *observer = [StateObserver new];
+        [f.unit addObserver:observer forKeyPath:@"fullStateForDocument" options:0 context:NULL];
+        [f.unit.parameterTree parameterWithAddress:1].value = -37.25f;
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+        while (f.fields[0].floatValue != -37.25f && deadline.timeIntervalSinceNow > 0)
+            [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        require(f.fields[0].floatValue == -37.25f, @"Inspector edits refresh the idle view after its initial appearance");
+        require(observer.changes > 0, @"Host edits also notify document-state persistence");
+        [f.unit removeObserver:observer forKeyPath:@"fullStateForDocument"];
+        require(!f.factory.openedURL, @"Host parameter observation never starts an analysis");
+    });
+
+    run(@"busy Controls still publish native parameter state without replacing review fields", ^(Fixture *f) {
+        [f review];
+        float submitted = f.fields[0].floatValue;
+        StateObserver *observer = [StateObserver new];
+        [f.unit addObserver:observer forKeyPath:@"fullStateForDocument" options:0 context:NULL];
+        [f.unit.parameterTree parameterWithAddress:1].value = -37.25f;
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+        while (!observer.changes && deadline.timeIntervalSinceNow > 0)
+            [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        require(observer.changes > 0 && f.fields[0].floatValue == submitted,
+            @"Native settings can persist during verification while the displayed review remains immutable");
+        [f.unit removeObserver:observer forKeyPath:@"fullStateForDocument"];
+    });
+
     run(@"state persistence and native legacy compatibility", ^(Fixture *f) {
-        require(f.unit.parameterTree.allParameters.count == 0 && f.fields.count == 4, @"Four private controls, no Inspector parameters");
+        require(f.unit.parameterTree.allParameters.count == 4 && f.fields.count == 4, @"Four settings exposed to the host and Controls");
         NSDictionary *saved = f.unit.fullStateForDocument;
-        [f.unit.analysisParameterTree parameterWithAddress:1].value = -10;
+        [f.unit.parameterTree parameterWithAddress:1].value = -10;
+        require([f.unit.analysisParameterTree parameterWithAddress:1].value == -10, @"Inspector and Controls use the same parameter values");
         f.unit.fullStateForDocument = saved;
         require([f.unit.analysisParameterTree parameterWithAddress:1].value == -26, @"Private values survive document state restore");
         NSError *error = nil;
@@ -220,6 +248,9 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         f.fields[0].stringValue = @"-20";
         [f.analyze performClick:nil];
         require([f.factory.openedURL.absoluteString containsString:@"threshold=-20"] && observer.changes > 0, @"Analyze sends exact values and notifies host to save state");
+        NSUInteger beforeUnchangedCommit = observer.changes;
+        require([f.factory commitSettings] && observer.changes > beforeUnchangedCommit,
+            @"Explicit save materializes host state even when the submitted values are unchanged");
         [f.unit removeObserver:observer forKeyPath:@"allParameterValues"];
         for (NSNumber *number in @[@0.00123456789f, @1e-9f, @1.40129846e-45f, @0.1f, @2.f]) {
             [f.unit.analysisParameterTree parameterWithAddress:3].value = number.floatValue;

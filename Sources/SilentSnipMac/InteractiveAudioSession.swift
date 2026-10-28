@@ -371,6 +371,7 @@ import Foundation
                 try await session.prepareReplacementBrowser(target)
             }
             try session.assertCurrentProject()
+            let originalTimelineSignature = session.timelineLayoutSignature()
             progress("Sending ‘\(outputName)’ to Final Cut Pro…", 0.8)
             try Data("Import requested; verification pending. Do not import again until checking Final Cut.\n".utf8)
                 .write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
@@ -384,7 +385,8 @@ import Foundation
                 self.verifications.remember(request.id, at: verification.outputURL)
                 try await XMLProjectApply.importIntoFinalCut(url)
             }
-            try await retryVerification(request.id, progress: progress, acceptReplacement: true)
+            try await retryVerification(request.id, progress: progress, acceptReplacement: true,
+                                        originalTimelineSignature: originalTimelineSignature)
         } catch {
             _ = await capture.restoreReviewWindow()
             if error is XMLProjectApplyFailure { throw error }
@@ -415,7 +417,8 @@ import Foundation
         return result.request
     }
 
-    public func retryVerification(_ id: UUID, progress: @escaping AnalysisReviewCoordinator.Progress, acceptReplacement: Bool = false) async throws {
+    public func retryVerification(_ id: UUID, progress: @escaping AnalysisReviewCoordinator.Progress, acceptReplacement: Bool = false,
+                                  originalTimelineSignature: [String]? = nil) async throws {
         guard let outputURL = verifications[id] else {
             throw FinalCutCaptureError.unavailable("There is no pending imported result to verify.")
         }
@@ -427,7 +430,8 @@ import Foundation
                 throw FinalCutCaptureError.unavailable("Open the original project or ‘\(result.projectName)’ before retrying verification.")
             }
             progress("Checking the existing imported project…", 0.9)
-            let imported = try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL, replacement: result.replacementTarget, acceptReplacement: acceptReplacement)
+            let imported = try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL,
+                replacement: result.replacementTarget, acceptReplacement: acceptReplacement, originalTimelineSignature: originalTimelineSignature)
             _ = try await result.verify(capture: {
                 let url = try await imported.exportProjectXML(to: parent.appendingPathComponent("Verification-\(UUID().uuidString).fcpxmld"))
                 return try Data(contentsOf: url)

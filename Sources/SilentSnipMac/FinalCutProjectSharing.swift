@@ -57,6 +57,19 @@ extension FinalCutAXSession {
     }
 
     private func beginShare(renderAudio: Bool, timing: AnalysisTiming) async throws {
+#if DEBUG
+        let previousPrototypeMenu = quietPrototypeMenu
+        if renderAudio, let lease = QuietSharePrototype.pluginLease {
+            // The 12.4 Return probe delivered WAV/XML without exposing the
+            // settings panel. That cannot prove the required Dialogue mix.
+            // Choose visible legacy input before a NEW render dispatch; never
+            // retry the already delivered probe or accept its unverified audio.
+            lease.reveal(reason: "Processed-audio Share requires visible settings verification.")
+            quietPrototypeInvocation?("Processed-audio Share: visible legacy path selected before dispatch")
+            quietPrototypeMenu = false
+        }
+        defer { quietPrototypeMenu = previousPrototypeMenu }
+#endif
         let prefix = renderAudio ? "share.render" : "share.xml"
         try assertCurrentProject()
         guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the current dialog before sharing.") }

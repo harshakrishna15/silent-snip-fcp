@@ -7,7 +7,7 @@ import FoundationXML
 #endif
 import SilentSnipCore
 
-/// Development-only presentation and an isolated Share gate. Only run(configurationURL:)
+/// Development-only request diagnostics and an isolated Share probe. Only run(configurationURL:)
 /// avoids editing; the plugin wrapper retains the existing Analyze/Apply pipeline.
 @MainActor public enum QuietSharePrototype {
     @TaskLocal static var pluginLease: QuietSharePluginPrototypeLease?
@@ -57,7 +57,7 @@ import SilentSnipCore
         var hostRemainedActive = false
         var controlAccessGranted = false
         var foregroundApplications: [String] = []
-        var coverDismissed = false
+        var coverDismissed = true
         var xmlVerified = false
         var mediaCount = 0
         var seconds = 0.0
@@ -67,11 +67,9 @@ import SilentSnipCore
         guard let data = try? Data(contentsOf: configurationURL),
               let config = try? JSONDecoder().decode(Configuration.self, from: data),
               config.project.hasPrefix("Silent Snip Quiet Prototype "), config.output.isFileURL,
-              ["xml", "audio"].contains(config.intent),
-              !(config.covered && config.legacyMenu == true) else { return }
+              ["xml", "audio"].contains(config.intent) else { return }
         var report = Report(project: config.project, intent: config.intent)
         let started = ProcessInfo.processInfo.systemUptime
-        var cover: QuietSharePrototypeCover?
         var work: Task<Void, Error>?
         func observeForeground() {
             let name = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unavailable"
@@ -79,6 +77,9 @@ import SilentSnipCore
         }
         do {
             try FileManager.default.createDirectory(at: config.output, withIntermediateDirectories: true)
+            guard !config.covered else {
+                throw FinalCutCaptureError.unavailable("The covering window has been removed. Run the visible Share probe instead.")
+            }
             report.controlAccessGranted = FinalCutAccessibility.isTrusted
             guard report.controlAccessGranted else { throw FinalCutAccessibility.AccessibilityError.permissionRequired }
             // A background developer launch must not steal focus. Allow time
@@ -103,17 +104,7 @@ import SilentSnipCore
             session.quietPrototypeInvocation = { report.invocations.append($0) }
             session.quietPrototypeStage = { stage in
                 report.stages.append(stage)
-                cover?.update(stage)
-                if config.cancelAt == stage { cover?.dismiss(); work?.cancel() }
-            }
-            if config.covered {
-                cover = try QuietSharePrototypeCover(session: session, cancel: {
-                    work?.cancel()
-                }, focusLost: {
-                    observeForeground()
-                    report.hostRemainedActive = false
-                    work?.cancel()
-                })
+                if config.cancelAt == stage { work?.cancel() }
             }
             let operation = Task { @MainActor in
                 if config.cancelAt == "beforePreparation" { throw CancellationError() }
@@ -157,8 +148,6 @@ import SilentSnipCore
             report.message = "Cancelled without retrying or applying edits."
         } catch { report.message = error.localizedDescription }
         observeForeground()
-        cover?.dismiss()
-        report.coverDismissed = cover?.isVisible != true
         report.seconds = ProcessInfo.processInfo.systemUptime - started
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(report) {
@@ -200,13 +189,13 @@ import SilentSnipCore
     }
 }
 
-/// Request-scoped development presentation. It never owns a second analysis
-/// job, retries a dispatch, or resurrects a revealed/finished cover.
+/// Request-scoped development diagnostics and focus monitoring. It creates no
+/// window, owns no second analysis job, and never retries a dispatch.
 @MainActor final class QuietSharePluginPrototypeLease {
     let request: UUID
     private let cancel: (UUID) -> Void
     private let reportURL: URL?
-    private var cover: QuietSharePrototypeCover?
+    private var focusTimer: Timer?
     private var pinnedWindow: AXUIElement?
     private var hostPID: pid_t?
     // Re-pinning may return a session whose caller immediately discards it.
@@ -220,7 +209,6 @@ import SilentSnipCore
     private var cancelRequested = false
     private var fallbackReason: String?
     private var invocations: [String] = []
-    private var transitions = 0
     private var stage = "Preparing Final Cut…"
 
     init(request: UUID, cancel: @escaping (UUID) -> Void, reportURL: URL? = nil) {
@@ -237,24 +225,32 @@ import SilentSnipCore
                 return
             }
             currentSession = session
-            try cover?.repin(session)
             return
         }
         pinnedWindow = session.mainWindow; hostPID = session.application.processIdentifier
         currentSession = session
-        cover = try QuietSharePrototypeCover(session: session, cancel: { [weak self] in self?.cancelWork() },
-            focusLost: { [weak self] in
-                guard let self, !self.finished else { return }
-                // A matching Share completion can activate its own receiver.
-                // Reveal it and let the existing verified return path run.
-                if let session = self.currentSession,
-                   NSWorkspace.shared.frontmostApplication?.processIdentifier == NSRunningApplication.current.processIdentifier,
-                   ShareDestinationManager.shared.prototypeShareHasResponse(projectName: session.projectName) {
-                    self.reveal(reason: "Final Cut activated the Share receiver after delivery.")
-                } else { self.cancelWork(reason: "Final Cut lost foreground focus.") }
-            }, showHost: { [weak self] in self?.reveal(reason: "Show Final Cut selected.") })
-        transitions += 1
-        cover?.update(stage)
+        focusTimer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.finished, !self.revealed, let session = self.currentSession else { return }
+                let loss: QuietSharePrototypeVisibilityLoss
+                if session.application.isTerminated { loss = .hostExited }
+                else {
+                    let foreground = NSWorkspace.shared.frontmostApplication
+                    guard foreground?.processIdentifier != session.application.processIdentifier else { return }
+                    loss = .foregroundChanged(foreground?.bundleIdentifier)
+                }
+                let matchingShare = self.currentSession.map {
+                    ShareDestinationManager.shared.prototypeShareRequestMatches(projectName: $0.projectName)
+                } ?? false
+                if QuietSharePrototypeVisibilityRecovery.mayContinueVisibly(loss: loss,
+                    helperBundle: Bundle.main.bundleIdentifier, matchingShare: matchingShare) {
+                    // Keep the same exchange alive. Existing input checks still
+                    // require fresh Final Cut focus; no command is dispatched again.
+                    self.reveal(reason: loss.description)
+                } else { self.cancelWork(reason: loss.description) }
+            }
+        }
+        RunLoop.main.add(focusTimer!, forMode: .common)
     }
 
     func assertMayContinue() throws {
@@ -264,7 +260,6 @@ import SilentSnipCore
     func update(_ message: String) {
         guard !finished else { return }
         stage = message
-        cover?.update(message)
     }
 
     func recordInvocation(_ method: String) {
@@ -275,8 +270,7 @@ import SilentSnipCore
     func reveal(reason: String) {
         guard !finished, !revealed else { return }
         revealed = true; fallbackReason = reason
-        if cover?.isVisible == true { transitions += 1 }
-        cover?.dismiss()
+        focusTimer?.invalidate(); focusTimer = nil
     }
 
     func stopInput(reason: String) {
@@ -294,12 +288,11 @@ import SilentSnipCore
 
     func finish() {
         guard !finished else { return }
-        if cover?.isVisible == true { transitions += 1 }
-        cover?.dismiss(); cover = nil; currentSession = nil; finished = true
+        focusTimer?.invalidate(); focusTimer = nil; currentSession = nil; finished = true
         guard let reportURL else { return }
-        let report: [String: Any] = ["request": request.uuidString, "mode": "plugin-prototype",
+        let report: [String: Any] = ["request": request.uuidString, "mode": "visible-plugin-prototype", "lastStage": stage,
             "fallbackReason": fallbackReason ?? "none", "invocations": invocations,
-            "transitions": transitions, "inputStopped": inputStopped, "coverDismissed": true]
+            "transitions": 0, "inputStopped": inputStopped, "coverDismissed": true]
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: reportURL, options: .atomic)
         }
@@ -307,12 +300,34 @@ import SilentSnipCore
 }
 
 /// Cancellation can arrive off the main actor. Stop input synchronously before
-/// scheduling the panel dismissal, including inside unstructured cleanup tasks.
+/// scheduling main-actor cleanup, including inside unstructured cleanup tasks.
 final class QuietSharePrototypeCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     func cancel() { lock.lock(); defer { lock.unlock() }; cancelled = true }
+}
+
+enum QuietSharePrototypeVisibilityLoss {
+    case hostExited
+    case foregroundChanged(String?)
+
+    var description: String {
+        switch self {
+        case .hostExited: return "Final Cut exited."
+        case .foregroundChanged(let app): return "Foreground changed to \(app ?? "an unidentified application")."
+        }
+    }
+}
+
+enum QuietSharePrototypeVisibilityRecovery {
+    static func mayContinueVisibly(loss: QuietSharePrototypeVisibilityLoss, helperBundle: String?, matchingShare: Bool) -> Bool {
+        switch loss {
+        case .foregroundChanged(let app):
+            return app != nil && app == helperBundle && matchingShare
+        case .hostExited: return false
+        }
+    }
 }
 
 enum QuietSharePrototypeLibrary {
@@ -326,85 +341,4 @@ enum QuietSharePrototypeLibrary {
     }
 }
 
-@MainActor private final class QuietSharePrototypePanel: NSPanel {
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-}
-
-@MainActor private final class QuietSharePrototypeCover: NSObject {
-    private let panel: NSPanel
-    private let stage = NSTextField(labelWithString: "Preparing Final Cut…")
-    private var timer: Timer?
-    private var dismissed = false
-    private let cancel: () -> Void
-    private let showHostAction: () -> Void
-    private weak var session: FinalCutAXSession?
-    var isVisible: Bool { panel.isVisible }
-    init(session: FinalCutAXSession, cancel: @escaping () -> Void, focusLost: @escaping () -> Void,
-         showHost onShowHost: @escaping () -> Void = {}) throws {
-        let frame = try Self.frame(session.mainWindow)
-        panel = QuietSharePrototypePanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        self.cancel = cancel
-        self.showHostAction = onShowHost
-        self.session = session
-        super.init()
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
-        panel.isOpaque = true
-        panel.backgroundColor = .windowBackgroundColor
-        panel.hasShadow = false
-        panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.fullScreenAuxiliary, .canJoinAllSpaces]
-        let root = NSView(); panel.contentView = root
-        let title = NSTextField(labelWithString: "Silent Snip — " + session.projectName)
-        title.font = .boldSystemFont(ofSize: 18)
-        let spinner = NSProgressIndicator(); spinner.style = .spinning; spinner.startAnimation(nil)
-        let stop = NSButton(title: "Cancel", target: self, action: #selector(cancelNow))
-        let show = NSButton(title: "Show Final Cut", target: self, action: #selector(showHost))
-        let buttons = NSStackView(views: [stop, show]); buttons.orientation = .horizontal
-        let stack = NSStackView(views: [title, stage, spinner, buttons]); stack.orientation = .vertical; stack.spacing = 20
-        stack.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(stack)
-        NSLayoutConstraint.activate([stack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: root.centerYAnchor), stack.widthAnchor.constraint(lessThanOrEqualToConstant: 600)])
-        panel.orderFrontRegardless()
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == session.application.processIdentifier else {
-            panel.orderOut(nil); throw FinalCutCaptureError.unavailable("The nonactivating cover changed application focus.")
-        }
-        timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, !self.dismissed else { return }
-                guard let session = self.session, !session.application.isTerminated,
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == session.application.processIdentifier,
-                      let frame = try? Self.frame(session.mainWindow) else {
-                    self.dismiss(); focusLost(); return
-                }
-                self.panel.setFrame(frame, display: true)
-            }
-        }
-        RunLoop.main.add(timer!, forMode: .common)
-    }
-    func repin(_ session: FinalCutAXSession) throws {
-        guard !dismissed else { return }
-        let frame = try Self.frame(session.mainWindow)
-        self.session = session
-        panel.setFrame(frame, display: true)
-    }
-    func update(_ text: String) { stage.stringValue = text }
-    func dismiss() { dismissed = true; timer?.invalidate(); timer = nil; panel.orderOut(nil) }
-    @objc private func cancelNow() { dismiss(); cancel() }
-    @objc private func showHost() { dismiss(); showHostAction() }
-    private static func frame(_ window: AXUIElement) throws -> CGRect {
-        let values = FinalCutAXAttributes.read(window, names: [kAXPositionAttribute, kAXSizeAttribute])
-        guard let position = values[kAXPositionAttribute], let size = values[kAXSizeAttribute],
-              CFGetTypeID(position as CFTypeRef) == AXValueGetTypeID(), CFGetTypeID(size as CFTypeRef) == AXValueGetTypeID() else {
-            throw FinalCutCaptureError.projectWindowUnavailable
-        }
-        var origin = CGPoint.zero; var dimensions = CGSize.zero
-        guard AXValueGetValue(position as! AXValue, .cgPoint, &origin), AXValueGetValue(size as! AXValue, .cgSize, &dimensions),
-              origin.x.isFinite, origin.y.isFinite, dimensions.width.isFinite, dimensions.height.isFinite,
-              dimensions.width > 100, dimensions.height > 100, let top = NSScreen.screens.first?.frame.maxY else {
-            throw FinalCutCaptureError.projectWindowUnavailable
-        }
-        return CGRect(x: origin.x, y: top - origin.y - dimensions.height, width: dimensions.width, height: dimensions.height)
-    }
-}
 #endif

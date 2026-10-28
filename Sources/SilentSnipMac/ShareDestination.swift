@@ -71,6 +71,10 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     private var xmlRequest: XMLRequest?
     public var hasActiveRequest: Bool { xmlRequest != nil }
 #if DEBUG
+    func prototypeShareRequestMatches(projectName: String) -> Bool {
+        xmlRequest?.projectName == projectName
+    }
+
     // The prototype must distinguish an already accepted command from a menu
     // action that only selected an item. Never send Return after host acceptance.
     func prototypeHostAcceptedShare(projectName: String) -> Bool {

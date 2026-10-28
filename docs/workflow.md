@@ -1,6 +1,6 @@
 # Silent Snip workflow
 
-Updated September 18, 2026, from the effect window and helper source. This describes the implemented workflow, not a claim that the current build has passed every live integration step. Superseded native-edit and export workflows are archived in `integration-history.md`. The integration overhaul remains marked in progress.
+Updated October 28, 2026, from the effect window and helper source. This describes the implemented workflow, not a claim that the current build has passed every live integration step. Superseded native-edit and export workflows are archived in `integration-history.md`. The integration overhaul remains marked in progress.
 
 Silent Snip is a local, audio-only silence-removal tool for Final Cut Pro. The user adds an audio effect, analyzes one selected clip, reviews proposed cuts, and explicitly applies them by replacing the current project through XML. The effect itself passes audio through unchanged; the helper performs analysis and project replacement.
 
@@ -11,6 +11,8 @@ Copy **Silent Snip.app** into Applications, open it once, then follow [first-tim
 For source development, quit Final Cut and Silent Snip and run `Scripts/build.sh --release`. It builds and registers `build/App/Silent Snip.app` in place. Keep that bundle there while using it, or copy it into Applications and update the Share action. Ad hoc rebuilds can require a fresh control-access grant.
 
 Share is part of the helper's implementation. The normal user interaction does not require manually exporting XML, choosing an export method, or sending a project to Silent Snip.
+
+Final Cut's native Share interface remains visible. Silent Snip creates no covering or separate progress window. Keep Final Cut in front during host automation; analysis and file processing run in the background, but the Share, project-navigation, and import steps still use its interface.
 
 XML capture now always uses the Share exchange; the unused Export XML / Go to Folder / Save-dialog driver has been removed. The helper still starts and confirms the Silent Snip Share destination through Accessibility. Apple's documented exchange supplies output paths and delivery, but does not provide a command here to initiate sharing without host UI.
 
@@ -26,7 +28,7 @@ Other project content is checked for compatibility. Retimed or nested targets, a
 
 ## 3. Set detection and output
 
-The four detection controls live in the Controls window:
+The four detection controls are available in Controls and the native Audio Inspector. Both edit the same parameters; the Inspector exposure lets Final Cut persist their state:
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -136,7 +138,7 @@ After an import or verification failure, use **Retry Verification** in Controls.
 
 Controls disables Retry Verification while waiting for acknowledgment and resends a lost request safely. A later failed attempt permits another explicit retry. If another review prevents verification from starting, the helper explains that and releases the button. Use both matching builds from the [current cleanup update](cleanup-fixes.md).
 
-If Final Cut drops Silent Snip settings during import, verification plans recovery for each affected imported segment, selects the exact occurrence, opens its controller, restores the saved values, and commits them using **Save Settings**. It then re-exports and verifies the actual settings. Each segment gets its own verified selection identity, including when multiple segments have the same name. Displayed/restored detection values preserve Float32 precision. A controller write alone does not count as success. Interrupted recovery is retryable; segments whose values already match are skipped. Settings recovery writes only to the verified replacement. **Restore Saved Settings…** remains available as a manual fallback if the host cannot expose or persist the controls.
+If Final Cut drops Silent Snip settings during import, recovery selects each exact imported occurrence and restores the four native numeric fields, then re-exports and verifies the actual state. Numeric entry avoids the native sliders' rounding of values such as 0.125 seconds on Final Cut 12.4. The custom Controls fields and **Save Settings** remain a fallback when native fields are unavailable. Each segment gets its own verified selection identity, including when multiple segments have the same name. A controller write alone does not count as success. Interrupted recovery is retryable; matching segments are skipped. Settings recovery writes only to the verified replacement. **Restore Saved Settings…** remains available as a manual fallback.
 
 ## 8. Verification boundary
 

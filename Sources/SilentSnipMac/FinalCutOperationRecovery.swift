@@ -29,6 +29,18 @@ struct FinalCutReviewOwnership {
 }
 
 enum SilentSnipSettingText {
+    static func string(_ value: Float, locale: Locale = .current) -> String? {
+        let formatter = formatter(locale: locale)
+        // Match Controls: use the shortest decimal retaining the exact AUValue.
+        // Remote views can normalize longer equivalent strings immediately.
+        for digits in 1...9 {
+            formatter.maximumSignificantDigits = digits
+            if let text = formatter.string(from: NSNumber(value: value)),
+               formatter.number(from: text)?.floatValue == value { return text }
+        }
+        return nil
+    }
+
     static func formatter(locale: Locale = .current) -> NumberFormatter {
         let formatter = NumberFormatter()
         formatter.locale = locale
