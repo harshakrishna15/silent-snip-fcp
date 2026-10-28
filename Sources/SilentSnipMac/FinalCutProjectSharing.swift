@@ -59,19 +59,39 @@ extension FinalCutAXSession {
             try await timing.measure(prefix + ".openPanel") {
                 try await pressMenu(path: ["File", "Share", "Silent Snip…"])
                 try await waitUntil(timeout: 10, context: "Silent Snip Share confirmation") {
+#if DEBUG
+                    if self.quietPrototypeStage != nil,
+                       ShareDestinationManager.shared.prototypeShareHasResponse(projectName: self.projectName) { return true }
+#endif
                     guard let panel = self.currentSheet() else { return false }
                     return self.string(panel, kAXTitleAttribute) == "Silent Snip"
                         && self.find(in: panel, role: kAXButtonRole, title: "Next…") != nil
                 }
             }
+#if DEBUG
+            if quietPrototypeStage != nil, ShareDestinationManager.shared.prototypeShareHasResponse(projectName: projectName) {
+                // Some hosts complete XML without showing a confirmation. A
+                // rendered response cannot stand in for verified live settings.
+                guard !renderAudio else { throw FinalCutDialogueExport.ExportError.unverifiedDialogueOutput }
+                quietPrototypeStage?("xmlDeliveredWithoutPanel")
+                return
+            }
+#endif
             ownsPanel = true
             guard let panel = currentSheet() else { throw FinalCutCaptureError.unavailable("Share panel disappeared.") }
             if renderAudio { try await FinalCutDialogueExport.configureShare(panel, session: self, timing: timing) }
+#if DEBUG
+            quietPrototypeStage?("beforeConfirmation")
+            try Task.checkCancellation()
+#endif
             guard let next = find(in: panel, role: kAXButtonRole, title: "Next…") else {
                 throw FinalCutCaptureError.unavailable("The Share confirmation is unavailable.")
             }
             _ = try timing.measure(prefix + ".confirm") { try press(next) }
             ownsPanel = false
+#if DEBUG
+            quietPrototypeStage?("delivery")
+#endif
         } catch {
             if ownsPanel {
                 await Task { @MainActor in

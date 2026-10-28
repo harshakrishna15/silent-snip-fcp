@@ -165,6 +165,43 @@ final class ShareDestinationTests: XCTestCase {
         XCTAssertEqual(legacyDeliveries, 0)
     }
 
+#if DEBUG
+    @MainActor func testPrototypeDistinguishesAcceptedShareFromCompletedResponseWithinItsOwnRequest() async throws {
+        let manager = try manager()
+        XCTAssertFalse(manager.prototypeHostAcceptedShare(projectName: "Project"))
+        XCTAssertFalse(manager.prototypeShareHasResponse(projectName: "Project"))
+        _ = try await manager.captureXML(projectName: "Project") {
+            XCTAssertFalse(manager.prototypeHostAcceptedShare(projectName: "Project"))
+            let asset = try manager.createAsset(name: "Project")
+            XCTAssertTrue(manager.prototypeHostAcceptedShare(projectName: "Project"))
+            XCTAssertFalse(manager.prototypeHostAcceptedShare(projectName: "Other"))
+            XCTAssertFalse(manager.prototypeShareHasResponse(projectName: "Project"))
+            let xml = try self.write("Project.fcpxml", in: asset.directoryURL, contents: self.completeXML)
+            XCTAssertTrue(manager.handleOpen(urls: [xml]))
+            XCTAssertTrue(manager.prototypeShareHasResponse(projectName: "Project"))
+            XCTAssertFalse(manager.prototypeShareHasResponse(projectName: "Other"))
+        }
+        XCTAssertFalse(manager.prototypeHostAcceptedShare(projectName: "Project"))
+        XCTAssertFalse(manager.prototypeShareHasResponse(projectName: "Project"))
+    }
+
+    @MainActor func testLateCanceledResponseCannotAuthorizeAnotherPrototypeMenuAction() async throws {
+        let manager = try manager()
+        var pending: ShareDestinationAsset?
+        do {
+            _ = try await manager.captureXML(projectName: "Project") {
+                pending = try manager.createAsset(name: "Project")
+                throw CancellationError()
+            }
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {}
+        let xml = try write("Project.fcpxml", in: XCTUnwrap(pending).directoryURL, contents: completeXML)
+        XCTAssertTrue(manager.handleOpen(urls: [xml]))
+        XCTAssertFalse(manager.prototypeHostAcceptedShare(projectName: "Project"))
+        XCTAssertFalse(manager.prototypeShareHasResponse(projectName: "Project"))
+    }
+#endif
+
     @MainActor func testProgrammaticCaptureRejectsWrongProjectAndResetsAfterFailure() async throws {
         let manager = try manager()
         do {

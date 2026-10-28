@@ -70,6 +70,19 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     }
     private var xmlRequest: XMLRequest?
     public var hasActiveRequest: Bool { xmlRequest != nil }
+#if DEBUG
+    // The prototype must distinguish an already accepted command from a menu
+    // action that only selected an item. Never send Return after host acceptance.
+    func prototypeHostAcceptedShare(projectName: String) -> Bool {
+        guard let request = xmlRequest, request.projectName == projectName else { return false }
+        return request.assetID != nil
+    }
+
+    func prototypeShareHasResponse(projectName: String) -> Bool {
+        guard let request = xmlRequest, request.projectName == projectName else { return false }
+        return request.result != nil
+    }
+#endif
 
     /// The host initiates Share once; all destination and completion data then
     /// travels through Apple's Media Asset Protocol, with no rendered media.

@@ -17,13 +17,19 @@ import Foundation
     /// A non-nil result explains how to reconnect manually when safe automatic
     /// restoration could not be established; it never replaces an analysis error.
     public func restoreReviewWindow() async -> String? {
-        await session.restoreReviewWindow()
+#if DEBUG
+        QuietSharePrototype.pluginLease?.reveal(reason: "Restoring Final Cut Controls.")
+#endif
+        return await session.restoreReviewWindow()
     }
 
     /// Successful analysis may restore the exact original occurrence after its
     /// own browser cleanup, then activate and raise the host's Controls window.
     func presentReviewWindow() async -> String? {
-        await session.restoreReviewWindowIfSafe(bringToFront: true, document: document, target: target)
+#if DEBUG
+        QuietSharePrototype.pluginLease?.reveal(reason: "Review is ready.")
+#endif
+        return await session.restoreReviewWindowIfSafe(bringToFront: true, document: document, target: target)
     }
 }
 

@@ -273,6 +273,9 @@ extension FinalCutAXSession {
             return false
         }
         if !selectedDirectly || !focusedDirectly || !browserHasFocus() {
+#if DEBUG
+            QuietSharePrototype.pluginLease?.reveal(reason: "Visible compatibility step: browser selection.")
+#endif
             // Imported projects can be outside the scroll viewport. Reveal only
             // this exact item when the host exposes the native AX action.
             for element in [item, image] {

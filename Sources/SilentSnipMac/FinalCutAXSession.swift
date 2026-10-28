@@ -17,6 +17,11 @@ import Foundation
     private let windowTitle: String
     var operationStage = "Reading the selected audio-only timeline clip"
     var lastXMLShareDirectory: URL?
+#if DEBUG
+    var quietPrototypeMenu = false
+    var quietPrototypeInvocation: ((String) -> Void)?
+    var quietPrototypeStage: ((String) -> Void)?
+#endif
     var knownReviewWindows: [(element: AXUIElement, title: String)] = []
     typealias SuspendedReview = FinalCutReviewOwnership.Suspended
     var reviewOwnership = FinalCutReviewOwnership()
@@ -26,6 +31,9 @@ import Foundation
     }
 
     init(allowImportDialog: Bool = false, allowEmptyTimeline: Bool = false) throws {
+#if DEBUG
+        try QuietSharePrototype.pluginLease?.assertMayContinue()
+#endif
         guard FinalCutAccessibility.isTrusted else { throw FinalCutAccessibility.AccessibilityError.permissionRequired }
         guard let application = NSRunningApplication.runningApplications(withBundleIdentifier: FinalCutAccessibility.bundleIdentifier).first else {
             throw FinalCutAccessibility.AccessibilityError.notRunning
@@ -81,7 +89,27 @@ import Foundation
         // Import verification owns the bounded dialog-settling policy. Other
         // entry points still require an unobstructed project before any action.
         guard allowImportDialog || currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut dialog before continuing.") }
+#if DEBUG
+        if let lease = QuietSharePrototype.pluginLease {
+            try QuietSharePrototype.verifyOpenLibrary(self)
+            connectPrototypeLease(lease)
+        }
+#endif
     }
+
+#if DEBUG
+    private func connectPrototypeLease(_ lease: QuietSharePluginPrototypeLease) {
+        quietPrototypeMenu = true
+        quietPrototypeInvocation = { [weak lease] in lease?.recordInvocation($0) }
+        quietPrototypeStage = { [weak lease] in
+            switch $0 {
+            case "beforeConfirmation": lease?.update("Checking Share settings…")
+            case "delivery": lease?.update("Waiting for Final Cut to finish…")
+            default: lease?.update("Verifying the project export…")
+            }
+        }
+    }
+#endif
 
     /// Import can temporarily remove the workspace from all AX attributes.
     /// Wait only for that condition; permission, dialog and identity failures
@@ -160,6 +188,9 @@ import Foundation
 
     func assertCurrentProject() throws {
         try Task.checkCancellation()
+#if DEBUG
+        try QuietSharePrototype.pluginLease?.assertMayContinue()
+#endif
         guard !application.isTerminated else { throw FinalCutCaptureError.unavailable("Final Cut exited during \(operationStage).") }
         // Read a fresh title only after verifying every edge from the pinned
         // window to this control. A rebuilt path falls back to bounded discovery.
@@ -170,6 +201,9 @@ import Foundation
     }
 
     func requestActivation() {
+#if DEBUG
+        guard QuietSharePrototype.pluginLease.map({ $0.inputStopped || $0.finished }) != true else { return }
+#endif
         NSApplication.shared.yieldActivation(to: application)
         application.activate(from: NSRunningApplication.current, options: [])
     }
@@ -188,6 +222,12 @@ import Foundation
             guard let focused = Self.elementAttribute(self.root, kAXFocusedWindowAttribute) else { return false }
             return CFEqual(focused, self.mainWindow)
         }
+#if DEBUG
+        if let lease = QuietSharePrototype.pluginLease {
+            connectPrototypeLease(lease)
+            try lease.attach(self)
+        }
+#endif
     }
 
     func assertInputFocus() throws {

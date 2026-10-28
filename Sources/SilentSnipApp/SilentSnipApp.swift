@@ -16,25 +16,35 @@ import SilentSnipMac
     private lazy var coordinator = AnalysisReviewCoordinator(
         operation: { [unowned self] request, progress in
             await waitForStorageCleanup()
-            return try await interactive.analyze(request, progress: progress)
+            return try await withPrototype(request: request.id) {
+                try await interactive.analyze(request, progress: prototypeProgress(progress))
+            }
         }, applyOperation: { [unowned self] request, result, progress in
             await waitForStorageCleanup()
-            try await interactive.apply(request, result: result, progress: progress)
+            try await withPrototype(request: request.id) {
+                try await interactive.apply(request, result: result, progress: prototypeProgress(progress))
+            }
         }, authorizeApply: { [unowned self] command in
             guard let view = command.view, let gesture = command.applyGesture else { return false }
             return interactive.canAuthorizeApply(view: view, gesture: gesture)
         }, recalculationOperation: { [unowned self] request, result, progress in
             await waitForStorageCleanup()
-            try await interactive.verifySettingsPreview(request, result: result, progress: progress)
+            try await withPrototype(request: request.id) {
+                try await interactive.verifySettingsPreview(request, result: result, progress: prototypeProgress(progress))
+            }
         }, authorizeRecalculation: { [unowned self] command in
             guard let view = command.view else { return false }
             return interactive.canReconnectReview(view: view)
         }, highlightOperation: { [unowned self] request, result, cutID in
             await waitForStorageCleanup()
-            try await interactive.highlight(request, result: result, cutID: cutID)
+            try await withPrototype(request: request.id) {
+                try await interactive.highlight(request, result: result, cutID: cutID)
+            }
         }, verificationOperation: { [unowned self] request, progress in
             await waitForStorageCleanup()
-            try await interactive.retryVerification(request.id, progress: progress)
+            try await withPrototype(request: request.id) {
+                try await interactive.retryVerification(request.id, progress: prototypeProgress(progress))
+            }
         }, canRetryVerification: { [unowned self] id in
             interactive.canRetryVerification(id)
         }, emit: { [unowned self] response in
@@ -189,6 +199,29 @@ import SilentSnipMac
         await storageCleanup.waitUntilIdle()
     }
 
+    private func withPrototype<T>(request: UUID, operation: () async throws -> T) async rethrows -> T {
+#if DEBUG
+        return try await QuietSharePrototype.withPluginPresentation(request: request, cancel: { [weak self] id in
+            guard let self, self.coordinator.currentRequest?.id == id else { return }
+            self.coordinator.handle(ReviewCommand(request: id, command: .cancel))
+            self.interactive.discard(id)
+        }, operation: operation)
+#else
+        return try await operation()
+#endif
+    }
+
+    private func prototypeProgress(_ progress: @escaping AnalysisReviewCoordinator.Progress) -> AnalysisReviewCoordinator.Progress {
+#if DEBUG
+        return { message, fraction in
+            QuietSharePrototype.pluginStage(message)
+            progress(message, fraction)
+        }
+#else
+        return progress
+#endif
+    }
+
     private func cleanStorage(manual: Bool) async -> StorageCleanupReport? {
         guard !hostLifetime.isStopping else { return nil }
         return await storageCleanup.clean(manual: manual)
@@ -198,6 +231,29 @@ import SilentSnipMac
 @main enum SilentSnipApplication {
     @MainActor static func main() {
         let app = NSApplication.shared
+#if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        var prototype: URL?
+        if arguments.count == 3, arguments[1] == "--quiet-share-prototype" {
+            prototype = URL(fileURLWithPath: arguments[2])
+        } else {
+            // Finder-launchable, one-shot developer fixture. Release builds
+            // contain neither this file probe nor the prototype runner.
+            let pending = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("build/QuietSharePrototype/Run.json")
+            let claimed = pending.deletingLastPathComponent().appendingPathComponent("Claimed-\(UUID()).json")
+            if (try? FileManager.default.moveItem(at: pending, to: claimed)) != nil { prototype = claimed }
+        }
+        if let prototype {
+            let delegate = QuietSharePrototypeDelegate(configuration: prototype)
+            app.delegate = delegate
+            app.setActivationPolicy(.accessory)
+            app.run()
+            withExtendedLifetime(delegate) {}
+            return
+        }
+#endif
         let delegate = SilentSnipDelegate()
         app.delegate = delegate
         app.setActivationPolicy(.accessory)

@@ -145,6 +145,7 @@ These are historical results, not checks rerun for every commit. See [XML replac
 | [Setup and troubleshooting](docs/setup.md) | Installation, permissions, Share destination, and test library |
 | [Workflow and recovery](docs/workflow.md) | Detection settings, review, Apply, and settings recovery |
 | [Analysis and caching](docs/analysis-speed.md) | Source versus processed audio and measurement reuse |
+| [Quiet Share prototype](docs/quiet-share-prototype.md) | Experimental progress cover, testing inside Final Cut, and verification limits |
 | [Integration evidence](docs/xml-replacement.md) | Manual replacement results and remaining verification |
 | [Audio plug-in](AudioPlugin/README.md) | Implementation and [Controls/helper protocol](AudioPlugin/REVIEW_PROTOCOL.md) |
 
