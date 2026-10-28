@@ -237,6 +237,11 @@ import Foundation
               isExpectedInputWindow(focused) else {
             throw FinalCutCaptureError.unavailable("\(operationStage): Final Cut lost keyboard focus. Return to its project window and Analyze again.")
         }
+#if DEBUG
+        // A newly opened project can already have focus without activate()
+        // being called. Bind it before any input or delivery callback uses it.
+        try QuietSharePrototype.pluginLease?.attach(self)
+#endif
     }
 
     func isExpectedInputWindow(_ focused: AXUIElement) -> Bool {

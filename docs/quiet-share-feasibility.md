@@ -2,6 +2,8 @@
 
 Status: focus-required plugin prototype built, signed, installed, and registered for manual testing on October 28, 2026. Its existing macOS control-access grant was refreshed and background startup reports Ready. Quiet presentation is not enabled in normal Release builds. The production gate remains open.
 
+The installed prototype remains commit `9ed26ad`. The later source hardening described below is queued for the next build and has not replaced that installed copy.
+
 The full requirements remain in [the implementation plan](quiet-share-plan.md). The current user-requested checkpoint is a prototype operated from Final Cut's existing Silent Snip controls. The discarded standalone test-window approach is not part of the prototype.
 
 ## Environment and retained evidence
@@ -45,3 +47,11 @@ The final Swift suite executed 431 tests with one existing skip and no failures.
 | Paired cold/warm latency and transition measurements | Not verified; no speed claim |
 
 The full `FinalCutShareTransaction` refactor, conservative settings-observation shortcut, production timing schema, validated-host enablement, and production rollout remain gated work. This prototype is not a claim that the complete implementation plan has passed. See [manual test steps](quiet-share-prototype.md).
+
+## Source hardening after installation
+
+An offline review found that the presentation held its current session weakly even when a project-handoff caller could discard the returned session. The source now retains that pin for the request, releases it at finish, and re-pins a newly focused session before host input even when no activation call was needed. This prevents a temporary session's lifetime or an outdated project name from deciding cover behavior.
+
+The source also verifies the exact workspace library in both returned XML-only and rendered-audio XML before the plugin prototype accepts them. A new test rejects a different library with the same filename and XML without a library location. The resulting Swift suite executes 432 tests with one existing skip and no failures.
+
+These are source checks, not a new installed build or a native editing pass. The user has not yet tested the installed prototype. The covered XML, processed-audio, cancellation, restoration, and Apply gate remains pending that manual test.

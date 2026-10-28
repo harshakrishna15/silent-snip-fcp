@@ -22,6 +22,9 @@ extension FinalCutAXSession {
         lastXMLShareDirectory = delivered.deletingLastPathComponent().standardizedFileURL
         try assertCurrentProject()
         _ = try TimelineParser.parse(url: delivered)
+#if DEBUG
+        if QuietSharePrototype.pluginLease != nil { try QuietSharePrototype.verifyLibrary(delivered) }
+#endif
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         // Keep the caller's capture format stable without a Save dialog.
         let input = delivered.pathExtension.lowercased() == "fcpxmld"
@@ -42,11 +45,15 @@ extension FinalCutAXSession {
     func shareRenderedAudio(timing: AnalysisTiming? = nil) async throws -> ShareDestinationReceipt {
         let timing = timing ?? AnalysisTiming(request: UUID())
         try await timing.measure("share.render.clearRanges") { try await clearTimelineRanges() }
-        return try await timing.measure("share.render.exchange") {
+        let receipt = try await timing.measure("share.render.exchange") {
             try await ShareDestinationManager.shared.captureMedia(projectName: projectName) {
                 try await timing.measure("share.render.setup") { try await self.beginShare(renderAudio: true, timing: timing) }
             }
         }
+#if DEBUG
+        if QuietSharePrototype.pluginLease != nil { try QuietSharePrototype.verifyLibrary(receipt.xmlURL) }
+#endif
+        return receipt
     }
 
     private func beginShare(renderAudio: Bool, timing: AnalysisTiming) async throws {

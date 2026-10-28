@@ -4,6 +4,23 @@ import XCTest
 @testable import SilentSnipMac
 
 final class QuietShareFeasibilityTests: XCTestCase {
+    @MainActor func testDeliveredXMLMustNameTheExactWorkspaceLibrary() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuietDelivery-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let xml = directory.appendingPathComponent("Delivered.fcpxml")
+        func writeLibrary(_ location: URL) throws {
+            let document = "<fcpxml version=\"1.14\"><library location=\"\(location.absoluteString)\"/></fcpxml>"
+            try Data(document.utf8).write(to: xml)
+        }
+        try writeLibrary(QuietSharePrototype.integrationLibraryURL)
+        XCTAssertNoThrow(try QuietSharePrototype.verifyLibrary(xml))
+        try writeLibrary(directory.appendingPathComponent("Cutdown Integration.fcpbundle"))
+        XCTAssertThrowsError(try QuietSharePrototype.verifyLibrary(xml))
+        try Data("<fcpxml version=\"1.14\"><library/></fcpxml>".utf8).write(to: xml)
+        XCTAssertThrowsError(try QuietSharePrototype.verifyLibrary(xml))
+    }
+
     @MainActor func testOffActorCancellationBlocksInputBeforeTheDismissalCallbackRuns() async {
         let lease = QuietSharePluginPrototypeLease(request: UUID(), cancel: { _ in })
         await Task.detached { lease.cancellation.cancel() }.value

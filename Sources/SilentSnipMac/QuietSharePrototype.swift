@@ -186,7 +186,7 @@ import SilentSnipCore
         }
     }
 
-    private static func verifyLibrary(_ url: URL) throws {
+    static func verifyLibrary(_ url: URL) throws {
         let file = url.pathExtension == "fcpxmld" ? url.appendingPathComponent("Info.fcpxml") : url
         let xml = try XMLDocument(data: Data(contentsOf: file), options: [.nodeLoadExternalEntitiesNever])
         let location = try xml.nodes(forXPath: "/fcpxml/library/@location").first?.stringValue
@@ -209,7 +209,10 @@ import SilentSnipCore
     private var cover: QuietSharePrototypeCover?
     private var pinnedWindow: AXUIElement?
     private var hostPID: pid_t?
-    private weak var currentSession: FinalCutAXSession?
+    // Re-pinning may return a session whose caller immediately discards it.
+    // Own the current pin until the request ends; session callbacks weakly
+    // reference this lease, so retaining the session creates no cycle.
+    private var currentSession: FinalCutAXSession?
     nonisolated let cancellation = QuietSharePrototypeCancellation()
     private(set) var revealed = false
     private(set) var finished = false
@@ -227,16 +230,18 @@ import SilentSnipCore
     func attach(_ session: FinalCutAXSession) throws {
         try assertMayContinue()
         guard !revealed, !finished else { return }
-        currentSession = session
+        if currentSession === session { return }
         if let pinnedWindow, let hostPID {
             guard hostPID == session.application.processIdentifier, CFEqual(pinnedWindow, session.mainWindow) else {
                 reveal(reason: "The pinned Final Cut workspace changed.")
                 return
             }
+            currentSession = session
             try cover?.repin(session)
             return
         }
         pinnedWindow = session.mainWindow; hostPID = session.application.processIdentifier
+        currentSession = session
         cover = try QuietSharePrototypeCover(session: session, cancel: { [weak self] in self?.cancelWork() },
             focusLost: { [weak self] in
                 guard let self, !self.finished else { return }
@@ -290,7 +295,7 @@ import SilentSnipCore
     func finish() {
         guard !finished else { return }
         if cover?.isVisible == true { transitions += 1 }
-        cover?.dismiss(); cover = nil; finished = true
+        cover?.dismiss(); cover = nil; currentSession = nil; finished = true
         guard let reportURL else { return }
         let report: [String: Any] = ["request": request.uuidString, "mode": "plugin-prototype",
             "fallbackReason": fallbackReason ?? "none", "invocations": invocations,
