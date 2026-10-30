@@ -98,15 +98,18 @@ public struct ReviewCommand: Codable, Equatable, Sendable {
     public let settingsEdit: UUID?
     public let settingsSequence: Int?
     public let verifySettings: Bool?
+    public let localPreview: Bool?
 
     public init(request: UUID, command: Kind, cutID: String? = nil, included: Bool? = nil,
                 expectedRevision: Int? = nil, view: UUID? = nil, applyGesture: UUID? = nil,
                 settings: ReviewWireSettings? = nil, output: String? = nil,
-                settingsEdit: UUID? = nil, settingsSequence: Int? = nil, verifySettings: Bool? = nil) {
+                settingsEdit: UUID? = nil, settingsSequence: Int? = nil, verifySettings: Bool? = nil,
+                localPreview: Bool? = nil) {
         version = ReviewWire.version; self.request = request; self.command = command
         self.cutID = cutID; self.included = included
         self.expectedRevision = expectedRevision
         self.view = view; self.applyGesture = applyGesture
+        self.localPreview = localPreview
         self.settings = settings; self.output = output; self.settingsEdit = settingsEdit; self.settingsSequence = settingsSequence
         self.verifySettings = verifySettings
     }
@@ -147,12 +150,15 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     public let settings: ReviewWireSettings?
     public let output: String?
     public let provisional: Bool?
+    public let canUpdateCuts: Bool?
+    public let usesAudioSnapshot: Bool?
 
     public init(request: UUID, revision: Int, state: String, message: String,
                 progress: Double? = nil,
                 summary: String? = nil, cuts: [ReviewCutResponse] = [], canApply: Bool = false,
                 canChangeSelection: Bool = false, canCancel: Bool = false, canHighlight: Bool = false, previewVisible: Bool? = nil, canRetryVerification: Bool? = nil,
-                settingsEdit: UUID? = nil, settings: ReviewWireSettings? = nil, output: String? = nil, provisional: Bool? = nil) {
+                settingsEdit: UUID? = nil, settings: ReviewWireSettings? = nil, output: String? = nil, provisional: Bool? = nil,
+                canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil) {
         version = ReviewWire.version; self.request = request; self.revision = revision
         self.state = state; self.message = message; self.progress = progress
         self.summary = summary; self.cuts = cuts
@@ -161,6 +167,7 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
         self.previewVisible = previewVisible
         self.canRetryVerification = canRetryVerification
         self.settingsEdit = settingsEdit; self.settings = settings; self.output = output; self.provisional = provisional
+        self.canUpdateCuts = canUpdateCuts; self.usesAudioSnapshot = usesAudioSnapshot
     }
 }
 

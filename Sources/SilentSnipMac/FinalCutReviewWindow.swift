@@ -305,6 +305,13 @@ extension FinalCutAXSession {
             enabled: (attribute(button, kAXEnabledAttribute) as? NSNumber)?.boolValue, gesture: gesture)
     }
 
+    func canAuthorizePreview(view: UUID, edit: UUID) -> Bool {
+        guard canReconnectReview(view: view), let window = focusedReviewWindow(),
+              let button = find(in: window, role: kAXButtonRole,
+                  identifier: "silentsnip.preview.requested.\(edit.uuidString)", maxDepth: 16, maxNodes: 250) else { return false }
+        return (attribute(button, kAXEnabledAttribute) as? NSNumber)?.boolValue == false
+    }
+
     func makePreviewReader() -> FinalCutPreviewReader? {
         guard let expected = activeReviewSelection else { return nil }
         return FinalCutPreviewReader(pid: application.processIdentifier, root: root,

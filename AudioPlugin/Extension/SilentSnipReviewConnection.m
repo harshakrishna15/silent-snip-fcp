@@ -61,6 +61,8 @@ static BOOL booleanValue(id value) {
     id decoded = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![decoded isKindOfClass:NSDictionary.class]) return nil;
     NSDictionary *value = decoded;
+    for (NSString *flag in @[@"canUpdateCuts", @"usesAudioSnapshot"])
+        if (value[flag] && !booleanValue(value[flag])) return nil;
     if (![value[@"version"] isEqual:@1] || ![value[@"request"] isEqual:self.requestID] ||
         ![value[@"revision"] isKindOfClass:NSNumber.class] || booleanValue(value[@"revision"]) ||
         [value[@"revision"] doubleValue] < 0 || floor([value[@"revision"] doubleValue]) != [value[@"revision"] doubleValue] ||

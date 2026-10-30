@@ -7,7 +7,7 @@ extension FinalCutAXSession {
     /// Bind the native selection to a unique occurrence, including its timeline
     /// edges and source mapping, before touching the imported controller.
     func selectTimelineClip(_ clip: TimelineClip, document: TimelineDocument,
-                            restoring expected: FinalCutSelectionSnapshot? = nil) async throws {
+                            restoring expected: FinalCutSelectionSnapshot? = nil, scrollToVisible: Bool = true) async throws {
         if expected == nil {
             try await activate()
             try await focusTimeline()
@@ -65,7 +65,7 @@ extension FinalCutAXSession {
         guard AXUIElementSetAttributeValue(timeline, kAXSelectedChildrenAttribute as CFString, matches as CFArray) == .success else {
             throw FinalCutCaptureError.unavailable("Final Cut could not select the exact imported segment for settings recovery.")
         }
-        _ = AXUIElementPerformAction(matches[0], "AXScrollToVisible" as CFString)
+        if scrollToVisible { _ = AXUIElementPerformAction(matches[0], "AXScrollToVisible" as CFString) }
         try await waitUntil(timeout: 3, context: "the imported segment selection") {
             guard let snapshot = try? self.selectionSnapshot(), let (_, selected) = try? snapshot.resolve(in: document) else { return false }
             return selected == clip

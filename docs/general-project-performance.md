@@ -51,7 +51,7 @@ Initial audio-only direct runs also ranged from 8.023 to 8.103 seconds, just bel
 
 Evidence: `build/GeneralProjects/Baseline`, `Final-Bundle-ABF7C543`, `Final-Bundle-27C07CAD`, `Combined-*`, `Mixed-Final-7E2AE4DE`, and `Mixed-Bounded-*`. Every test used `Cutdown Integration.fcpbundle`, generated media referenced in place, and disposable projects.
 
-## Installed build confirmation
+## Installed build confirmation — earlier build 31 milestone
 
 Build 31 is installed at `~/Applications/Silent Snip.app`; its helper executable matches the built app and distributable ZIP. Deep signature verification passes. On macOS/Xcode 27.2 with Final Cut 12.4, the audio fixture's initial Analyze took 8.344 seconds. Three fresh combined reanalyses took 5.601, 5.746, and 6.013 seconds (median 5.746, about 64% lower than the earlier recorded 15.968-second baseline). The earlier baseline was not rerun in this final session, so this is a confirmation against recorded evidence, not a new same-session A/B benchmark. Every completed review retained the four expected cuts.
 
@@ -112,3 +112,35 @@ The user accepted the tested main workflow as complete on October 30, 2026. Know
 - Solo did not isolate the audio export in the tested host. Solo-on and Solo-off WAVs decoded to the same PCM SHA-256 with overlapping same-role music. Solo was restored off; this route was rejected (`Solo-Scope-Probe.json`).
 - A selected clip range exported exactly 16.333 seconds while the accompanying XML retained the full 19.333-second project, UID, and semantic fingerprint (`Range-XML-Scope-Probe.json`).
 - A Cathedral 2 reverb tail measured -34.863 dBFS RMS after the beep inside a three-second clip. Splitting that first clip at one second gated the tail completely in the following silent clip. This supports ordinary, unexpanded clip boundaries only (`Reverb-Boundary-Probe.json`).
+
+
+## Manual review without repeated Share
+
+October 30, 2026. **Update Cuts** now submits changed detection settings/output explicitly against the last analyzed audio on eligible source and direct-render clips. It reuses the same 10 ms RMS measurements and detector. Typing, blur, Return, Save, and polling do no analysis. A draft disables Apply and hides the outdated overlay. **Analyze Audio** remains visible for fresh volume/effect/media capture. Other analysis routes retain the existing fresh-analysis workflow. Closing Controls with an unsubmitted draft requires a fresh analysis on reopening.
+
+**Go to Cut** uses the retained timecode and current project/selected-occurrence checks, without exporting XML. On this Final Cut version, native timecode entry is not an accessibility text field. The helper uses Deselect All (the host can acknowledge an empty AX selection without clearing it), verifies the empty timeline selection and native numeric-entry controls, checks the pending LCD timecode before Return, then verifies the actual timeline Playhead. It restores the exact original clip selection and Controls. Unsupported focus/input states stop safely. This path uses the documented Control-P command and the existing English-interface/default-command assumptions; it is not a new host API.
+
+| Native operation | Helper elapsed time | Share behavior |
+| --- | ---: | --- |
+| Sole camera target: three Update Cuts clicks | 0.082 / 0.097 / 0.094 s | zero new jobs |
+| Mixed edit: six Update Cuts clicks across three reviews | 0.090–0.124 s | zero new jobs |
+| **All nine local updates** | **0.094 s median** | **no Share** |
+| Mixed edit: fresh Analyze Audio after restoring volume | 5.825 s | fresh audio + XML |
+| Two verified Go to Cut commands | 3.764 / 4.200 s | no Share |
+| Sole target: snapshot Apply including imported verification | 11.320 s | fresh processed audio + XML, then result verification |
+| Mixed edit: snapshot Apply, two completed runs | 9.998 / 10.413 s | same fresh verification |
+
+The first three local updates were ready at the first computer-use observation, 545–576 ms after the click; those intervals include automation/AX observation overhead and are not precise display-paint latency. Final installed-build mixed updates also added zero Share jobs (288 before and after). The 94 ms measurement covers helper gesture authorization, recalculation, and selected-clip validation. It is a preview of retained audio, not a fresh audio render. Against the same edit's 5.825-second fresh-analysis run, local helper work is over 98% shorter, with that deliberate freshness difference. End-to-end first-analysis latency has not received this gain: the same-session sole-camera initial baseline was 9.009 s on build 31 and 10.711 s on build 33. Two old field-edit attempts failed focus checks and are preserved as failures, never counted as speedups. Later initial mixed analysis took 8.701 s. Go to Cut's old input path did not complete on this host, so there is no valid old/new navigation percentage.
+
+Apply continues to verify current full-project XML, selected occurrence, effects, source contents, and submitted settings. After a local processed-audio update it obtains fresh audio and XML in one native exchange, reruns the same detector, and requires identical candidate ranges and eligibility states before generating/importing a result. User inclusion choices remain attached to the matching reviewed candidates. Each successful Apply’s fresh audio hash equaled its original analyzed hash exactly. A changed volume of −12 dB was rejected before project generation/import; its result directory contained no verification receipt or edited project. After restoring 0 dB, explicit Analyze Audio succeeded and a new local update/Apply passed.
+
+The sole 16.333-second camera project produced a verified 10.8-second cleaned copy. The mixed 19.333-second edit produced a verified 13.8-second copy containing the original two-second lead-in and one-second following video. Noise Gate and Limiter stayed editable; imported timeline/effect fingerprints had no differences, originals stayed present, and source contents passed verification. The original mixed-project fingerprint also matched before navigation and after the volume was restored, confirming no timeline edit from navigation. Tests ran only in disposable projects in `Cutdown Integration.fcpbundle`; generated sources were referenced in place.
+
+Native Controls were inspected with all four detection settings, Output, four cut rows, Analyze Audio, Update Cuts, Cancel, Apply, and the concise audio-snapshot status visible together. Preview drawing retains the previously verified viewport/zoom implementation. No detection algorithm, sample resolution, gate/limiter processing, or export encoding quality was reduced. Existing topology restrictions and effect-boundary behavior still apply. Arbitrary plugins may be nondeterministic; a changed render that does not reproduce the reviewed ranges stops before import. This update is not universal plugin certification.
+
+Evidence is under `build/ManualReviewPerformance`: `Baseline-Initial`, `Native-Local-Updates.json`, `New-1094D7F4/Applied`, `Mixed-50BD4C9E/Applied`, `Final-9EAE4F28/Native-Checks.json`, `Recovered-CA56233B/Applied`, and `Final-Share-After.json`. Source-hash and bundle/ZIP equality manifests are in the same directory. Runtime timing reports retain one latest small report per operation/request; repeated review updates do not accumulate timing files. Recovery/result XML and exported integration evidence remain preserved.
+
+
+Build 36 is the final installed package (Audio Unit build 28). Built, installed, and ZIP executable hashes match, and deep signature checks pass. Its additional native smoke test completed Analyze → two explicit Update Cuts clicks → Go to Cut → Apply in the required library. The final retained update took 0.105 s; navigation took 4.303 s and reached `01:00:05:18`, with visible “Playhead moved” feedback and the original camera target reselected. Both updates plus navigation added zero Share jobs. Only one local-preview timing file and one navigation timing file remained. Initial fresh Analyze took 12.253 s in this run, reinforcing that no initial-analysis speedup is established. Freshly verified Apply took 10.343 s and opened the expected 13.8-second full-project copy with matching audio and imported fingerprints.
+
+The final audit found zero remaining WAVs across 20 completed request-owned fixture deliveries. Original narration, camera, music, and reverb-probe hashes stayed identical. An unused generated compiler module cache was removed after confirming no compiler processes/open files, reclaiming 318.2 MiB; `build/swift`, app bundles, source media, result/recovery XML, and integration evidence were preserved. Final automated checks: 471 Swift tests (one existing benchmark skip, zero failures), 48 Controls harness groups, and 60 exact passthrough audio cases. No pending OS authentication or integration test remains for this scoped update.

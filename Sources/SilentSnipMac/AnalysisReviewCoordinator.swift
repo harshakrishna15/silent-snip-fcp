@@ -5,10 +5,14 @@ public struct ReviewAnalysisResult: Sendable {
     public var analyzed: AnalyzedAudioProject
     public let dropFrame: Bool
     public let presentationNotice: String?
-    public init(analyzed: AnalyzedAudioProject, dropFrame: Bool = false, presentationNotice: String? = nil) {
+    public let canUpdateCuts: Bool
+    public var usesAudioSnapshot = false
+    public init(analyzed: AnalyzedAudioProject, dropFrame: Bool = false, presentationNotice: String? = nil,
+                canUpdateCuts: Bool = false) {
         self.analyzed = analyzed
         self.dropFrame = dropFrame
         self.presentationNotice = presentationNotice
+        self.canUpdateCuts = canUpdateCuts
     }
 }
 
@@ -38,6 +42,7 @@ public struct ReviewAnalysisResult: Sendable {
         var settingsView: UUID?
         var settingsSequence = 0
         var verifySettings = false
+        var previewSuspended = false
         init(_ request: AnalyzeRequest) { self.request = request }
     }
 
@@ -45,6 +50,8 @@ public struct ReviewAnalysisResult: Sendable {
     private let applyOperation: ApplyOperation?
     private let authorizeApply: @MainActor (ReviewCommand) -> Bool
     private let recalculationOperation: ApplyOperation?
+    private let localPreviewOperation: ApplyOperation?
+    private let recordLocalPreview: (UUID, Double, Bool) -> Void
     private let authorizeRecalculation: @MainActor (ReviewCommand) -> Bool
     private let highlightOperation: HighlightOperation?
     private let verificationOperation: VerificationOperation?
@@ -60,6 +67,8 @@ public struct ReviewAnalysisResult: Sendable {
                 authorizeApply: @escaping @MainActor (ReviewCommand) -> Bool = { _ in false },
                 recalculationOperation: ApplyOperation? = nil,
                 authorizeRecalculation: @escaping @MainActor (ReviewCommand) -> Bool = { _ in false },
+                localPreviewOperation: ApplyOperation? = nil,
+                recordLocalPreview: @escaping (UUID, Double, Bool) -> Void = { _, _, _ in },
                 highlightOperation: HighlightOperation? = nil,
                 verificationOperation: VerificationOperation? = nil,
                 canRetryVerification: @escaping (UUID) -> Bool = { _ in false },
@@ -72,6 +81,7 @@ public struct ReviewAnalysisResult: Sendable {
         self.applyOperation = applyOperation
         self.authorizeApply = authorizeApply
         self.recalculationOperation = recalculationOperation; self.authorizeRecalculation = authorizeRecalculation
+        self.localPreviewOperation = localPreviewOperation; self.recordLocalPreview = recordLocalPreview
         self.highlightOperation = highlightOperation
         self.verificationOperation = verificationOperation
         self.canRetryVerification = canRetryVerification
@@ -88,7 +98,11 @@ public struct ReviewAnalysisResult: Sendable {
     public func requestForReconnect(_ id: UUID) -> AnalyzeRequest? {
         guard let job = jobs[id], active == nil || active == id else { return nil }
         if job.applyStarted && canRetryVerification(id) { return job.request }
-        guard !job.cancelled, active == id, job.result != nil || job.task != nil else { return nil }
+        // A pre-import audio check may fail after Controls was suspended for
+        // Share. Recreated Controls must receive that terminal error, without
+        // regaining a result or permission to apply the consumed plan.
+        if job.applyStarted, job.state == .failed, !job.cancelled, !job.previewSuspended { return job.request }
+        guard !job.cancelled, !job.previewSuspended, active == id, job.result != nil || job.task != nil else { return nil }
         return job.request
     }
 
@@ -167,6 +181,16 @@ public struct ReviewAnalysisResult: Sendable {
         guard let job = jobs[command.request] else { return }
         if command.command == .status { resend(job); return }
         if command.command == .recalculate { recalculate(job, command: command); return }
+        if command.command == .preview, command.localPreview == true, command.included == false {
+            guard active == command.request, job.state == .review,
+                  command.expectedRevision == job.revision else { return }
+            // Invalidate display/Apply without running analysis or consuming
+            // the immutable audio snapshot. No new revision is needed while
+            // the view is editing and deliberately ignores status replies.
+            job.previewSuspended = true
+            onReviewChange?(job.request.id, nil)
+            return
+        }
         if command.command == .retryVerification {
             if let expected = command.expectedRevision, expected != job.revision {
                 resend(job)
@@ -197,7 +221,7 @@ public struct ReviewAnalysisResult: Sendable {
             publish(job)
             return
         }
-        guard active == command.request, job.state == .review, var result = job.result else { return }
+        guard active == command.request, job.state == .review, !job.previewSuspended, var result = job.result else { return }
         if let expected = command.expectedRevision, expected != job.revision {
             resend(job)
             return
@@ -219,6 +243,7 @@ public struct ReviewAnalysisResult: Sendable {
                 beginHighlight(job, result: result, cutID: id)
                 return
             case .apply:
+                guard !job.previewSuspended else { resend(job); return }
                 guard applyOperation != nil else {
                     beginApply(job, result: result)
                     return
@@ -248,26 +273,56 @@ public struct ReviewAnalysisResult: Sendable {
     }
 
     private func recalculate(_ job: Job, command: ReviewCommand) {
+        let started = ProcessInfo.processInfo.systemUptime
+        let local = command.localPreview == true
         guard active == command.request, !job.cancelled, !job.applyStarted,
               job.state == .review || job.state == .recalculating,
-              recalculationOperation != nil, var result = job.result,
+              !local || (job.state == .review && job.task == nil),
+              (local ? localPreviewOperation != nil : recalculationOperation != nil), var result = job.result,
+              !local || result.canUpdateCuts,
               let view = command.view, let edit = command.settingsEdit,
               let sequence = command.settingsSequence, sequence > 0,
               let verify = command.verifySettings,
               let expected = command.expectedRevision, expected >= 0, expected <= job.revision,
+              !local || expected == job.revision,
               let values = command.settings, let settings = try? values.analysisSettings(),
               let output = command.output.flatMap(SilentSnipOutputMode.init(rawValue:)) else { resend(job); return }
         if job.settingsView == view && sequence <= job.settingsSequence { resend(job); return }
         guard authorizeRecalculation(command) else { resend(job); return }
         do {
             _ = try result.analyzed.recalculate(settings: settings)
+            if local { result.usesAudioSnapshot = true }
             job.request = AnalyzeRequest(id: job.request.id, settings: settings, outputMode: output)
             job.result = result; job.settingsEdit = edit; job.settingsView = view; job.settingsSequence = sequence
+            job.previewSuspended = false
             job.verifySettings = verify
             job.state = .recalculating; job.progress = nil
-            job.message = verify ? "Preview updated. Checking the current project before enabling Apply…"
+            job.message = local ? "Updating cuts from the last analyzed audio…" : verify ? "Preview updated. Checking the current project before enabling Apply…"
                 : "Preview updated. Finish editing a field to verify the project and enable Apply."
             publish(job)
+            if local {
+                // Explicit snapshot updates never dispatch a Share. Their own
+                // operation checks the current review selection; Apply later
+                // validates freshly rendered audio before importing anything.
+                let request = job.request
+                job.task = Task { [weak self, weak job] in
+                    guard let self, let job else { return }
+                    do {
+                        try Task.checkCancellation()
+                        try await self.localPreviewOperation?(request, result) { _, _ in }
+                        try Task.checkCancellation()
+                        job.state = .review; job.progress = 1; job.message = self.reviewMessage(result)
+                    } catch {
+                        job.result = nil; job.state = job.cancelled ? .cancelled : .failed
+                        job.message = error.localizedDescription
+                        if self.active == request.id { self.active = nil }
+                    }
+                    job.task = nil
+                    self.recordLocalPreview(request.id, ProcessInfo.processInfo.systemUptime - started, job.state == .review)
+                    self.publish(job); self.record(request, job.state.rawValue, job.message)
+                }
+                return
+            }
             // One host check owns Share/UI cleanup until it stops. Rapid edits
             // replace the pending settings, never start concurrent exports.
             if let task = job.task { task.cancel() }
@@ -460,7 +515,7 @@ public struct ReviewAnalysisResult: Sendable {
         defer {
             if active == nil || active == job.request.id {
                 let retainsPreview = job.state == .review || job.state == .analyzing || job.state == .navigating || job.state == .recalculating
-                onReviewChange?(job.request.id, active == job.request.id && retainsPreview ? job.result?.analyzed.review : nil)
+                onReviewChange?(job.request.id, active == job.request.id && retainsPreview && !job.previewSuspended ? job.result?.analyzed.review : nil)
             }
         }
         job.revision += 1
@@ -531,7 +586,9 @@ public struct ReviewAnalysisResult: Sendable {
             settingsEdit: job.settingsEdit,
             settings: ReviewWireSettings(threshold: job.request.settings.thresholdDBFS, minimum: job.request.settings.minimumSilenceDuration,
                 before: job.request.settings.beforeSpeechPadding, after: job.request.settings.afterSpeechPadding),
-            output: job.request.outputMode.rawValue, provisional: job.state == .recalculating)
+            output: job.request.outputMode.rawValue, provisional: job.state == .recalculating,
+            canUpdateCuts: ready && result.canUpdateCuts && localPreviewOperation != nil,
+            usesAudioSnapshot: result.usesAudioSnapshot)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {
@@ -545,7 +602,12 @@ public struct ReviewAnalysisResult: Sendable {
         let message = Self.applyUnavailableReason(result) ?? Self.reviewMessage(result.analyzed.analysis.disposition, applyAvailable: applyOperation != nil)
         // Empty reviews retain their specific no-silence/whole-clip explanation.
         let explanation = result.analyzed.review.cuts.isEmpty ? Self.reviewMessage(result.analyzed.analysis.disposition, applyAvailable: applyOperation != nil) : message
-        return [explanation, result.presentationNotice].compactMap { $0 }.joined(separator: " ")
+        let notice = result.usesAudioSnapshot
+            ? "Cuts use the last analyzed audio. Apply verifies current audio before editing. Use Analyze Audio Again after changing volume or effects."
+            : result.presentationNotice
+        return result.usesAudioSnapshot
+            ? [notice, explanation].compactMap { $0 }.joined(separator: " ")
+            : [explanation, notice].compactMap { $0 }.joined(separator: " ")
     }
 
     private static func reviewMessage(_ disposition: SilenceAnalysisDisposition, applyAvailable: Bool) -> String {

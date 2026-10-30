@@ -47,7 +47,7 @@ import Foundation
         do {
         try await timing.measure("capture.activation") { try await session.activate() }
         progress("Preparing Final Cut for export…")
-        // Keep the effect window open; only move input focus to the project.
+        // Capture the exact selection before suspending the effect window.
         // Opening an AU view can leave the Inspector focused, making Final
         // Cut omit the timeline's active selection until the timeline regains
         // focus. Direct AX focus preserves the existing clip/range selection;
@@ -68,6 +68,11 @@ import Foundation
            timing.measure("capture.inspector", operation: { session.hasMultipleSilentSnipEffectsInInspector() }) {
             throw AudioControllerSettingsError.ambiguousController
         }
+        // A remote AU field commit can raise Controls after activation and
+        // interrupt the Share menu. Suspend only the verified original editor;
+        // the existing review restoration reopens it after the exchange.
+        try await timing.measure("capture.suspendControls") { try await session.suspendReviewWindow() }
+        try await session.activate()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         progress("Exporting the active project XML…")
         let destination = directory.appendingPathComponent("Project-\(UUID()).fcpxmld")

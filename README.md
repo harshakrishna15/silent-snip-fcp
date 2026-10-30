@@ -8,11 +8,13 @@ Silent Snip combines a passthrough audio effect with a background macOS helper. 
 
 The general-project update adds linked camera clips, full-project copies, a guarded direct-render path, overlapping source validation, and viewport-based preview drawing. Native Analyze → Apply passes for camera projects with connected music and preceding dialogue. Fresh manual reanalysis measured about 64–69% lower elapsed time against the recorded audio baseline; first-analysis timing and unsupported project layouts remain documented in [the verification notes](docs/general-project-performance.md).
 
+The manual review update adds **Update Cuts** from retained audio and **Go to Cut** without another Share. Nine native setting updates took 82–124 ms in the helper (94 ms median); fresh audio analysis remains separate and Apply verifies current audio. See [timings and verification limits](docs/general-project-performance.md#manual-review-without-repeated-share).
+
 ## How it works
 
 1. Select one normal-speed clip with audio in the primary storyline and add **Silent Snip Audio**.
-2. Open **Controls**, adjust silence detection, and click **Analyze**.
-3. Controls returns to the front when analysis finishes. Review the proposed cuts and choose which to include. Changing detection settings or output mode marks the old results as out of date. Click **Analyze Again** manually before Apply becomes available.
+2. Open **Controls**, adjust silence detection, and click **Analyze Audio**.
+3. Controls returns to the front when analysis finishes. Review the proposed cuts and choose which to include. Changing detection settings or output mode marks the old results as out of date. Click **Update Cuts** manually to recalculate from the last analyzed audio on supported direct clips. **Analyze Audio** remains visible for refreshing volume or effect changes. Apply verifies fresh processed audio before using a locally updated preview.
 4. Click **Apply Cuts** to create and open a cleaned copy of the full project in the original event. Its retained segments and audio effects stay editable.
 
 The original project and source media stay unchanged. Silent Snip also saves the original project's recovery XML before importing the result.
@@ -31,7 +33,7 @@ reconnection, and source-integrity checks, including limits for older saved resu
 - **Two output modes:** remove selected pauses or replace them with one-second gaps.
 - **Review before applying:** per-cut selection and a timeline preview.
 - **Audio processing:** measure source audio for unprocessed clips or a verified Final Cut render for processed clips.
-- **Manual analysis:** tweak values freely, then click Analyze. Old cuts stay inactive until the new analysis finishes; eligible requests can reuse matching verified measurements internally.
+- **Manual analysis:** tweak values freely, then click Analyze Audio or Update Cuts. Old cuts stay inactive until the new analysis finishes; eligible requests can reuse matching verified measurements internally.
 
 Detection uses loudness, so quiet breaths can qualify as silence. It does not recognize speech or breaths.
 
@@ -56,7 +58,7 @@ Start with **Silent Snip.zip**. You do not need the repository, Xcode, Terminal,
 3. **Open Silent Snip once.** A scissors icon appears in the menu bar. Its menu shows access status and provides saved results and Quit.
 4. **Grant control access.** Open **System Settings → Privacy & Security → Device Control and Data Access** (called **Accessibility** on earlier macOS versions). Enable **Silent Snip**. If it is missing, click **+** and select the app you copied into Applications.
 5. **Set up Final Cut Share.** In **Final Cut Pro → Settings → Destinations**, add **Export File**, name it **Silent Snip**, and choose **Audio Only → WAV**. Under **Action → Other…**, select that same **Silent Snip.app** in Applications.
-6. **Add the effect.** In Final Cut’s Effects browser, add **Silent Snip Audio** to a normal-speed clip with audio. Open **Controls**, adjust detection, and choose **Analyze**. Review the ranges before choosing **Apply Cuts**.
+6. **Add the effect.** In Final Cut’s Effects browser, add **Silent Snip Audio** to a normal-speed clip with audio. Open **Controls**, adjust detection, and choose **Analyze Audio**. Review the ranges before choosing **Apply Cuts**.
 
 **Upgrading from an older version:** this release uses a fresh app identity. Grant access to **Silent Snip**, remove obsolete app permission entries, and reselect the new app as the Share action. Old settings are not migrated; old files are left on disk.
 

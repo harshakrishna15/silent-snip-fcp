@@ -92,80 +92,123 @@ extension FinalCutAXSession {
         try await waitUntil(timeout: 2, context: "timeline focus") { (try? hasTimelineFocus()) == true }
     }
 
-    /// Move only the playhead, using Apple's timecode-entry command. No timeline
-    /// range, blade, trim or delete input is involved.
+    /// Final Cut's numeric timecode editor is not an AXTextField on current
+    /// hosts. Clear the exact clip selection first so duration entry cannot
+    /// trim it, then require the native numeric controls and pending LCD value
+    /// before confirming. The timeline Playhead, not the LCD, proves success.
     func movePlayhead(to time: RationalTime, document: TimelineDocument, dropFrame: Bool) async throws {
         guard document.projectName == projectName, time >= .zero, time < document.projectRange.end else {
             throw FinalCutCaptureError.changedProject
         }
-        let timecode = try FinalCutTimecode.format(time.adding(document.projectTimecodeStart),
+        let absolute = try time.adding(document.projectTimecodeStart)
+        let timecode = try FinalCutTimecode.format(absolute,
             frameDuration: document.frameDuration, dropFrame: dropFrame)
+        let expected = try selectionSnapshot()
+        let (_, target) = try expected.resolve(in: document)
+        try await suspendReviewWindow()
         try await activate()
         try await focusTimeline()
-        let priorFocus = Self.elementAttribute(root, kAXFocusedUIElementAttribute)
-        var input: AXUIElement?
-        var opened = false
-        func focusedTimecodeInput() -> AXUIElement? {
-            guard let focused = Self.elementAttribute(root, kAXFocusedUIElementAttribute),
-                  string(focused, kAXRoleAttribute) == kAXTextFieldRole else { return nil }
-            let labels = [string(focused, kAXDescriptionAttribute), string(focused, kAXIdentifierAttribute),
-                          string(focused, kAXTitleAttribute)].compactMap { $0 }.joined(separator: " ").lowercased()
-            return labels.contains("timecode") ? focused : nil
+        guard let lcd = Self.search(mainWindow, role: kAXStaticTextRole,
+                description: "Timecode LCD", containersOnly: true),
+              let controls = Self.elementAttribute(lcd, kAXParentAttribute) else {
+            throw FinalCutCaptureError.unavailable("The native playhead timecode display is unavailable.")
         }
+        func hasLabel(_ element: AXUIElement, _ label: String) -> Bool {
+            string(element, kAXDescriptionAttribute) == label || string(element, kAXTitleAttribute) == label
+        }
+        func numericEntryOpen() -> Bool {
+            let items = children(controls)
+            guard items.count <= 100, items.contains(where: { CFEqual($0, lcd) }) else { return false }
+            return items.filter { string($0, kAXRoleAttribute) == kAXButtonRole && hasLabel($0, "Numeric Entry Type") }.count == 1
+                && items.filter { string($0, kAXRoleAttribute) == kAXImageRole && hasLabel($0, "Numeric Entry Direction") }.count == 1
+        }
+        func emptySelection() -> Bool {
+            guard (try? refreshTimeline()) != nil,
+                  let items = attribute(timeline, kAXChildrenAttribute) as? [AXUIElement], items.count <= 10_000,
+                  !items.contains(where: { string($0, kAXDescriptionAttribute) == "Range Selection" }) else { return false }
+            return items.filter { string($0, kAXRoleAttribute) == kAXLayoutItemRole }.allSatisfy {
+                (attribute($0, kAXSelectedAttribute) as? NSNumber)?.boolValue == false
+            }
+        }
+        func assertOwnedEntry() throws {
+            try assertInputFocus()
+            guard currentSheet() == nil, try hasTimelineFocus(), emptySelection(), numericEntryOpen() else {
+                throw FinalCutCaptureError.unavailable("Final Cut's playhead entry lost ownership. No timecode was confirmed.")
+            }
+        }
+        guard !numericEntryOpen(), try selectionSnapshot() == expected else {
+            throw FinalCutCaptureError.invalidSelection("Finish the current timecode entry before navigating to a cut.")
+        }
+        var clearedSelection = false
+        var opened = false
+        var observedEntry = false
         try await FinalCutOwnedInput.perform(operation: {
+            try assertInputFocus()
+            guard try selectionSnapshot() == expected else { throw AudioControllerSettingsError.targetChanged }
+            // Some hosts acknowledge AXSelectedChildren=[] without clearing a
+            // clip. Use the native non-editing command, then verify every item.
+            clearedSelection = true
+            try await pressMenu(path: ["Edit", "Deselect All"])
+            try await waitUntil(timeout: 2, context: "an empty timeline selection for playhead entry") { emptySelection() }
+            guard try hasTimelineFocus(), currentSheet() == nil else {
+                throw FinalCutCaptureError.unavailable("The timeline lost focus before playhead entry.")
+            }
+            // Apple's documented absolute timecode command. No selected clip or
+            // range exists, so the numeric editor cannot change clip duration.
             // https://support.apple.com/guide/final-cut-pro/ver1632d762/mac
             try key(code: 35, flags: .maskControl)
             opened = true
-            try await waitUntil(timeout: 3, context: "the playhead timecode field") {
-                guard let focused = focusedTimecodeInput() else { return false }
-                input = focused
-                return true
+            try await waitUntil(timeout: 2, context: "native playhead numeric entry") { numericEntryOpen() }
+            observedEntry = true
+            // Keypad digits are independent of the user's alphabetic layout.
+            let codes: [Character: CGKeyCode] = ["0": 82, "1": 83, "2": 84, "3": 85, "4": 86,
+                "5": 87, "6": 88, "7": 89, "8": 91, "9": 92]
+            for digit in timecode.filter(\.isNumber) {
+                try assertOwnedEntry()
+                guard let code = codes[digit] else { throw FinalCutCaptureError.unsupportedTimecode(timecode) }
+                try key(code: code, flags: .maskNumericPad)
             }
-            guard let input else { throw FinalCutCaptureError.unavailable("The playhead timecode field is unavailable.") }
-            try assertInputFocus()
-            guard currentSheet() == nil,
-                  let focused = Self.elementAttribute(root, kAXFocusedUIElementAttribute), CFEqual(focused, input) else {
-                throw FinalCutCaptureError.unavailable("The playhead timecode field lost focus.")
+            try await waitUntil(timeout: 2, context: "the pending playhead timecode") {
+                numericEntryOpen() && string(lcd, kAXValueAttribute) == timecode
             }
-            guard AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, timecode.filter(\.isNumber) as CFString) == .success else {
-                throw FinalCutCaptureError.unavailable("Final Cut did not accept the playhead timecode.")
-            }
-            guard currentSheet() == nil,
-                  let stillFocused = Self.elementAttribute(root, kAXFocusedUIElementAttribute), CFEqual(stillFocused, input) else {
-                throw FinalCutCaptureError.unavailable("The playhead timecode field lost focus before confirmation.")
+            try assertOwnedEntry()
+            guard string(lcd, kAXValueAttribute) == timecode else {
+                throw FinalCutCaptureError.unavailable("Final Cut's pending timecode did not match the selected cut. No timecode was confirmed.")
             }
             try key(code: 36)
-            try await waitUntil(timeout: 3, context: "the requested playhead time") {
-                guard let display = Self.search(self.mainWindow, description: "Timecode", containersOnly: true),
-                      let focused = Self.elementAttribute(self.root, kAXFocusedUIElementAttribute), !CFEqual(focused, input),
-                      let value = self.string(display, kAXValueAttribute),
-                      let actual = try? FinalCutTimecode.time(value, frameDuration: document.frameDuration) else { return false }
-                return actual == (try? time.adding(document.projectTimecodeStart))
-            }
-        }, cleanup: {
-            guard opened else { return }
-            // A posted key event may not have opened the editor yet when the
-            // task is cancelled. Wait briefly while focus stays on the original
-            // control; never wait through a move to an unrelated field/window.
-            let deadline = Date().addingTimeInterval(3)
-            while Date() < deadline {
-                guard (try? self.assertInputFocus()) != nil, self.currentSheet() == nil,
-                      let current = Self.elementAttribute(self.root, kAXFocusedUIElementAttribute) else { return }
-                if let focused = focusedTimecodeInput() {
-                    if let input {
-                        guard CFEqual(focused, input) else { return }
-                    } else {
-                        guard priorFocus.map({ !CFEqual($0, focused) }) == true else { return }
-                    }
-                    try self.key(code: 53)
-                    try await self.waitUntil(timeout: 2, context: "the timecode editor to close") {
-                        guard let next = Self.elementAttribute(self.root, kAXFocusedUIElementAttribute) else { return false }
-                        return !CFEqual(next, focused)
-                    }
-                    return
+            try await waitUntil(timeout: 2, context: "the requested timeline playhead time") {
+                guard !numericEntryOpen(), emptySelection() else { return false }
+                let playheads = children(timeline).filter {
+                    string($0, kAXRoleAttribute) == kAXValueIndicatorRole && string($0, kAXDescriptionAttribute) == "Playhead"
                 }
-                guard input == nil, priorFocus.map({ CFEqual($0, current) }) == true else { return }
-                try await Task.sleep(for: .milliseconds(150))
+                guard playheads.count == 1, let value = string(playheads[0], kAXValueAttribute),
+                      let actual = try? FinalCutTimecode.time(value, frameDuration: document.frameDuration) else { return false }
+                return actual == absolute
+            }
+            try await selectTimelineClip(target, document: document, restoring: expected, scrollToVisible: false)
+        }, cleanup: {
+            // Only dismiss our own numeric editor while the original project,
+            // timeline focus and empty selection remain provable. Never send
+            // Escape/Return to a field, dialog, or new user selection.
+            if opened, !observedEntry {
+                // A cancelled task can outrun the posted Control-P. Allow its
+                // editor to arrive only while the exact original input context
+                // remains ours; cleanup runs in an independent cancellation scope.
+                let deadline = Date().addingTimeInterval(2)
+                while Date() < deadline {
+                    guard (try? self.assertInputFocus()) != nil, self.currentSheet() == nil,
+                          (try? self.hasTimelineFocus()) == true, emptySelection() else { return }
+                    if numericEntryOpen() { break }
+                    try await Task.sleep(for: .milliseconds(150))
+                }
+            }
+            if opened, (try? self.assertInputFocus()) != nil, self.currentSheet() == nil,
+               (try? self.hasTimelineFocus()) == true, emptySelection(), numericEntryOpen() {
+                try self.key(code: 53)
+                try await self.waitUntil(timeout: 2, context: "playhead numeric entry to close") { !numericEntryOpen() }
+            }
+            if clearedSelection, !numericEntryOpen(), emptySelection() {
+                try await self.selectTimelineClip(target, document: document, restoring: expected, scrollToVisible: false)
             }
         })
     }

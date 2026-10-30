@@ -472,6 +472,27 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         let selection = TimelineSelection(timelineRange: TimeRange(start: .zero, end: RationalTime(3)))
     }
 
+    func testFreshAudioValidationAcceptsSameCutsAndPreservesUserExclusions() async throws {
+        let fixture = try fixture()
+        var reviewed = try await analyze(fixture)
+        let fresh = try await analyze(fixture)
+        try reviewed.review.setIncluded(false, cutID: reviewed.review.cuts[0].id)
+        XCTAssertNoThrow(try ReviewedCutValidation.verify(reviewed: reviewed, fresh: fresh))
+        XCTAssertTrue(reviewed.review.selectedCuts.isEmpty)
+    }
+
+    func testFreshAudioValidationRejectsChangedQuietIntervalsBeforeImport() async throws {
+        let fixture = try fixture()
+        let reviewed = try await analyze(fixture)
+        let replacement = try wave(frames: 144_000, channels: 1) { _, _ in 8192 }
+        try Data(contentsOf: replacement).write(to: fixture.audio)
+        let fresh = try await analyze(fixture)
+        XCTAssertNotEqual(reviewed.review.cuts.map(\.range), fresh.review.cuts.map(\.range))
+        XCTAssertThrowsError(try ReviewedCutValidation.verify(reviewed: reviewed, fresh: fresh)) { error in
+            XCTAssertTrue(error is SnapshotPreviewError)
+        }
+    }
+
     private func analyze(_ fixture: Fixture) async throws -> AnalyzedAudioProject {
         return try await ProjectAudioAnalysis.analyze(projectXML: fixture.xml, selection: fixture.selection,
             dialogueAudio: fixture.audio, renderContext: renderContext(fixture))

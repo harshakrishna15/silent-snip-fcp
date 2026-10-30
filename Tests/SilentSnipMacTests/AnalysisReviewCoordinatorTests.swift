@@ -908,6 +908,96 @@ import XCTest
         }
     }
 
+    func testExplicitLocalPreviewPreservesSnapshotAndDefersAudioVerificationToApply() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest(), view = UUID(), edit = UUID()
+        var latest: ReviewResponse?, localChecks = 0, hostChecks = 0, applies = 0
+        let result = ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in result }, applyOperation: { request, result, _ in
+            XCTAssertTrue(result.usesAudioSnapshot)
+            XCTAssertEqual(request.settings.minimumSilenceDuration, 0.7)
+            applies += 1
+        }, authorizeApply: { _ in true }, recalculationOperation: { _, _, _ in hostChecks += 1 },
+            authorizeRecalculation: { $0.localPreview == true }, localPreviewOperation: { _, result, _ in
+                XCTAssertTrue(result.usesAudioSnapshot); localChecks += 1
+            }, emit: { latest = $0.response }, record: { _, _, _ in })
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let revision = try XCTUnwrap(latest).revision
+        coordinator.handle(.init(request: request.id, command: .preview, included: false,
+            expectedRevision: revision, localPreview: true))
+        XCTAssertNil(coordinator.requestForReconnect(request.id), "A draft must not reconnect as a verified old review")
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: revision))
+        XCTAssertEqual(applies, 0)
+        let update = ReviewCommand(request: request.id, command: .recalculate, expectedRevision: revision, view: view,
+            settings: .init(threshold: -35, minimum: 0.7, before: 0.05, after: 0.15), output: "gaps",
+            settingsEdit: edit, settingsSequence: 1, verifySettings: true, localPreview: true)
+        coordinator.handle(update)
+        try await waitUntil { latest?.state == "review" && latest?.settingsEdit == edit }
+        XCTAssertEqual(localChecks, 1); XCTAssertEqual(hostChecks, 0)
+        XCTAssertEqual(latest?.usesAudioSnapshot, true); XCTAssertEqual(latest?.canApply, true)
+        XCTAssertNotNil(coordinator.requestForReconnect(request.id))
+        coordinator.handle(update) // Retrying an acknowledged gesture is read-only.
+        XCTAssertEqual(localChecks, 1)
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: latest?.revision))
+        try await waitUntil { latest?.state == "completed" }
+        XCTAssertEqual(applies, 1)
+    }
+
+    func testLocalPreviewRejectsUnauthorizedAndStaleRequests() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest()
+        var latest: ReviewResponse?, checks = 0, authorized = false
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
+            ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        }, authorizeRecalculation: { _ in authorized }, localPreviewOperation: { _, _, _ in checks += 1 },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let revision = try XCTUnwrap(latest).revision
+        func update(_ revision: Int) -> ReviewCommand {
+            .init(request: request.id, command: .recalculate, expectedRevision: revision, view: UUID(),
+                settings: .init(threshold: -35, minimum: 0.7, before: 0.05, after: 0.15), output: "remove",
+                settingsEdit: UUID(), settingsSequence: 1, verifySettings: true, localPreview: true)
+        }
+        coordinator.handle(update(revision)); XCTAssertEqual(checks, 0)
+        authorized = true
+        coordinator.handle(update(revision - 1)); XCTAssertEqual(checks, 0)
+        XCTAssertEqual(latest?.usesAudioSnapshot, false)
+    }
+
+    func testLocalPreviewFailureDiscardsEligibility() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest()
+        var latest: ReviewResponse?
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
+            ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        }, authorizeRecalculation: { _ in true }, localPreviewOperation: { _, _, _ in throw ReviewError.staleProject },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: latest?.revision, view: UUID(),
+            settings: .init(threshold: -35, minimum: 0.7, before: 0.05, after: 0.15), output: "remove",
+            settingsEdit: UUID(), settingsSequence: 1, verifySettings: true, localPreview: true))
+        try await waitUntil { latest?.state == "failed" }
+        XCTAssertFalse(try XCTUnwrap(latest).canApply)
+        XCTAssertFalse(try XCTUnwrap(latest).previewVisible ?? false)
+    }
+
+    func testPreImportAudioFailureCanReconnectOnlyAsTerminalError() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest()
+        var latest: ReviewResponse?, attempts = 0
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result }, applyOperation: { _, _, _ in
+            attempts += 1; throw SnapshotPreviewError.audioChanged
+        }, authorizeApply: { _ in true }, emit: { latest = $0.response }, record: { _, _, _ in })
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: latest?.revision))
+        try await waitUntil { latest?.state == "failed" }
+        XCTAssertNotNil(coordinator.requestForReconnect(request.id))
+        XCTAssertFalse(try XCTUnwrap(latest).canApply)
+        XCTAssertTrue(try XCTUnwrap(latest).cuts.isEmpty)
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: latest?.revision))
+        XCTAssertEqual(attempts, 1)
+    }
+
     private final class OperationGate {
         private var continuation: CheckedContinuation<ReviewAnalysisResult, Error>?
         var isWaiting: Bool { continuation != nil }

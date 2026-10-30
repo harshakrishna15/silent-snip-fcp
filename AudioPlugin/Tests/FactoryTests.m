@@ -458,7 +458,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     });
 
     run(@"review presents scannable cuts and the current primary action", ^(Fixture *f) {
-        require([f.analyze.title isEqual:@"Analyze"] && !f.analyze.hidden && f.apply.hidden,
+        require([f.analyze.title isEqual:@"Analyze Audio"] && !f.analyze.hidden && f.apply.hidden,
             @"Analyze is the only initial footer action");
         [f review];
         NSTableView *table = [f.factory valueForKey:@"resultsView"];
@@ -501,6 +501,38 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require(!connection(f.factory).pendingRetry && commandCount(f.factory, @"retryVerification") == 2, @"Acknowledged retry stops retransmission");
         response(f.factory, 5, @"failed", @{@"canRetryVerification":@YES});
         require([(NSButton *)[f.factory valueForKey:@"retryButton"] isEnabled], @"New failed attempt is explicitly retryable");
+    });
+
+    run(@"explicit local cut updates retain analyzed audio without a helper relaunch", ^(Fixture *f) {
+        [f.factory analyze:nil];
+        response(f.factory, 1, @"review", @{@"canUpdateCuts":@YES});
+        NSURL *launched = f.factory.openedURL;
+        f.fields[1].stringValue = @"0.2";
+        [f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[1]]];
+        require([f.analyze.title isEqual:@"Update Cuts"] && !f.apply.enabled, @"Draft disables Apply and exposes explicit Update Cuts");
+        require(commandCount(f.factory, @"recalculate") == 0 && commandCount(f.factory, @"cancel") == 0,
+            @"Typing retains audio without analysis or cancellation");
+        [f.factory controlTextDidEndEditing:[NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:f.fields[1]]];
+        require(commandCount(f.factory, @"recalculate") == 0, @"Field blur never starts cut calculation");
+        [f.factory analyze:nil];
+        NSDictionary *update = f.factory.previewCommand;
+        require([update[@"command"] isEqual:@"recalculate"] && [update[@"localPreview"] isEqual:@YES], @"Explicit click requests a local preview");
+        require([f.factory.openedURL isEqual:launched] && commandCount(f.factory, @"cancel") == 0,
+            @"Local update does not launch another audio Analyze");
+        require([f.analyze.identifier hasPrefix:@"silentsnip.preview.requested."] && !f.analyze.enabled,
+            @"The disabled native button carries the exact preview gesture");
+        response(f.factory, 2, @"review", @{@"canUpdateCuts":@YES, @"usesAudioSnapshot":@YES, @"settingsEdit":update[@"settingsEdit"]});
+        require(f.apply.enabled && [f.analyze.identifier isEqual:@"silentsnip.analyze"], @"Acknowledged snapshot preview can request verified Apply");
+        NSButton *refresh = [f.factory valueForKey:@"refreshAudioButton"];
+        [f.factory.view setFrameSize:f.factory.preferredContentSize];
+        [f.factory.view layoutSubtreeIfNeeded];
+        require(!refresh.hidden && refresh.enabled && NSContainsRect(f.factory.view.bounds, [refresh convertRect:refresh.bounds toView:f.factory.view]),
+            @"Fresh audio analysis stays visible beside Update Cuts");
+        require(!NSIntersectsRect([refresh convertRect:refresh.bounds toView:f.factory.view], [f.analyze convertRect:f.analyze.bounds toView:f.factory.view]),
+            @"The two explicit audio and cut actions do not overlap");
+        [refresh performClick:nil];
+        require(![f.factory.openedURL isEqual:launched] && commandCount(f.factory, @"cancel") == 1,
+            @"Analyze Audio explicitly starts a fresh rendered analysis");
     });
 
     run(@"settings and output changes invalidate old reviews", ^(Fixture *f) {
@@ -641,15 +673,23 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require([(NSString *)[f.factory valueForKey:@"statusDetails"] isEqual:message] &&
             [[(NSTextField *)[f.factory valueForKey:@"statusLabel"] stringValue] length] < message.length,
             @"Successful technical details remain available behind the concise status");
+        NSString *snapshot = @"Cuts use the last analyzed audio. Apply verifies current audio before editing. Use Analyze Audio Again after changing volume or effects.";
+        response(f.factory, 3, @"review", @{@"message":snapshot});
+        require([[(NSTextField *)[f.factory valueForKey:@"statusLabel"] stringValue] isEqual:@"Using analyzed audio"] &&
+            [(NSString *)[f.factory valueForKey:@"statusDetails"] isEqual:snapshot],
+            @"Audio snapshot review keeps a concise visible status and complete refresh guidance");
+        response(f.factory, 4, @"review", @{@"message":@"Playhead moved to the selected cut’s start."});
+        require([[(NSTextField *)[f.factory valueForKey:@"statusLabel"] stringValue] isEqual:@"Playhead moved"],
+            @"Successful navigation keeps visible feedback beside the review actions");
         NSString *failure = [@"Verification failed. " stringByPaddingToLength:1200 withString:@"Recovery detail. " startingAtIndex:0];
-        response(f.factory, 3, @"failed", @{@"message":failure, @"canApply":@NO});
+        response(f.factory, 5, @"failed", @{@"message":failure, @"canApply":@NO});
         NSTextField *status = [f.factory valueForKey:@"statusLabel"];
         require([(NSString *)[f.factory valueForKey:@"statusDetails"] isEqual:failure] && status.stringValue.length < 100 &&
             [[(NSMenuItem *)[f.factory valueForKey:@"detailsItem"] title] isEqual:@"Error Details…"],
             @"Failures retain complete details while the inspector shows a short status");
         NSString *key = [f.factory valueForKey:@"lastErrorKey"];
         [f.factory setValue:nil forKey:@"pendingErrorMessage"];
-        response(f.factory, 4, @"failed", @{@"message":failure, @"canApply":@NO});
+        response(f.factory, 6, @"failed", @{@"message":failure, @"canApply":@NO});
         require([[f.factory valueForKey:@"lastErrorKey"] isEqual:key] && ![f.factory valueForKey:@"pendingErrorMessage"],
             @"Repeated failure status cannot queue the same alert again");
     });

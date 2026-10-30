@@ -41,6 +41,37 @@ import Foundation
         !restoringControllerSettings && reviewSession?.canAuthorizeApply(view: view, gesture: gesture) == true
     }
 
+    public func canAuthorizePreview(view: UUID, edit: UUID) -> Bool {
+        !restoringControllerSettings && reviewSession?.canAuthorizePreview(view: view, edit: edit) == true
+    }
+
+    public func recordLocalPreview(_ id: UUID, seconds: Double, succeeded: Bool) {
+        guard let context = contexts[id] else { return }
+        let report: [String: Any] = ["request": id.uuidString, "elapsedSeconds": seconds,
+            "shareExchanges": 0, "audioSnapshot": true, "outcome": succeeded ? "preview" : "failed"]
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: context.directory.appendingPathComponent("Local-Preview-Timing.json"), options: .atomic)
+        }
+    }
+
+    public func updateCutsPreview(_ request: AnalyzeRequest, result: ReviewAnalysisResult,
+                                  progress: @escaping AnalysisReviewCoordinator.Progress) async throws {
+        guard let context = contexts[request.id], result.usesAudioSnapshot,
+              result.analyzed.settings == request.settings else { throw ReviewError.staleProject }
+        try validateReviewSelection(context.capture)
+        try Task.checkCancellation()
+    }
+
+    private func validateReviewSelection(_ capture: CapturedFinalCutProject) throws {
+        let session = capture.session
+        try session.assertCurrentProject()
+        guard let expected = session.reviewOwnership.active,
+              (try? session.selectionSnapshot()) == expected,
+              (try? expected.resolve(in: capture.document).1) == capture.target else {
+            throw ReviewError.staleProject
+        }
+    }
+
     public func updatePreview(_ id: UUID, review: ReviewPlan?) {
         guard let review, let context = contexts[id] else { preview.hide(); return }
         preview.show(review: review, session: context.capture.session)
@@ -320,7 +351,8 @@ import Foundation
             }
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
-                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply creates a new cleaned project copy in this event, preserving editable audio effects. The original project stays unchanged. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "))
+                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply creates a new cleaned project copy in this event, preserving editable audio effects. The original project stays unchanged. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "),
+                canUpdateCuts: route == .source || renderedInOriginal)
         } catch {
             // A cancellation must not prevent bounded cleanup of a verified,
             // request-owned project after returning to the original timeline.
@@ -416,20 +448,76 @@ import Foundation
             .appendingPathComponent(request.id.uuidString, isDirectory: true)
         var prepared: PreparedXMLProject?
         var importAttempted = false
+        var applyReceipt: ShareDestinationReceipt?
+        let timing = AnalysisTiming(request: request.id)
+        var outcome = "failed"
+        defer {
+            if let applyReceipt { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: applyReceipt) }
+            timing.save(to: context.directory.appendingPathComponent("Apply-Timing.json"),
+                outcome: Task.isCancelled ? "cancelled" : outcome)
+        }
         do {
             let removals = result.analyzed.review.selectedCuts.map(\.range)
             guard !removals.isEmpty else { throw EditedProjectWriterError.noSelectedCuts }
             let exclusions = result.analyzed.dialogueContext.fingerprintExclusions
             try await session.activate()
+            try validateReviewSelection(capture)
+            try await session.suspendReviewWindow()
+            try await session.activate()
             progress("Checking the selected clip and its effects…", 0)
-            let finalURL = try await session.exportProjectXML(to: context.directory.appendingPathComponent("Before-XML-Apply.fcpxmld"))
+            let finalURL: URL
+            let baselineData = try Data(contentsOf: capture.xmlURL)
+            let applyRoute = try ClipAudioAnalysisRoute.resolve(projectData: baselineData, selection: capture.selection)
+            let needsRender = result.usesAudioSnapshot && applyRoute == .finalCutRender
+            var renderScope: DirectAudioRender.Scope?
+            timing.begin("projectAndAudioVerification")
+            if needsRender {
+                try await context.mediaSnapshot.validate()
+                guard let scope = try DirectAudioRender.scope(projectData: baselineData, selection: capture.selection) else {
+                    throw ReviewError.staleProject
+                }
+                renderScope = scope
+                progress("Verifying current audio against the reviewed cuts…", 0.05)
+                let receipt = try await session.shareRenderedAudio(timing: timing,
+                    renderSelection: scope == .selectedRange ? session.reviewOwnership.active : nil)
+                applyReceipt = receipt
+                try ShareDestinationManager.shared.validateReceipt(receipt)
+                guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
+                finalURL = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
+                    ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
+            } else {
+                finalURL = try await session.exportProjectXML(to: context.directory.appendingPathComponent("Before-XML-Apply.fcpxmld"), timing: timing)
+            }
             let finalData = try Data(contentsOf: finalURL)
             let final = try TimelineParser.parse(data: finalData, exclusions: exclusions)
             try XMLProjectApply.verifyBaseline(final, analyzed: capture.document)
             guard try await Self.mediaSnapshot(final) == context.mediaSnapshot else { throw AudioProjectProcessingError.changedProject }
             try AudioControllerSettings.validateForApply(projectData: finalData,
                 target: final.selectedTarget(capture.selection), requested: result.analyzed.settings)
+            if let receipt = applyReceipt, let scope = renderScope {
+                guard try DirectAudioRender.scope(projectData: finalData, selection: capture.selection) == scope else {
+                    throw ReviewError.staleProject
+                }
+                let target = try final.selectedTarget(capture.selection)
+                let audio = receipt.mediaURLs[0]
+                let bound = try scope == .projectSlice
+                    ? DialogueRenderContext.capturedProjectSlice(document: final, target: target, audioURL: audio)
+                    : DialogueRenderContext.capturedIsolated(document: final, target: target, audioURL: audio)
+                timing.begin("freshAudioMeasurement")
+                let fresh = try await ProjectAudioAnalysis.analyze(projectXML: finalURL, selection: capture.selection,
+                    dialogueAudio: audio, renderContext: bound, settings: request.settings)
+                let evidence: [String: Any] = ["reviewedCandidates": result.analyzed.review.cuts.map(\.id),
+                    "freshCandidates": fresh.review.cuts.map(\.id), "selectedCuts": result.analyzed.review.selectedCuts.map(\.id),
+                    "reviewedAudioSHA256": result.analyzed.dialogueContext.audioSHA256,
+                    "freshAudioSHA256": fresh.dialogueContext.audioSHA256]
+                try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: context.directory.appendingPathComponent("Apply-Audio-Verification.json"), options: .atomic)
+                try ReviewedCutValidation.verify(reviewed: result.analyzed, fresh: fresh)
+                try await context.mediaSnapshot.validate()
+                try validateReviewSelection(capture)
+            }
             try Task.checkCancellation()
+            timing.begin("projectCreationAndImport")
             progress("Creating a new editable project copy…", 0.4)
             let outputName = Self.outputName(clip: capture.target, request: request.id)
             let artifact = try XMLProjectApply.prepare(projectData: finalData, selection: capture.selection,
@@ -451,6 +539,7 @@ import Foundation
                 try await XMLProjectApply.importIntoFinalCut(url)
             }
             try await retryVerification(request.id, progress: progress)
+            outcome = "verified"
         } catch {
             _ = await capture.restoreReviewWindow()
             if error is XMLProjectApplyFailure { throw error }
@@ -531,11 +620,26 @@ import Foundation
         guard let context = contexts[request.id],
               let cut = result.analyzed.review.cuts.first(where: { $0.id == cutID }) else { throw ReviewError.unknownCut }
         let session = context.capture.session
+        let timing = AnalysisTiming(request: request.id)
+        var outcome = "failed"
+        defer {
+            timing.recordCounters(["share.exchanges": 0])
+            timing.save(to: context.directory.appendingPathComponent("Navigation-Timing.json"), outcome: outcome)
+        }
+        timing.begin("selectionValidation")
+        try validateReviewSelection(context.capture)
         try await session.activate()
-        let url = try await session.exportProjectXML(to: context.directory.appendingPathComponent("Before-Jump-\(UUID().uuidString).fcpxmld"))
-        let document = try TimelineParser.parse(url: url, exclusions: result.analyzed.dialogueContext.fingerprintExclusions)
-        try XMLProjectApply.verifyBaseline(document, analyzed: context.capture.document)
-        try await session.movePlayhead(to: cut.range.start, document: document, dropFrame: result.dropFrame)
+        try validateReviewSelection(context.capture)
+        timing.begin("movePlayhead")
+        do {
+            try await session.movePlayhead(to: cut.range.start, document: context.capture.document, dropFrame: result.dropFrame)
+        } catch {
+            _ = await context.capture.restoreReviewWindow()
+            throw error
+        }
+        timing.begin("restoreControls")
+        _ = await context.capture.presentReviewWindow()
+        outcome = "navigated"
     }
 
     private nonisolated static func mediaSnapshot(_ document: TimelineDocument,

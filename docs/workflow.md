@@ -45,7 +45,7 @@ Use **Save Settings** to commit the four values without starting analysis. New e
 
 ## 4. Analyze
 
-Click **Analyze**. It does not apply cuts. The button disables immediately while the request connects; repeated clicks cannot cancel and replace a pending analysis. A failed launch or response timeout releases it for retry.
+Click **Analyze Audio**. It does not apply cuts. The button disables immediately while the request connects; repeated clicks cannot cancel and replace a pending analysis. A failed launch or response timeout releases it for retry.
 
 Controls reserves review space from first opening so Final Cut's fixed host window can show detection settings, four cut rows, and the footer actions together. Longer lists scroll within the table; smaller fixed hosts can scroll the inspector.
 
@@ -94,7 +94,7 @@ Closing Controls leaves the preview active. Cancel the review to clear it. Apply
 
 Select a row in Controls and choose **More → Go to Selected Cut** to move the playhead to that cut’s start. The helper first re-exports and checks the original project against the analysis baseline; navigation cannot run alongside Apply. It uses [Final Cut’s timecode navigation](https://support.apple.com/guide/final-cut-pro/ver1632d762/mac), including project start timecode and drop-frame formatting. It does not change cut inclusion or make edits.
 
-Use the checkbox beside each eligible range, or **More → Select All Cuts / Select No Cuts**, to choose cuts. Apply waits for the helper to acknowledge inclusion changes. Unavailable rows explain their restriction in a tooltip. A settings or output-mode change invalidates the old review and disables selection, navigation, and Apply until the user clicks Analyze again and that new analysis finishes. Changing timeline content, source media, or audio processing requires Analyze again.
+Use the checkbox beside each eligible range, or **More → Select All Cuts / Select No Cuts**, to choose cuts. Apply waits for the helper to acknowledge inclusion changes. Unavailable rows explain their restriction in a tooltip. A settings or output-mode change invalidates the old review and disables selection, navigation, and Apply. For supported direct clips, click **Update Cuts** to recalculate explicitly from the retained analyzed audio. **Analyze Audio** remains visible for refreshing the current clip processing. Other layouts continue to require a full audio analysis. Changing timeline content, source media, or audio processing requires Analyze again.
 
 Apply requires a valid review, at least one eligible included cut, unchanged submitted settings, and a plan that has not already been consumed. Changing timeline content, processing effects, or source media requires fresh analysis; Apply checks for stale project state before generating output.
 
@@ -151,3 +151,15 @@ If Final Cut drops Silent Snip settings during import, recovery selects each exa
 Historical evidence establishes editable XML cut structure, source interval preservation, and selected earlier button/native-edit flows. It also records Final Cut dropping Silent Snip settings on XML import. These findings do not prove that the current isolated-render and automatic import-verification workflow has passed end to end in the installed build.
 
 Historical September 17 Analyze follow-up (superseded two-window design): after stopping stale helpers, the six-second generated fixture completed automatic processed-audio analysis, render/original verification, and temporary-project cleanup. Its recreated Controls view lost the review, prompting the now-removed helper-owned window. The new window passed focused tests and a subsequent live Analyze completed after restarting the helper to recognize the permission already granted. The helper window visibly showed one selected 1.933-second cut, with selection, preview, and Apply enabled. No permission setting or binary changed during that restart. No Apply was tested. Evidence and limitations: `build/AnalyzeVisibilityVerification/Notes.md`. Any future Final Cut integration test must use a small disposable project in this workspace's existing **Cutdown Integration.fcpbundle**, reference generated source media in place, and avoid copied, optimized, or proxy media.
+
+## Manual snapshot review update
+
+Installed build 36 adds explicit **Update Cuts** for source-audio and verified direct-render clips. It uses the same retained 10 ms RMS measurements and detector; typing, Return, blur, Save, and status polling never start it. The visible **Analyze Audio** button always performs a fresh analysis. Changing clip volume, processing effects, or source media requires that fresh analysis. Dirty previews hide their old timeline overlay and cannot authorize Apply. Closing Controls with an unsubmitted draft requires a fresh audio analysis on reopening.
+
+For a locally updated processed preview, Apply obtains current processed audio and full-project XML together, checks the original project/selection/source contents, reruns detection using the reviewed settings, and requires the same candidate ranges and protection states. A mismatch stops before project creation/import and requires Analyze Audio again. User include/exclude choices remain attached to matching reviewed ranges. The imported cleaned project still receives the existing full verification; owned processing WAVs are cleaned after use.
+
+Go to Cut uses the retained analysis timecodes with current project, selection, and boundary checks. It moves only the playhead and performs no Share exchange. Apply retains full project, source, and effect verification.
+
+Native Analyze → Update Cuts → Apply passed for a sole linked-camera target and a target inside a larger edit, both with Noise Gate and Limiter. Fresh processed-audio hashes, all reviewed ranges, imported full-project fingerprints, editable effects, and source contents matched. Changing the target volume after review stopped Apply before project creation/import; restoring volume and explicitly analyzing again recovered successfully. Go to Cut reached two exact nonzero timecodes without Share and restored the original selected clip. All live tests used disposable projects in the required workspace library. See [measured results and limits](general-project-performance.md#manual-review-without-repeated-share).
+
+The Swift suite (471 tests, one existing benchmark skip), Controls harness (48 groups), and passthrough audio harness (60 cases) passed. The measured local-update gain concerns retained-audio preview work; it does not establish faster initial renders, universal project support, or a sonic guarantee for arbitrary third-party effects.

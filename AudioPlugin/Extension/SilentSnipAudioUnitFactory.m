@@ -91,6 +91,7 @@ static BOOL booleanValue(id value) {
 @property(nonatomic) AUParameterObserverToken parameterObserver;
 @property(nonatomic) NSArray<NSTextField *> *fields;
 @property(nonatomic) NSButton *analyzeButton;
+@property(nonatomic) NSButton *refreshAudioButton;
 @property(nonatomic) NSButton *applyButton;
 @property(nonatomic) NSButton *saveButton;
 @property(nonatomic) NSButton *retryButton;
@@ -122,6 +123,8 @@ static BOOL booleanValue(id value) {
 @property(nonatomic) NSArray<NSNumber *> *submittedSettings;
 @property(nonatomic) NSTimer *pollTimer;
 @property(nonatomic) BOOL reviewOutdated;
+@property(nonatomic) BOOL canUpdateCuts;
+@property(nonatomic) NSUInteger settingsSequence;
 @property(nonatomic) BOOL canApply;
 @property(nonatomic) BOOL settingsDirty;
 @property(nonatomic) NSProgressIndicator *progressBar;
@@ -229,7 +232,7 @@ static BOOL booleanValue(id value) {
     [self.moreButton.widthAnchor constraintEqualToConstant:28].active = YES;
     self.moreButton.accessibilityLabel = @"More actions";
     self.moreButton.toolTip = @"Review and recovery actions.";
-    self.analyzeAgainItem = [[NSMenuItem alloc] initWithTitle:@"Analyze Again" action:@selector(analyze:) keyEquivalent:@""];
+    self.analyzeAgainItem = [[NSMenuItem alloc] initWithTitle:@"Analyze Audio Again" action:@selector(analyzeAudio:) keyEquivalent:@""];
     self.analyzeAgainItem.target = self;
     [self.moreMenu addItem:self.analyzeAgainItem];
     self.jumpItem = [[NSMenuItem alloc] initWithTitle:@"Go to Selected Cut" action:@selector(jumpToCut:) keyEquivalent:@""];
@@ -428,6 +431,13 @@ static BOOL booleanValue(id value) {
     self.analyzeButton.controlSize = NSControlSizeRegular;
     self.analyzeButton.font = [NSFont systemFontOfSize:13];
     self.analyzeButton.identifier = @"silentsnip.analyze";
+    self.refreshAudioButton = [NSButton buttonWithTitle:@"Analyze Audio" target:self action:@selector(analyzeAudio:)];
+    self.refreshAudioButton.bezelStyle = NSBezelStyleRounded;
+    self.refreshAudioButton.controlSize = NSControlSizeRegular;
+    self.refreshAudioButton.font = [NSFont systemFontOfSize:13];
+    self.refreshAudioButton.identifier = @"silentsnip.analyzeAudio";
+    self.refreshAudioButton.toolTip = @"Render and analyze the current audio again after changing clip volume, effects, or source media.";
+    self.refreshAudioButton.hidden = YES;
     [self.analyzeButton setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.retryButton = [NSButton buttonWithTitle:@"Retry Verification" target:self action:@selector(retryVerification:)];
     self.retryButton.controlSize = NSControlSizeRegular;
@@ -435,7 +445,7 @@ static BOOL booleanValue(id value) {
     self.retryButton.enabled = NO; self.retryButton.hidden = YES;
     self.cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
     compactControl(self.cancelButton); self.cancelButton.enabled = NO; self.cancelButton.hidden = YES;
-    NSStackView *footer = horizontalRow(@[self.statusLabel, flexibleSpace(), self.cancelButton, self.retryButton, self.analyzeButton, self.applyButton]);
+    NSStackView *footer = horizontalRow(@[self.statusLabel, flexibleSpace(), self.cancelButton, self.retryButton, self.refreshAudioButton, self.analyzeButton, self.applyButton]);
     footer.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:footer];
     [NSLayoutConstraint activateConstraints:@[
@@ -462,8 +472,13 @@ static BOOL booleanValue(id value) {
     BOOL busy = self.connection.operationBusy || self.connection.awaitingResponse || self.connection.pendingRetry != nil || self.verificationPending != nil;
     BOOL showRetry = self.retryAvailable && !self.connection.pendingRetry && !busy;
     self.saveButton.enabled = self.audioUnit != nil && !busy && !self.connection.applying;
-    self.analyzeButton.title = reviewing || (self.reviewOutdated && self.cutRows.count) ? @"Analyze Again" : @"Analyze";
+    self.analyzeButton.title = self.canUpdateCuts && !self.connection.timedOut ? @"Update Cuts" : @"Analyze Audio";
+    self.analyzeButton.toolTip = self.canUpdateCuts
+        ? @"Recalculate cuts from the last analyzed audio. Apply verifies fresh audio before editing. Use More → Analyze Audio Again after changing volume or effects."
+        : @"Analyze the selected clip's current audio, including volume and enabled effects.";
     self.analyzeButton.hidden = showRetry || busy;
+    self.refreshAudioButton.hidden = !self.canUpdateCuts || busy || self.connection.applying;
+    self.refreshAudioButton.enabled = !busy && !self.connection.applying;
     self.applyButton.hidden = !showApply;
     NSUInteger selected = 0;
     for (NSDictionary *cut in self.cutRows) if ([cut[@"included"] boolValue] && [cut[@"eligible"] boolValue]) selected++;
@@ -489,7 +504,8 @@ static BOOL booleanValue(id value) {
     self.emptyReviewLabel.stringValue = [self.connection.state isEqual:SilentSnipReviewStateReview]
         ? @"No cuts to review" : (busy ? @"Cuts will appear here after analysis" : @"Analyze to preview cuts");
     self.summaryLabel.hidden = !hasRanges;
-    self.preferredContentSize = NSMakeSize(680, 476);
+    if (!NSEqualSizes(self.preferredContentSize, NSMakeSize(680, 476)))
+        self.preferredContentSize = NSMakeSize(680, 476);
     [self updateInspectorDocumentFrame];
 }
 - (void)viewDidLayout {
@@ -516,7 +532,10 @@ static BOOL booleanValue(id value) {
     self.detailsItem.title = @"Analysis Details…";
     BOOL completedAnalysis = [self.connection.state isEqual:SilentSnipReviewStateReview] &&
         [message hasPrefix:@"Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts."];
-    self.statusLabel.stringValue = completedAnalysis ? @"Analysis complete" : self.statusDetails;
+    BOOL snapshotPreview = [self.connection.state isEqual:SilentSnipReviewStateReview] &&
+        [message hasPrefix:@"Cuts use the last analyzed audio."];
+    BOOL navigated = [message isEqual:@"Playhead moved to the selected cut’s start."];
+    self.statusLabel.stringValue = navigated ? @"Playhead moved" : snapshotPreview ? @"Using analyzed audio" : completedAnalysis ? @"Analysis complete" : self.statusDetails;
     self.statusLabel.toolTip = message;
     [self updateInspectorSize];
 }
@@ -583,7 +602,7 @@ static BOOL booleanValue(id value) {
     BOOL reviewHasCuts = [self.connection.state isEqual:SilentSnipReviewStateReview] && !self.settingsDirty && self.cutRows.count > 0;
     BOOL hasEligibleCut = NO;
     for (NSDictionary *cut in self.cutRows) if ([cut[@"eligible"] boolValue]) { hasEligibleCut = YES; break; }
-    self.analyzeAgainItem.hidden = !reviewHasCuts || !hasEligibleCut;
+    self.analyzeAgainItem.hidden = !self.connection.requestID || (!reviewHasCuts && !self.canUpdateCuts);
     self.jumpItem.hidden = !reviewHasCuts;
     self.selectAllItem.hidden = !reviewHasCuts || !hasEligibleCut;
     self.deselectAllItem.hidden = !reviewHasCuts || !hasEligibleCut;
@@ -597,7 +616,7 @@ static BOOL booleanValue(id value) {
     BOOL idle = self.audioUnit != nil && !self.connection.operationBusy && !self.connection.applying &&
         !self.connection.awaitingResponse && !self.connection.pendingRetry && !self.verificationPending;
     if (item == self.detailsItem) return YES;
-    if (item == self.analyzeAgainItem) return idle && [self.connection.state isEqual:SilentSnipReviewStateReview] && !self.settingsDirty;
+    if (item == self.analyzeAgainItem) return idle && ([self.connection.state isEqual:SilentSnipReviewStateReview] || self.reviewOutdated);
     if (item == self.jumpItem) return idle && !self.settingsDirty && !self.connection.timedOut && !self.connection.pendingSettings && self.canHighlight && self.resultsView.selectedRow >= 0;
     if (item == self.selectAllItem || item == self.deselectAllItem)
         return idle && self.canChangeSelection && !self.connection.pendingSelection;
@@ -633,9 +652,8 @@ static BOOL booleanValue(id value) {
     [self.pollTimer invalidate]; self.pollTimer = nil;
 }
 
-// Editing values consumes the old review without starting audio work or a
-// Final Cut export. Late replies cannot restore its capabilities. The helper
-// also receives cancellation so a recreated Controls view cannot adopt it.
+// Editing disables old cuts without starting analysis. Snapshot-capable jobs
+// retain their audio until an explicit Update Cuts; other jobs are cancelled.
 - (void)invalidateReviewForSettingsChange {
     if (self.connection.applying || self.connection.operationBusy || self.connection.awaitingResponse ||
         self.connection.pendingRetry || self.verificationPending) return;
@@ -647,11 +665,14 @@ static BOOL booleanValue(id value) {
     self.retryAvailable = NO;
     self.cancelButton.enabled = NO; self.cancelButton.hidden = YES;
     self.lengthLabel.stringValue = @"";
-    self.summaryLabel.stringValue = @"Settings changed—Analyze again.";
+    self.summaryLabel.stringValue = self.canUpdateCuts ? @"Settings changed—click Update Cuts." : @"Settings changed—Analyze again.";
     [self.resultsView reloadData];
     [self updatePrimaryAction];
-    [self setStatusMessage:@"Settings changed—Analyze again."];
-    [self sendCommand:@"cancel"];
+    [self setStatusMessage:self.summaryLabel.stringValue];
+    if (self.canUpdateCuts && self.connection.revision) {
+        [self sendPreviewCommand:@{@"version":@1, @"request":self.connection.requestID,
+            @"command":@"preview", @"included":@NO, @"localPreview":@YES, @"expectedRevision":self.connection.revision}];
+    } else [self sendCommand:@"cancel"];
 }
 - (void)controlTextDidChange:(NSNotification *)notification {
     [self invalidateReviewForSettingsChange];
@@ -767,6 +788,42 @@ static BOOL booleanValue(id value) {
 }
 
 - (void)analyze:(id)sender {
+    if (self.canUpdateCuts && self.connection.requestID && self.connection.revision &&
+        [self.connection.state isEqual:SilentSnipReviewStateReview] && !self.connection.timedOut) {
+        [self updateCuts:sender];
+        return;
+    }
+    [self analyzeAudio:sender];
+}
+
+- (void)updateCuts:(id)sender {
+    if (self.verificationPending || self.connection.applying || self.connection.operationBusy || self.connection.awaitingResponse ||
+        self.connection.pendingRetry || self.connection.pendingSelection || ![self commitSettings]) return;
+    NSArray *settings = [self readFields];
+    NSString *edit = NSUUID.UUID.UUIDString;
+    self.settingsSequence++;
+    self.connection.pendingSettings = @{@"version":@1, @"request":self.connection.requestID,
+        @"command":@"recalculate", @"expectedRevision":self.connection.revision, @"view":self.viewID,
+        @"settingsEdit":edit, @"settingsSequence":@(self.settingsSequence), @"verifySettings":@YES, @"localPreview":@YES,
+        @"settings":@{@"threshold":settings[0], @"minimum":settings[1], @"before":settings[2], @"after":settings[3]},
+        @"output":self.outputMode.indexOfSelectedItem == 1 ? @"gaps" : @"remove"};
+    self.submittedSettings = settings;
+    self.settingsDirty = NO; self.reviewOutdated = NO;
+    self.canApply = NO; self.applyButton.enabled = NO;
+    self.canChangeSelection = NO; self.canHighlight = NO;
+    self.connection.awaitingResponse = YES; self.connection.lastResponse = NSDate.date;
+    self.operationStarted = NSDate.date;
+    self.analyzeButton.identifier = [@"silentsnip.preview.requested." stringByAppendingString:edit];
+    self.analyzeButton.enabled = NO;
+    self.outputMode.enabled = NO;
+    self.refreshAudioButton.enabled = NO;
+    for (NSTextField *field in self.fields) field.enabled = NO;
+    // Keep the pending gesture button visible until the helper authorizes it.
+    [self setStatusMessage:@"Updating cuts from the last analyzed audio…"];
+    [self sendPreviewCommand:self.connection.pendingSettings];
+}
+
+- (void)analyzeAudio:(id)sender {
     if (self.verificationPending || self.connection.applying || self.connection.operationBusy || self.connection.awaitingResponse ||
         self.connection.pendingRetry || ![self commitSettings]) return;
     NSError *error = nil;
@@ -777,6 +834,8 @@ static BOOL booleanValue(id value) {
         [NSDistributedNotificationCenter.defaultCenter removeObserver:self name:responseName(self.connection.requestID) object:nil];
     }
     self.pendingErrorMessage = nil;
+    self.canUpdateCuts = NO;
+    self.analyzeButton.identifier = @"silentsnip.analyze";
     self.connection = [SilentSnipReviewConnection new];
     self.applyButton.identifier = @"silentsnip.apply";
     for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO].queryItems)
@@ -826,8 +885,7 @@ static BOOL booleanValue(id value) {
 // request with that SAME identity; never create another import on a timeout.
 - (void)pollStatus {
     if (self.reviewOutdated) {
-        // Retrying cancellation is idempotent and performs no host automation.
-        [self sendCommand:@"cancel"];
+        if (!self.canUpdateCuts) [self sendCommand:@"cancel"];
         return;
     }
     [self presentPendingError];
@@ -1044,6 +1102,8 @@ static BOOL booleanValue(id value) {
     if (self.reviewOutdated) return;
     NSDictionary *value = [self.connection acceptNotification:notification];
     if (!value) return;
+    if (!self.connection.pendingSettings) self.analyzeButton.identifier = @"silentsnip.analyze";
+    self.canUpdateCuts = [value[@"canUpdateCuts"] isEqual:@YES] && !self.connection.timedOut;
     self.cancelButton.enabled = [value[@"canCancel"] isEqual:@YES];
     self.cancelButton.hidden = !self.cancelButton.enabled;
     if ([value[@"state"] isEqual:SilentSnipReviewStateFailed] || [value[@"state"] isEqual:SilentSnipReviewStateUnavailable])

@@ -27,6 +27,13 @@ import SilentSnipMac
         }, authorizeApply: { [unowned self] command in
             guard let view = command.view, let gesture = command.applyGesture else { return false }
             return interactive.canAuthorizeApply(view: view, gesture: gesture)
+        }, authorizeRecalculation: { [unowned self] command in
+            guard command.localPreview == true, let view = command.view, let edit = command.settingsEdit else { return false }
+            return interactive.canAuthorizePreview(view: view, edit: edit)
+        }, localPreviewOperation: { [unowned self] request, result, progress in
+            try await interactive.updateCutsPreview(request, result: result, progress: progress)
+        }, recordLocalPreview: { [unowned self] id, seconds, succeeded in
+            interactive.recordLocalPreview(id, seconds: seconds, succeeded: succeeded)
         }, highlightOperation: { [unowned self] request, result, cutID in
             await waitForStorageCleanup()
             try await withPrototype(request: request.id) {
