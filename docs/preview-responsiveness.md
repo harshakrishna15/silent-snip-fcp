@@ -1,6 +1,6 @@
 # Preview tracking and numbered review
 
-The October 22 update keeps Controls inside Final Cut. The plug-in requests a compact 580 × 220 point view before analysis, then a wider 680 point view with 180–304 points reserved for review rows. Final Cut owns the enclosing window and may choose how to honor these preferred sizes. Its bottom product label and outer clip title remain host UI; removing them would require a different window architecture, which the user declined.
+The October 29 update keeps Controls inside Final Cut and requests a stable 680 × 476 point content area from first opening. Native testing showed that Final Cut can ignore later preferred-size changes, clipping results below the initial compact view. Reserving review space initially keeps four cut rows, detection settings, and Analyze/Apply visible together. Longer lists scroll inside their table; a smaller fixed host can scroll the complete inspector. The document frame now follows its fitting height without a top constraint that prevents scrolling. Final Cut's bottom product label and outer clip title remain host UI.
 
 Review rows now display their cut number before the time range. The timeline's START and END markers use that same full-review number. Excluding an earlier cut does not renumber later markers.
 

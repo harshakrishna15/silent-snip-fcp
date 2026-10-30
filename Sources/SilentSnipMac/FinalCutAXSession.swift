@@ -15,7 +15,7 @@ import Foundation
     private let projectLookup: FinalCutAXLookup<AXUIElement>
     private let timelineLookup: FinalCutAXLookup<AXUIElement>
     private let windowTitle: String
-    var operationStage = "Reading the selected audio-only timeline clip"
+    var operationStage = "Reading the selected timeline clip"
     var lastXMLShareDirectory: URL?
 #if DEBUG
     var quietPrototypeMenu = false
@@ -328,20 +328,23 @@ import Foundation
         var roots = [mainWindow]
         let windows = (attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? []).prefix(32)
         for window in windows where !CFEqual(window, mainWindow) {
-            let values = FinalCutAXAttributes.read(window, names: [kAXRoleAttribute, kAXModalAttribute, kAXSubroleAttribute])
+            let values = FinalCutAXAttributes.read(window, names: [kAXRoleAttribute, kAXModalAttribute, kAXSubroleAttribute,
+                kAXTitleAttribute, kAXIdentifierAttribute])
             let role = values[kAXRoleAttribute] as? String
             let modal = (values[kAXModalAttribute] as? NSNumber)?.boolValue
             let subrole = values[kAXSubroleAttribute] as? String
+            let title = values[kAXTitleAttribute] as? String
+            let filePanel = ["save-panel", "open-panel", "GoToWindow"].contains(values[kAXIdentifierAttribute] as? String ?? "")
             guard role == kAXSheetRole || modal == true || subrole == kAXDialogSubrole else { continue }
             roots.append(window)
             // The AU review window remains nonblocking. Its actual child sheets
             // are still discovered below; no real sheet inherits this exemption.
             let retainedReview = knownReviewWindows.contains {
                 FinalCutReviewWindowShell.isOwned(role: role, modal: modal,
-                    title: string(window, kAXTitleAttribute), recordedTitle: $0.title,
+                    title: title, recordedTitle: $0.title,
                     sameElement: CFEqual(window, $0.element))
             }
-            let review = modal == false ? false : (isSilentSnipReviewWindow(window) || retainedReview)
+            let review = modal == false || filePanel ? false : (retainedReview || isSilentSnipReviewWindow(window))
             if FinalCutWindowPolicy.isBlockingDialog(role: role, subrole: subrole, modal: modal, containsSilentSnipReview: review) {
                 blockers.append(window)
             }

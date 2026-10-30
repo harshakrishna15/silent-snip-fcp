@@ -1,9 +1,10 @@
-# Faster XML exports and settings previews
+# Faster XML exports and manual Analyze
 
-These changes target Final Cut handoffs and repeated settings adjustments. They
-do not change the silence detector or skip the final Apply and recovery checks.
-Live Analyze and settings tuning passed on the small fixture below. Automatic
-Apply and import recovery still require their own complete live editing pass.
+Updated October 28, 2026. Detection and output settings now require a manual
+**Analyze** click. Editing does not start analysis, recalculate cuts, or trigger
+host verification. The XML-only completion optimization below is unchanged.
+Older automatic-preview measurements are retained as historical evidence and do
+not describe the current interaction.
 
 ## XML-only completion
 
@@ -31,30 +32,55 @@ References: Apple's [Share export protocol](https://developer.apple.com/library/
 the [XNU control definition](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/fsctl.h),
 and its [implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vfs/vfs_syscalls.c).
 
-## Immediate settings previews
+## Manual settings changes
 
-After Analyze, the current review retains the measured audio windows. Detection
-and output edits coalesce for 180 ms, then recalculate cuts from those measurements
-without decoding or rendering audio again. Provisional rows can be reviewed while
-Apply, inclusion changes, and navigation remain disabled.
+After Analyze, editing threshold, minimum silence, either padding value, or output
+mode marks the previous cuts **Settings changed—Analyze again.** The rows stay
+visible but inactive, with Apply visibly disabled and Analyze Again available.
+The old helper review is cancelled so a recreated Controls view cannot adopt its
+cuts. Late replies cannot overwrite the draft or restore Apply.
 
-While a field has an active text editor, verification waits so Final Cut's export
-flow cannot take focus while the user types. Press Return or finish editing to
-start a fresh XML, baseline, selected-clip, controller-settings, source-media, and
-edit-representability check. The latest successful check enables Apply. Rapid
-edits replace pending work; cancelled or failed checks and late responses cannot
-enable Apply for an older edit. Partial invalid text stays local, with Apply
-disabled. A connection timeout requires Analyze to reconnect.
+Typing, Return, leaving a field, Save Settings, restored settings, and polling do
+not recalculate or render audio and do not start a project export. Finishing an
+edit may persist the detection values to the clip. Only clicking Analyze starts
+a new request. Its normal project, selected-clip, media, and effect checks remain
+in place. A matching verified measurement cache may accelerate that explicit
+request; this does not run analysis automatically or relax cache eligibility.
 
-This path applies only to the current retained review. Changes to timeline,
-source media, or processing require Analyze again. It does not expand eligibility
-for the separate repeat-analysis cache, whose conservative effects checks remain.
-The final Apply still exports and verifies fresh state and saves recovery XML
-before importing anything. No source or recovery file is deleted by this feature.
+Apply and navigation become available only when the new request succeeds. Apply
+retains its fresh baseline, media, recovery, and imported-result verification.
+
+## Manual Analyze verification — October 28
+
+The updated build passed 30 Controls scenarios, plus startup and shared-protocol
+checks (33 PASS entries), and 436 Swift checks with one existing skip and no
+failures. Logs are `build/manual-analyze-controls-tests.log` and
+`build/manual-analyze-swift-tests.log`.
+
+Native Final Cut Pro 12.4 testing used only the workspace-root
+`Cutdown Integration.fcpbundle`, with a fresh disposable project named
+`Manual Analyze Narration 20261028`. It references the existing generated
+narration in place. Editing all four detection fields, waiting, leaving fields,
+and Save Settings kept the previous cuts inactive with Apply disabled. The
+analysis-job and export inventories did not change. Reopening an outdated review
+retained the edited fields and disabled Apply; its layout is refreshed without
+waiting for helper replies.
+
+Only the manual Analyze click created request `AC4C9FB3-E5C6-4166-860C-878047CCBE3F`,
+using -41.5 dBFS, 0.25 s minimum, and 0.125 s padding on both sides. It safely reused
+verified source measurements (`cache: hit`). Apply then created a new cleaned
+project and passed host timeline/effects and source-content verification. The
+prior global last-used settings were restored byte-for-byte. The installed
+helper and extension match their ZIP entries.
+
+Evidence, screenshots, copied request/result folders, and settings-restoration
+hashes are in `build/ManualAnalyze-20261028/Evidence.json` and its adjacent files.
+These tests establish the manual trigger behavior; they do not expand existing
+effect-cache eligibility or eliminate Final Cut's visible Share interface.
 
 ## Returning to Controls
 
-After successful Analyze or settings verification, Silent Snip activates Final
+After successful user-initiated Analyze, Silent Snip activates Final
 Cut and raises the original clip's Controls window. It verifies native window
 focus instead of treating an existing hidden editor as success. It retains the
 verified native editor reference before Share, then checks its controls again
@@ -78,10 +104,9 @@ completion callback. It never reclaims activation from another foreground app.
 After completion, only the current review's exact final Share directory can
 return the helper's own activation to the verified current Controls window. This late path never changes selection or toggles editors. Each
 successful operation writes `Review-Presentation.json` in its temporary job
-folder, recording verified focus or manual reopening guidance. Apply still waits
-for analysis or settings verification to finish.
+folder, recording verified focus or manual reopening guidance. Apply stays disabled until the new analysis finishes.
 
-### Foreground verification — build 21
+### Historical foreground verification — build 21
 
 The installed app passed two consecutive Analyze runs on **Silent Snip Foreground
 Check 21**, a fresh ten-second fixture in the required workspace library. Controls

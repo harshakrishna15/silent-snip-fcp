@@ -188,7 +188,7 @@ public struct ReviewAnalysisResult: Sendable {
             job.task?.cancel()
             job.state = job.task == nil ? .cancelled : .cancelling
             if job.applyStarted {
-                job.message = "Stopping Apply. The project may already have been replaced in Final Cut. Check the result or recovery XML before applying again…"
+                job.message = "Stopping Apply. A cleaned project may already exist in Final Cut. Check the existing result before applying again; the original project stays unchanged…"
             } else {
                 job.message = job.task == nil ? "Review cancelled. No timeline edits were made." : "Stopping the export safely…"
             }
@@ -567,9 +567,9 @@ public struct ReviewAnalysisResult: Sendable {
             return "Apply is unavailable because the project has unresolved issues: " + warnings.joined(separator: "; ")
         }
         let target = analysis.review.target
-        guard target.enabled, target.isPrimaryStoryline, !target.hasVideo, target.hasAudio,
+        guard target.enabled, target.isPrimaryStoryline, target.hasAudio,
               target.unsupportedReasons.isEmpty else {
-            return "Apply requires a supported, enabled audio-only clip in the primary storyline."
+            return "Apply requires a supported, enabled clip with audio in the primary storyline."
         }
         guard !analysis.review.selectedCuts.isEmpty else { return "Select at least one eligible cut before applying." }
         return nil

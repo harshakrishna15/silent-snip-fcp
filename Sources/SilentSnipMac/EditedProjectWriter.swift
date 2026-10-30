@@ -59,10 +59,9 @@ public enum EditedProjectWriterError: Error, LocalizedError, Equatable {
 
 /// Generates edited XML without modifying the input document or media.
 /// Replacement retains the original event/name; ordinary output creates a copy.
-/// This deliberately supports a narrow set of timeline edits: splitting one
-/// direct audio asset, then shifting later primary-storyline items. Connections
-/// on the target and any connected content crossing a cut require native Final
-/// Cut connection semantics and are rejected, rather than silently rearranged.
+/// Splits a direct audio or linked A/V asset and shifts later primary items.
+/// Simple direct connections use the same cut map through ConnectedProjectRipple;
+/// unresolved routing, nested connections and protected regions remain guarded.
 public enum EditedProjectWriter {
     public static func write(
         projectData: Data,
@@ -73,14 +72,29 @@ public enum EditedProjectWriter {
         eventUID: UUID = UUID(),
         destinationLibrary: URL? = nil,
         replacementGaps: [TimeRange: RationalTime] = [:],
-        replaceOriginal: Bool = false
+        replaceOriginal: Bool = false,
+        selectedClipOnly: Bool = false,
+        useOriginalEvent: Bool = false,
+        omitController: Bool = false
     ) throws -> EditedProjectOutput {
         let name = outputName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw EditedProjectWriterError.invalidName }
         // Run the bounded/entity-safe parser before FoundationXML. All later
         // changes use this exact data, never a caller-supplied stale document.
+        // The analysis controller is verified passthrough. A cleaned voice-over
+        // keeps its DSP chain but doesn't need a detector instance per segment.
         let document = try TimelineParser.parse(data: projectData)
         let replacement = try replaceOriginal ? XMLReplacementTarget(projectData: projectData) : nil
+        let destination = try useOriginalEvent ? XMLReplacementTarget(projectData: projectData) : replacement
+        if let destination, let destinationLibrary, destinationLibrary.standardizedFileURL != destination.libraryURL {
+            throw EditedProjectWriterError.unsupported("the result must stay in the original event and library")
+        }
+        guard !selectedClipOnly || !replaceOriginal else {
+            throw EditedProjectWriterError.unsupported("a selected-clip result must be a separate project")
+        }
+        if useOriginalEvent && !replaceOriginal && name == document.projectName {
+            throw EditedProjectWriterError.unsupported("a new project in the original event needs a distinct name")
+        }
         if let replacement {
             guard outputName == replacement.projectName, name == outputName,
                   destinationLibrary == nil || destinationLibrary?.standardizedFileURL == replacement.libraryURL else {
@@ -111,6 +125,17 @@ public enum EditedProjectWriter {
             throw EditedProjectWriterError.unsupported("the result must have a different project identity.")
         }
 
+        if !selectedClipOnly, document.clips.contains(where: { !$0.isPrimaryStoryline }) {
+            return try ConnectedProjectRipple.write(projectData: projectData, document: document,
+                target: target, ranges: ranges, replacementGaps: replacementGaps) { stripped in
+                try write(projectData: stripped, selection: selection, selectedRanges: selectedRanges,
+                    outputName: outputName, projectUID: projectUID, eventUID: eventUID,
+                    destinationLibrary: destinationLibrary, replacementGaps: replacementGaps,
+                    replaceOriginal: replaceOriginal, selectedClipOnly: false,
+                    useOriginalEvent: useOriginalEvent, omitController: omitController)
+            }
+        }
+
         let xml = try XMLDocument(data: projectData, options: [.nodePreserveAll])
         guard let root = xml.rootElement(),
               let project = try root.nodes(forXPath: ".//project").first as? XMLElement,
@@ -125,11 +150,24 @@ public enum EditedProjectWriter {
             throw EditedProjectWriterError.verificationFailed("the selected timeline instance is missing.")
         }
         let targetNode = story[targetIndex]
+        let controllerRefs = Set((root.elements(forName: "resources").first?.elements(forName: "effect") ?? [])
+            .filter { omitController && $0.attribute(forName: "uid")?.stringValue == AudioControllerSettings.effectUID }
+            .compactMap { $0.attribute(forName: "id")?.stringValue })
         try validateTopology(document: document, target: target, ranges: ranges, spine: spine, root: root)
         try validateTargetContents(targetNode)
+        // Normalize only the known passthrough detector before taking the DSP
+        // reference. Every other effect, its order, and its state remain strict.
+        for effect in targetNode.elements(forName: "filter-audio")
+            where controllerRefs.contains(effect.attribute(forName: "ref")?.stringValue ?? "") {
+            effect.detach()
+        }
+        let expectedTarget = try omitController
+            ? TimelineParser.parse(data: xml.xmlData).selectedTarget(selection, requireExistingMedia: false)
+            : target
 
         let kept = retainedRanges(target: target.timelineRange, removals: ranges)
-        var cursor = target.timelineRange.start
+        let outputTimecodeStart: RationalTime = selectedClipOnly ? .zero : document.projectTimecodeStart
+        var cursor: RationalTime = selectedClipOnly ? .zero : target.timelineRange.start
         var segments: [EditedProjectSegment] = []
         var replacements: [XMLElement] = []
         var gapRanges: [TimeRange] = []
@@ -138,7 +176,7 @@ public enum EditedProjectWriter {
             if let gapDuration = replacementGaps[range] {
                 let gap = XMLElement(name: "gap")
                 set(gap, "name", "Gap")
-                set(gap, "offset", try timeString(cursor.adding(document.projectTimecodeStart)))
+                set(gap, "offset", try timeString(cursor.adding(outputTimecodeStart)))
                 set(gap, "start", "3600s")
                 set(gap, "duration", try timeString(gapDuration))
                 replacements.append(gap)
@@ -157,7 +195,7 @@ public enum EditedProjectWriter {
                 mediaFileRange: .init(start: try sourceStart.subtracting(target.assetStart),
                                      end: try sourceEnd.subtracting(target.assetStart)))
             let copy = targetNode.copy() as! XMLElement
-            set(copy, "offset", try timeString(cursor.adding(document.projectTimecodeStart)))
+            set(copy, "offset", try timeString(cursor.adding(outputTimecodeStart)))
             set(copy, "start", try timeString(sourceStart))
             set(copy, "duration", try timeString(duration))
             if copy.attribute(forName: "audioStart") != nil { set(copy, "audioStart", try timeString(sourceStart)) }
@@ -178,7 +216,7 @@ public enum EditedProjectWriter {
         // Adjust only each later root item's parent-coordinate offset. Its source
         // trims, effects, children, and connection offsets remain byte-for-byte
         // equivalent as XML nodes. Repeated media references are not conflated.
-        for clip in document.clips where clip.isPrimaryStoryline && clip.timelineRange.start >= target.timelineRange.end {
+        for clip in document.clips where !selectedClipOnly && clip.isPrimaryStoryline && clip.timelineRange.start >= target.timelineRange.end {
             guard let indexText = clip.id.split(separator: "/").last,
                   let index = Int(indexText), story.indices.contains(index) else {
                 throw EditedProjectWriterError.verificationFailed("a later storyline item is missing.")
@@ -186,10 +224,16 @@ public enum EditedProjectWriter {
             set(story[index], "offset", try timeString(clip.timelineRange.start
                 .adding(document.projectTimecodeStart).subtracting(netRemoved)))
         }
-        let insertionIndex = targetNode.index
-        targetNode.detach()
-        for (index, node) in replacements.enumerated() { spine.insertChild(node, at: insertionIndex + index) }
-        let resultDuration = try document.projectRange.checkedDuration().subtracting(netRemoved)
+        if selectedClipOnly {
+            spine.setChildren(replacements)
+            set(sequence, "tcStart", "0s")
+        } else {
+            let insertionIndex = targetNode.index
+            targetNode.detach()
+            for (index, node) in replacements.enumerated() { spine.insertChild(node, at: insertionIndex + index) }
+        }
+        let originalDuration = try selectedClipOnly ? target.timelineRange.checkedDuration() : document.projectRange.checkedDuration()
+        let resultDuration = try originalDuration.subtracting(netRemoved)
         set(sequence, "duration", try timeString(resultDuration))
         set(project, "name", name)
         set(project, "uid", projectUID.uuidString)
@@ -231,12 +275,12 @@ public enum EditedProjectWriter {
         } else if let originalLocation { set(library, "location", originalLocation) }
         if let colorProcessing { set(library, "colorProcessing", colorProcessing) }
         let event = XMLElement(name: "event")
-        guard try replacement != nil || (root.nodes(forXPath: ".//event").allSatisfy({ node in
+        guard try destination != nil || (root.nodes(forXPath: ".//event").allSatisfy({ node in
             (node as? XMLElement)?.attribute(forName: "uid")?.stringValue?
                 .caseInsensitiveCompare(eventUID.uuidString) != .orderedSame
         })) else { throw EditedProjectWriterError.unsupported("the result must have a different event identity.") }
-        set(event, "name", replacement?.eventName ?? "Silent Snip Results")
-        set(event, "uid", (replacement?.eventUID ?? eventUID).uuidString)
+        set(event, "name", destination?.eventName ?? "Silent Snip Results")
+        set(event, "uid", (destination?.eventUID ?? eventUID).uuidString)
         event.addChild(project.copy() as! XMLNode)
         library.addChild(event)
         resultRoot.addChild(library)
@@ -246,14 +290,15 @@ public enum EditedProjectWriter {
         xml.isStandalone = false
         let outputData = xml.xmlData(options: [.nodePrettyPrint])
         let outputDocument = try TimelineParser.parse(data: outputData)
-        try verify(outputDocument, original: document, target: target, segments: segments, removed: netRemoved, gaps: gapRanges)
+        try verify(outputDocument, original: document, target: expectedTarget, segments: segments, removed: netRemoved,
+                   gaps: gapRanges, selectedClipOnly: selectedClipOnly)
         let removedPointMarkers = document.markers.filter { marker in
             marker.parentClipID == target.id && !segments.contains { $0.sourceRange.contains(marker.sourcePosition) }
         }.count
         return EditedProjectOutput(xmlData: outputData, report: .init(
             originalProjectName: document.projectName, originalProjectUID: document.projectUID,
             baselineFingerprint: document.fingerprint, projectName: name, projectUID: projectUID,
-            eventUID: replacement?.eventUID ?? eventUID, replacementTarget: replacement, targetID: target.id,
+            eventUID: destination?.eventUID ?? eventUID, replacementTarget: replacement, targetID: target.id,
             originalProjectDuration: try document.projectRange.checkedDuration(),
             resultProjectDuration: resultDuration, removedDuration: removed, insertedGapDuration: added, selectedRanges: ranges,
             retainedSegments: segments, removedPointMarkerCount: removedPointMarkers))
@@ -339,11 +384,12 @@ public enum EditedProjectWriter {
     private static let allowedTargetElements: Set<String> = [
         "note", "conform-rate", "adjust-volume", "adjust-panner", "audio-channel-source",
         "adjust-loudness", "adjust-noiseReduction", "adjust-humReduction", "adjust-EQ", "adjust-matchEQ",
-        "adjust-voiceIsolation", "keyframeAnimation", "keyframe", "fadeIn", "fadeOut", "filter-audio", "data", "param", "metadata", "md", "array", "string",
+        "adjust-voiceIsolation", "adjust-transform", "adjust-crop", "crop-rect", "trim-rect",
+        "adjust-blend", "adjust-conform", "filter-video", "keyframeAnimation", "keyframe", "fadeIn", "fadeOut", "filter-audio", "data", "param", "metadata", "md", "array", "string",
         "marker", "chapter-marker", "keyword", "rating", "analysis-marker", "shot-type", "stabilization-type"
     ]
 
-    private static func validateTargetContents(_ target: XMLElement) throws {
+    static func validateTargetContents(_ target: XMLElement) throws {
         // Traverse this subtree directly. Foundation's XPath evaluation can use
         // the document context for a child node and include unrelated elements.
         for node in descendants(target) {
@@ -374,7 +420,7 @@ public enum EditedProjectWriter {
         }
     }
 
-    private static func trimAnnotations(_ clip: XMLElement, to kept: TimeRange,
+    static func trimAnnotations(_ clip: XMLElement, to kept: TimeRange,
                                         original: TimelineClip) throws {
         for annotation in elementChildren(clip) where annotationNames.contains(annotation.name ?? "") {
             let name = annotation.name ?? ""
@@ -402,12 +448,14 @@ public enum EditedProjectWriter {
     }
 
     private static func verify(_ output: TimelineDocument, original: TimelineDocument, target: TimelineClip,
-                               segments: [EditedProjectSegment], removed: RationalTime, gaps: [TimeRange]) throws {
-        let expectedCount = original.clips.count - 1 + segments.count + gaps.count
+                               segments: [EditedProjectSegment], removed: RationalTime, gaps: [TimeRange],
+                               selectedClipOnly: Bool) throws {
+        let expectedCount = (selectedClipOnly ? 0 : original.clips.count - 1) + segments.count + gaps.count
+        let originalEnd = selectedClipOnly ? target.timelineRange.duration : original.projectRange.end
         guard output.clips.count == expectedCount,
-              output.projectRange.end == (try original.projectRange.end.subtracting(removed)),
+              output.projectRange.end == (try originalEnd.subtracting(removed)),
               output.frameDuration == original.frameDuration,
-              output.projectTimecodeStart == original.projectTimecodeStart else {
+              output.projectTimecodeStart == (selectedClipOnly ? .zero : original.projectTimecodeStart) else {
             throw EditedProjectWriterError.verificationFailed("project duration, clip count, or frame clock changed unexpectedly.")
         }
         for gap in gaps {
@@ -419,7 +467,7 @@ public enum EditedProjectWriter {
             let matches = output.clips.filter { $0.isPrimaryStoryline && $0.timelineRange == segment.resultProjectRange }
             guard matches.count == 1, let clip = matches.first,
                   clip.mediaURL == target.mediaURL, clip.assetID == target.assetID,
-                  clip.sourceStart == segment.sourceRange.start, !clip.hasVideo,
+                  clip.sourceStart == segment.sourceRange.start, clip.hasVideo == target.hasVideo,
                   clip.hasAudio, clip.dialogueRoles == target.dialogueRoles,
                   clip.effectsFingerprint == target.effectsFingerprint,
                   clip.audioFadeIn == (segment.sourceRange.start == target.sourceStart ? target.audioFadeIn : .zero),
@@ -427,7 +475,7 @@ public enum EditedProjectWriter {
                 throw EditedProjectWriterError.verificationFailed("a retained source segment or its audio effects changed unexpectedly.")
             }
         }
-        for clip in original.clips where clip.id != target.id {
+        for clip in original.clips where !selectedClipOnly && clip.id != target.id {
             let rootID = clip.id.split(separator: "/").prefix(2).joined(separator: "/")
             let parent = original.clips.first { $0.id == rootID }
             let shifts = (parent?.timelineRange.start ?? clip.timelineRange.start) >= target.timelineRange.end
@@ -438,6 +486,7 @@ public enum EditedProjectWriter {
                 && $0.lane == clip.lane && $0.isPrimaryStoryline == clip.isPrimaryStoryline }
             guard matches.contains(where: { $0.effectsFingerprint == clip.effectsFingerprint
                 && $0.enabled == clip.enabled && $0.dialogueRoles == clip.dialogueRoles
+                && $0.hasVideo == clip.hasVideo && $0.hasAudio == clip.hasAudio
                 && $0.audioFadeIn == clip.audioFadeIn && $0.audioFadeOut == clip.audioFadeOut }) else {
                 throw EditedProjectWriterError.verificationFailed("surrounding item \(clip.name) changed unexpectedly.")
             }

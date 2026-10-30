@@ -27,14 +27,6 @@ import SilentSnipMac
         }, authorizeApply: { [unowned self] command in
             guard let view = command.view, let gesture = command.applyGesture else { return false }
             return interactive.canAuthorizeApply(view: view, gesture: gesture)
-        }, recalculationOperation: { [unowned self] request, result, progress in
-            await waitForStorageCleanup()
-            try await withPrototype(request: request.id) {
-                try await interactive.verifySettingsPreview(request, result: result, progress: prototypeProgress(progress))
-            }
-        }, authorizeRecalculation: { [unowned self] command in
-            guard let view = command.view else { return false }
-            return interactive.canReconnectReview(view: view)
         }, highlightOperation: { [unowned self] request, result, cutID in
             await waitForStorageCleanup()
             try await withPrototype(request: request.id) {
@@ -117,7 +109,7 @@ import SilentSnipMac
         let trusted = FinalCutAccessibility.isTrusted
         if !trusted { FinalCutAccessibility.requestAccess() }
         try? IntegrationReport(state: trusted ? "ready" : "permission-required", message: trusted
-            ? "Ready. Analyze captures the selected audio clip; Apply replaces the project through XML in its existing event, with recovery XML saved first."
+            ? "Ready. Analyze measures the selected clip including its audio effects; Apply creates a cleaned copy of the full project in the same event. The original project stays unchanged."
             : "Open Silent Snip in System Settings and grant control access, then reopen the app. Your Final Cut Share destination must point to this combined app.").save()
         updateHostLifetime()
     }

@@ -98,6 +98,7 @@ struct FinalCutMenuShortcut {
 
 enum FinalCutRangeCommand: String {
     case clear = "Clear Selected Ranges"
+    case clip = "Set Clip Range"
 }
 
 enum FinalCutPreviewError: Error, LocalizedError {

@@ -75,7 +75,16 @@ static BOOL booleanValue(id value) {
 }
 @end
 
+@interface SilentSnipInspectorContent : NSStackView
+@end
+@implementation SilentSnipInspectorContent
+- (BOOL)isFlipped { return YES; }
+@end
+
 @interface SilentSnipAudioUnitFactory () <NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
+@property(nonatomic) NSScrollView *inspectorScroll;
+@property(nonatomic) NSStackView *inspectorContent;
+@property(nonatomic) BOOL updatingInspectorLayout;
 @property(nonatomic) SilentSnipReviewConnection *connection;
 @property(nonatomic) SilentSnipAudioUnit *audioUnit;
 @property(nonatomic) AUParameterTree *observedParameterTree;
@@ -97,6 +106,8 @@ static BOOL booleanValue(id value) {
 @property(nonatomic) NSButton *moreButton;
 @property(nonatomic) NSMenu *moreMenu;
 @property(nonatomic) NSView *reviewArea;
+@property(nonatomic) NSScrollView *reviewScroll;
+@property(nonatomic) NSTextField *emptyReviewLabel;
 @property(nonatomic) NSStackView *reviewHeading;
 @property(nonatomic) NSBox *reviewDivider;
 @property(nonatomic) BOOL canHighlight;
@@ -110,13 +121,7 @@ static BOOL booleanValue(id value) {
 @property(nonatomic) BOOL retryAvailable;
 @property(nonatomic) NSArray<NSNumber *> *submittedSettings;
 @property(nonatomic) NSTimer *pollTimer;
-@property(nonatomic) NSTimer *settingsTimer;
-@property(nonatomic) NSInteger settingsSequence;
-@property(nonatomic) NSString *settingsEditID;
-@property(nonatomic) BOOL settingsNeedsVerification;
-@property(nonatomic) BOOL settingsReturnCommitted;
-@property(nonatomic) BOOL settingsVerificationStarted;
-@property(nonatomic) NSInteger settingsOutputIndex;
+@property(nonatomic) BOOL reviewOutdated;
 @property(nonatomic) BOOL canApply;
 @property(nonatomic) BOOL settingsDirty;
 @property(nonatomic) NSProgressIndicator *progressBar;
@@ -152,9 +157,16 @@ static BOOL booleanValue(id value) {
             SilentSnipAudioUnit *processor = weakUnit;
             if (!view || view.audioUnit != processor) return;
             [processor notifyHostOfParameterState];
-            if (!view.isViewLoaded || view.settingsDirty || view.connection.requestID) return;
+            if (!view.isViewLoaded || view.settingsDirty || view.connection.operationBusy || view.connection.applying || view.connection.awaitingResponse) return;
             for (NSTextField *field in view.fields) if (field.currentEditor) return;
-            [view refreshSettings];
+            if (view.connection.requestID && view.submittedSettings.count == 4) {
+                BOOL changed = NO;
+                for (NSUInteger i = 0; i < 4; i++)
+                    if ([processor.analysisParameterTree parameterWithAddress:i+1].value != view.submittedSettings[i].floatValue) changed = YES;
+                if (!changed) return;
+                [view refreshSettings];
+                [view invalidateReviewForSettingsChange];
+            } else [view refreshSettings];
         });
     }];
     // A host can omit an unchanged/default effect state until notified. Queue
@@ -181,7 +193,7 @@ static BOOL booleanValue(id value) {
 }
 
 - (void)loadView {
-    self.view = [[SilentSnipInspectorView alloc] initWithFrame:NSMakeRect(0, 0, 580, 220)];
+    self.view = [[SilentSnipInspectorView alloc] initWithFrame:NSMakeRect(0, 0, 680, 476)];
     self.preferredContentSize = self.view.frame.size;
     // A scrollable inspector keeps every control reachable when a host fixes
     // the AU window size instead of honoring preferredContentSize changes.
@@ -191,19 +203,22 @@ static BOOL booleanValue(id value) {
     inspector.autohidesScrollers = YES;
     inspector.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:inspector];
-    NSStackView *content = [NSStackView stackViewWithViews:@[]];
+    NSStackView *content = [SilentSnipInspectorContent stackViewWithViews:@[]];
     content.orientation = NSUserInterfaceLayoutOrientationVertical;
     content.alignment = NSLayoutAttributeLeading;
     content.spacing = 12;
     content.edgeInsets = NSEdgeInsetsMake(16, 20, 12, 20);
-    content.translatesAutoresizingMaskIntoConstraints = NO;
+    // The document owns its content height. Pinning its top to the clip view
+    // makes a fixed-size AU host snap it back instead of scrolling to review.
+    content.translatesAutoresizingMaskIntoConstraints = YES;
+    content.autoresizingMask = NSViewWidthSizable;
     inspector.documentView = content;
+    self.inspectorScroll = inspector;
+    self.inspectorContent = content;
     [NSLayoutConstraint activateConstraints:@[
         [inspector.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [inspector.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [inspector.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [content.widthAnchor constraintEqualToAnchor:inspector.contentView.widthAnchor],
-        [content.topAnchor constraintEqualToAnchor:inspector.contentView.topAnchor]
+        [inspector.topAnchor constraintEqualToAnchor:self.view.topAnchor]
     ]];
     self.moreButton = [NSButton buttonWithTitle:@"" target:self action:@selector(showMoreActions:)];
     self.moreMenu = [NSMenu new];
@@ -377,9 +392,20 @@ static BOOL booleanValue(id value) {
         [self.resultsView addTableColumn:column];
     }
     scroll.documentView = self.resultsView;
+    self.reviewScroll = scroll;
     self.reviewArea = [NSView new];
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
     [self.reviewArea addSubview:scroll];
+    self.emptyReviewLabel = label(@"Analyze to preview cuts", NO);
+    self.emptyReviewLabel.textColor = NSColor.secondaryLabelColor;
+    self.emptyReviewLabel.alignment = NSTextAlignmentCenter;
+    self.emptyReviewLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.reviewArea addSubview:self.emptyReviewLabel];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.emptyReviewLabel.centerXAnchor constraintEqualToAnchor:self.reviewArea.centerXAnchor],
+        [self.emptyReviewLabel.centerYAnchor constraintEqualToAnchor:self.reviewArea.centerYAnchor],
+        [self.emptyReviewLabel.widthAnchor constraintLessThanOrEqualToAnchor:self.reviewArea.widthAnchor constant:-40]
+    ]];
     [content addArrangedSubview:self.reviewArea];
     self.reviewHeight = [self.reviewArea.heightAnchor constraintEqualToConstant:104];
     [NSLayoutConstraint activateConstraints:@[
@@ -395,7 +421,7 @@ static BOOL booleanValue(id value) {
     self.applyButton.controlSize = NSControlSizeRegular;
     self.applyButton.font = [NSFont systemFontOfSize:13];
     self.applyButton.identifier = @"silentsnip.apply";
-    self.applyButton.toolTip = @"Available only after a valid analysis. This is a separate action from Analyze.";
+    self.applyButton.toolTip = @"Create and open a cleaned project copy, keeping the surrounding edit and editable effects. The original project stays unchanged.";
     self.applyButton.enabled = NO;
     self.analyzeButton = [NSButton buttonWithTitle:@"Analyze" target:self action:@selector(analyze:)];
     self.analyzeButton.bezelStyle = NSBezelStyleRounded;
@@ -432,33 +458,56 @@ static BOOL booleanValue(id value) {
     reviewing = reviewing && !self.connection.applying;
     BOOL hasEligibleCut = NO;
     for (NSDictionary *cut in self.cutRows) if ([cut[@"eligible"] boolValue]) { hasEligibleCut = YES; break; }
-    BOOL showApply = self.connection.applying || (reviewing && hasEligibleCut);
+    BOOL showApply = self.connection.applying || ((reviewing || self.reviewOutdated) && hasEligibleCut);
     BOOL busy = self.connection.operationBusy || self.connection.awaitingResponse || self.connection.pendingRetry != nil || self.verificationPending != nil;
     BOOL showRetry = self.retryAvailable && !self.connection.pendingRetry && !busy;
     self.saveButton.enabled = self.audioUnit != nil && !busy && !self.connection.applying;
-    self.analyzeButton.title = reviewing ? @"Analyze Again" : @"Analyze";
+    self.analyzeButton.title = reviewing || (self.reviewOutdated && self.cutRows.count) ? @"Analyze Again" : @"Analyze";
     self.analyzeButton.hidden = showRetry || busy;
     self.applyButton.hidden = !showApply;
     NSUInteger selected = 0;
     for (NSDictionary *cut in self.cutRows) if ([cut[@"included"] boolValue] && [cut[@"eligible"] boolValue]) selected++;
     self.applyButton.title = selected ? [NSString stringWithFormat:@"Apply %lu %@", (unsigned long)selected, selected == 1 ? @"Cut" : @"Cuts"] : @"Apply Cuts";
     self.retryButton.hidden = !showRetry;
-    self.analyzeButton.bezelColor = self.analyzeButton.hidden || showApply ? nil : NSColor.controlAccentColor;
+    self.analyzeButton.bezelColor = self.analyzeButton.hidden || self.applyButton.enabled ? nil : NSColor.controlAccentColor;
     self.applyButton.bezelColor = self.applyButton.enabled ? NSColor.controlAccentColor : nil;
     [self updateInspectorSize];
 }
 
 - (void)updateInspectorSize {
-    CGFloat rows = 0;
-    for (NSUInteger i = 0; i < self.cutRows.count; i++) rows += [self tableView:self.resultsView heightOfRow:i] + 2;
-    self.reviewHeight.constant = fmin(304, fmax(180, rows + 30));
     BOOL hasRanges = self.cutRows.count > 0;
-    self.reviewArea.hidden = !hasRanges;
-    self.reviewHeading.hidden = !hasRanges;
+    BOOL busy = !self.progressBar.hidden;
+    // Final Cut fixes some remote AU windows at their initial size and ignores
+    // later preferredContentSize changes. Reserve review space from first open.
+    // Keep the footprint stable, with native table scrolling for longer lists.
+    self.reviewHeight.constant = busy ? 124 : 180;
+    self.reviewArea.hidden = NO;
+    self.reviewHeading.hidden = NO;
+    self.reviewDivider.hidden = NO;
+    self.reviewScroll.hidden = !hasRanges;
+    self.emptyReviewLabel.hidden = hasRanges;
+    self.emptyReviewLabel.stringValue = [self.connection.state isEqual:SilentSnipReviewStateReview]
+        ? @"No cuts to review" : (busy ? @"Cuts will appear here after analysis" : @"Analyze to preview cuts");
     self.summaryLabel.hidden = !hasRanges;
-    self.reviewDivider.hidden = !hasRanges;
-    CGFloat height = hasRanges ? 296 + self.reviewHeight.constant : 220;
-    self.preferredContentSize = NSMakeSize(hasRanges ? 680 : 580, height + (self.progressBar.hidden ? 0 : 56));
+    self.preferredContentSize = NSMakeSize(680, 476);
+    [self updateInspectorDocumentFrame];
+}
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    [self updateInspectorDocumentFrame];
+}
+- (void)updateInspectorDocumentFrame {
+    if (self.updatingInspectorLayout || !self.inspectorContent || !self.inspectorScroll) return;
+    CGFloat width = self.inspectorScroll.contentView.bounds.size.width;
+    if (width <= 40) return; // The host has not laid out the clip view yet.
+    self.updatingInspectorLayout = YES;
+    NSStackView *content = self.inspectorContent;
+    [content setFrameSize:NSMakeSize(width, content.frame.size.height)];
+    CGFloat height = ceil(content.fittingSize.height);
+    NSSize size = NSMakeSize(width, fmax(1, height));
+    if (!NSEqualSizes(content.frame.size, size)) [content setFrameSize:size];
+    [content layoutSubtreeIfNeeded];
+    self.updatingInspectorLayout = NO;
 }
 - (void)setStatusMessage:(NSString *)message {
     self.statusDetails = message ?: @"";
@@ -565,6 +614,11 @@ static BOOL booleanValue(id value) {
 
 - (void)viewDidAppear {
     [super viewDidAppear];
+    // A stale review deliberately ignores helper replies. Reopening must lay
+    // out its retained content without depending on a new response to do it.
+    [self updateInspectorSize];
+    self.view.needsLayout = YES;
+    [self.view layoutSubtreeIfNeeded];
     [self.view.window center];
     if (!self.settingsDirty && !self.connection.requestID) [self refreshSettings];
     // No polls run while this hosted view is absent. Allow a fresh reply
@@ -579,23 +633,32 @@ static BOOL booleanValue(id value) {
     [self.pollTimer invalidate]; self.pollTimer = nil;
 }
 
-- (void)controlTextDidChange:(NSNotification *)notification {
-    self.settingsReturnCommitted = NO;
+// Editing values consumes the old review without starting audio work or a
+// Final Cut export. Late replies cannot restore its capabilities. The helper
+// also receives cancellation so a recreated Controls view cannot adopt it.
+- (void)invalidateReviewForSettingsChange {
+    if (self.connection.applying || self.connection.operationBusy || self.connection.awaitingResponse ||
+        self.connection.pendingRetry || self.verificationPending) return;
+    self.reviewOutdated = YES;
     self.settingsDirty = YES;
-    self.lengthLabel.stringValue = @"";
-    self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
     self.canApply = NO; self.applyButton.enabled = NO;
+    self.canChangeSelection = NO; self.canHighlight = NO;
+    self.connection.pendingSelection = nil; self.connection.pendingSettings = nil;
+    self.retryAvailable = NO;
+    self.cancelButton.enabled = NO; self.cancelButton.hidden = YES;
+    self.lengthLabel.stringValue = @"";
+    self.summaryLabel.stringValue = @"Settings changed—Analyze again.";
+    [self.resultsView reloadData];
     [self updatePrimaryAction];
-    self.summaryLabel.stringValue = self.connection.requestID && !self.connection.timedOut
-        ? @"Updating the proposed cuts…" : @"Settings changed. Choose Analyze to update the cuts.";
-    [self scheduleSettingsPreview];
+    [self setStatusMessage:@"Settings changed—Analyze again."];
+    [self sendCommand:@"cancel"];
 }
-- (void)controlTextDidBeginEditing:(NSNotification *)notification { self.settingsReturnCommitted = NO; }
+- (void)controlTextDidChange:(NSNotification *)notification {
+    [self invalidateReviewForSettingsChange];
+}
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
-    if (!self.settingsDirty && !self.settingsNeedsVerification) return;
-    if (self.settingsDirty) [self commitSettings];
-    self.settingsReturnCommitted = [notification.userInfo[@"NSTextMovement"] integerValue] == NSReturnTextMovement;
-    [self scheduleSettingsPreview];
+    if (self.reviewOutdated && !self.connection.operationBusy && !self.connection.applying && !self.connection.awaitingResponse)
+        [self commitSettings];
 }
 - (NSArray<NSNumber *> *)readFields {
     return [self readFieldsReportingErrors:YES];
@@ -623,69 +686,6 @@ static BOOL booleanValue(id value) {
     }
     return values;
 }
-- (void)scheduleSettingsPreview {
-    [self.settingsTimer invalidate]; self.settingsTimer = nil;
-    if (!self.connection.requestID || !self.connection.revision || self.connection.applying || self.connection.timedOut ||
-        (![self.connection.state isEqual:SilentSnipReviewStateReview] && ![self.connection.state isEqual:SilentSnipReviewStateRecalculating])) return;
-    __weak typeof(self) weakSelf = self;
-    self.settingsTimer = [NSTimer timerWithTimeInterval:0.18 repeats:NO block:^(NSTimer *timer) {
-        [weakSelf sendSettingsPreview];
-    }];
-    [NSRunLoop.mainRunLoop addTimer:self.settingsTimer forMode:NSRunLoopCommonModes];
-}
-- (void)sendSettingsPreview {
-    [self.settingsTimer invalidate]; self.settingsTimer = nil;
-    if (!self.connection.requestID || !self.connection.revision || self.connection.applying || self.connection.timedOut ||
-        (![self.connection.state isEqual:SilentSnipReviewStateReview] && ![self.connection.state isEqual:SilentSnipReviewStateRecalculating])) return;
-    NSArray *values = [self readFieldsReportingErrors:NO];
-    if (!values || ![self.audioUnit setAnalysisSettings:values error:nil]) return;
-    BOOL editing = NO;
-    for (NSTextField *field in self.fields) if (field.currentEditor) { editing = YES; break; }
-    BOOL verify = self.settingsReturnCommitted || !editing;
-    // Export can end the field editor a second time. Do not replace the edit
-    // identity already being verified merely because focus moved to the host.
-    if ([self.connection.state isEqual:SilentSnipReviewStateRecalculating] && self.settingsEditID &&
-        [self.submittedSettings isEqual:values] && self.settingsOutputIndex == self.outputMode.indexOfSelectedItem &&
-        (self.settingsVerificationStarted || !verify)) return;
-    self.submittedSettings = values; self.settingsSequence += 1;
-    self.settingsVerificationStarted = verify;
-    self.settingsOutputIndex = self.outputMode.indexOfSelectedItem;
-    self.settingsNeedsVerification = !verify;
-    self.settingsEditID = NSUUID.UUID.UUIDString;
-    NSMutableDictionary *wireSettings = [NSMutableDictionary dictionary];
-    NSArray *wireKeys = @[@"threshold", @"minimum", @"before", @"after"];
-    for (NSUInteger i=0; i<4; i++) {
-        // Analyze uses NSNumber(Float).stringValue in its URL. JSON otherwise
-        // promotes the Float's binary approximation to Double, which can move
-        // padding across a frame boundary despite unchanged displayed values.
-        NSNumber *value = values[i];
-        wireSettings[wireKeys[i]] = @([value.stringValue doubleValue]);
-    }
-    self.connection.pendingSettings = @{@"command":@"recalculate", @"request":self.connection.requestID, @"version":@1,
-        @"view":self.viewID, @"expectedRevision":self.connection.revision, @"settingsEdit":self.settingsEditID,
-        @"settingsSequence":@(self.settingsSequence), @"verifySettings":@(verify), @"output":self.outputMode.indexOfSelectedItem == 1 ? @"gaps" : @"remove",
-        @"settings":wireSettings};
-    self.connection.pendingSelection = nil; self.canApply = NO; self.applyButton.enabled = NO;
-    self.connection.state = SilentSnipReviewStateRecalculating; self.connection.operationBusy = YES;
-    self.operationStarted = NSDate.date;
-    self.connection.lastResponse = NSDate.date;
-    [self updatePrimaryAction];
-    [self setStatusMessage:@"Updating preview and verifying the project…"];
-    [self sendPreviewCommand:self.connection.pendingSettings];
-}
-- (BOOL)responseMatchesCurrentSettings:(NSDictionary *)response {
-    if (!self.settingsEditID || ![response[@"settingsEdit"] isEqual:self.settingsEditID] ||
-        ![response[@"settings"] isKindOfClass:NSDictionary.class] ||
-        ![response[@"output"] isEqual:(self.outputMode.indexOfSelectedItem == 1 ? @"gaps" : @"remove")]) return NO;
-    NSArray *values = [self readFieldsReportingErrors:NO];
-    if (!values) return NO;
-    NSArray *keys = @[@"threshold", @"minimum", @"before", @"after"];
-    for (NSUInteger i=0; i<4; i++) {
-        id value = response[@"settings"][keys[i]];
-        if (![value isKindOfClass:NSNumber.class] || booleanValue(value) || [value floatValue] != [values[i] floatValue]) return NO;
-    }
-    return YES;
-}
 - (BOOL)commitSettings {
     NSArray *values = [self readFields];
     if (!values) return NO;
@@ -695,12 +695,9 @@ static BOOL booleanValue(id value) {
 - (void)saveSettings:(id)sender {
     if (self.connection.applying || self.connection.operationBusy || self.connection.awaitingResponse ||
         self.connection.pendingRetry || self.verificationPending || ![self commitSettings]) return;
-    self.settingsDirty = YES; self.canApply = NO; self.applyButton.enabled = NO;
-    [self updatePrimaryAction];
-    self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
+    [self invalidateReviewForSettingsChange];
     [self refreshSettings];
-    [self setStatusMessage:@"Settings saved."];
-    self.settingsReturnCommitted = YES; [self scheduleSettingsPreview];
+    [self setStatusMessage:@"Settings saved. Analyze again to update the cuts."];
 }
 
 - (BOOL)restoreSettingsData:(NSData *)data {
@@ -716,12 +713,9 @@ static BOOL booleanValue(id value) {
         [values addObject:value];
     }
     if (![self.audioUnit setAnalysisSettings:values error:nil]) return NO;
-    self.settingsDirty = YES; self.canApply = NO; self.applyButton.enabled = NO;
-    [self updatePrimaryAction];
-    self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
+    [self invalidateReviewForSettingsChange];
     [self refreshSettings];
     [self setStatusMessage:@"Saved detection settings restored. Analyze again before applying cuts."];
-    self.settingsReturnCommitted = YES; [self scheduleSettingsPreview];
     return YES;
 }
 - (void)restoreSavedSettings:(id)sender {
@@ -739,14 +733,7 @@ static BOOL booleanValue(id value) {
 }
 
 - (void)outputChanged:(id)sender {
-    self.settingsReturnCommitted = YES;
-    self.settingsDirty = YES;
-    self.lengthLabel.stringValue = @"";
-    self.canChangeSelection = NO; self.connection.pendingSelection = nil; [self.resultsView reloadData];
-    self.canApply = NO; self.applyButton.enabled = NO;
-    [self updatePrimaryAction];
-    self.summaryLabel.stringValue = @"Output changed. Analyze again before applying.";
-    [self scheduleSettingsPreview];
+    [self invalidateReviewForSettingsChange];
 }
 
 // Kept as a separate method so the UI harness can test clicks without launching apps.
@@ -785,7 +772,6 @@ static BOOL booleanValue(id value) {
     NSError *error = nil;
     SilentSnipAudioAnalysisRequest *request = [self.audioUnit analysisRequestWithError:&error];
     if (!request) { [self setErrorMessage:error.localizedDescription]; return; }
-    [self.settingsTimer invalidate]; self.settingsTimer = nil; self.settingsEditID = nil;
     if (self.connection.requestID) {
         [self sendCommand:@"cancel"];
         [NSDistributedNotificationCenter.defaultCenter removeObserver:self name:responseName(self.connection.requestID) object:nil];
@@ -796,7 +782,7 @@ static BOOL booleanValue(id value) {
     for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO].queryItems)
         if ([item.name isEqual:@"request"]) self.connection.requestID = item.value;
     self.connection.revision = nil; self.connection.lastResponseObject = nil; self.submittedSettings = [self readFields];
-    self.canApply = NO; self.applyButton.enabled = NO; self.settingsDirty = NO;
+    self.canApply = NO; self.applyButton.enabled = NO; self.settingsDirty = NO; self.reviewOutdated = NO;
     self.retryAvailable = NO;
     [self updatePrimaryAction];
     self.cutRows = @[]; [self.resultsView reloadData];
@@ -839,10 +825,10 @@ static BOOL booleanValue(id value) {
 // Commands are idempotent for one helper-owned job. Retry an unacknowledged
 // request with that SAME identity; never create another import on a timeout.
 - (void)pollStatus {
-    if (self.settingsNeedsVerification && !self.connection.pendingSettings && [self.connection.state isEqual:SilentSnipReviewStateRecalculating]) {
-        BOOL editing = NO;
-        for (NSTextField *field in self.fields) if (field.currentEditor) { editing = YES; break; }
-        if (!editing) [self sendSettingsPreview];
+    if (self.reviewOutdated) {
+        // Retrying cancellation is idempotent and performs no host automation.
+        [self sendCommand:@"cancel"];
+        return;
     }
     [self presentPendingError];
     if (!self.connection.requestID) {
@@ -876,7 +862,7 @@ static BOOL booleanValue(id value) {
         [self updatePrimaryAction];
         self.connection.pendingSelection = nil; self.canChangeSelection = NO;
         self.connection.pendingRetry = nil;
-        self.connection.pendingSettings = nil; [self.settingsTimer invalidate]; self.settingsTimer = nil;
+        self.connection.pendingSettings = nil;
         self.connection.pendingApply = nil; self.applyButton.identifier = @"silentsnip.apply";
         self.cancelButton.enabled = NO;
         self.cancelButton.hidden = YES;
@@ -885,7 +871,7 @@ static BOOL booleanValue(id value) {
         for (NSTextField *field in self.fields) field.enabled = YES;
         [self.resultsView reloadData];
         [self setErrorMessage:uncertainApply
-            ? @"Apply could not be confirmed. Check your project before analyzing again; replacement may already have completed."
+            ? @"Apply could not be confirmed. Check for the existing cleaned project before analyzing again. The original project stays unchanged."
             : @"The helper is not responding. Analyze again to reconnect."];
         // Continue read-only status polls. A delayed final failure must replace
         // this provisional timeout; no Apply command is retried after timeout.
@@ -952,7 +938,7 @@ static BOOL booleanValue(id value) {
         if (self.connection.requestID)
             [NSDistributedNotificationCenter.defaultCenter removeObserver:self name:responseName(self.connection.requestID) object:nil];
         self.pendingErrorMessage = nil;
-    self.connection = [SilentSnipReviewConnection new]; self.settingsDirty = NO;
+    self.connection = [SilentSnipReviewConnection new]; self.settingsDirty = NO; self.reviewOutdated = NO;
         self.retryAvailable = NO;
         self.applyButton.identifier = @"silentsnip.apply";
         self.canApply = NO; self.applyButton.enabled = NO; self.cancelButton.enabled = NO;
@@ -977,7 +963,7 @@ static BOOL booleanValue(id value) {
 }
 - (void)cancel:(id)sender {
     if (!self.cancelButton.enabled) return;
-    [self.settingsTimer invalidate]; self.settingsTimer = nil; self.connection.pendingSettings = nil;
+    self.connection.pendingSettings = nil;
     self.cancelButton.enabled = NO; self.cancelButton.hidden = YES;
     [self sendCommand:@"cancel"];
 }
@@ -1055,9 +1041,9 @@ static BOOL booleanValue(id value) {
     [NSDistributedNotificationCenter.defaultCenter postNotificationName:commandName object:json userInfo:nil deliverImmediately:YES];
 }
 - (void)receive:(NSNotification *)notification {
+    if (self.reviewOutdated) return;
     NSDictionary *value = [self.connection acceptNotification:notification];
     if (!value) return;
-    if (!self.connection.timedOut && [value[@"state"] isEqual:SilentSnipReviewStateReview] && [self responseMatchesCurrentSettings:value]) self.settingsDirty = NO;
     self.cancelButton.enabled = [value[@"canCancel"] isEqual:@YES];
     self.cancelButton.hidden = !self.cancelButton.enabled;
     if ([value[@"state"] isEqual:SilentSnipReviewStateFailed] || [value[@"state"] isEqual:SilentSnipReviewStateUnavailable])
@@ -1165,7 +1151,6 @@ static BOOL booleanValue(id value) {
 }
 - (void)dealloc {
     if (_parameterObserver) [_observedParameterTree removeParameterObserver:_parameterObserver];
-    [_settingsTimer invalidate];
     [_pollTimer invalidate];
     [NSDistributedNotificationCenter.defaultCenter removeObserver:self];
 }

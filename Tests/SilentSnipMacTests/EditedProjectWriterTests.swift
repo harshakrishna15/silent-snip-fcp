@@ -162,24 +162,42 @@ final class EditedProjectWriterTests: XCTestCase {
         }
     }
 
-    func testRejectsVideoTargetButPreservesSurroundingVideoUnchanged() throws {
+    func testCutsLinkedVideoTargetAndPreservesSurroundingVideoUnchanged() throws {
         let video = "<asset-clip ref=\"video\" offset=\"10s\" duration=\"2s\" audioRole=\"dialogue\"/>"
         let data = fixture(spine: simpleTarget + video, duration: "12s")
-        XCTAssertThrowsError(try write(data, selection: range(10, 12), cuts: [range(10, 11)]))
+        let cameraCut = try write(data, selection: range(10, 12), cuts: [range(10, 11)])
+        XCTAssertEqual(try TimelineParser.parse(data: cameraCut.xmlData).clips.last?.hasVideo, true)
+        XCTAssertEqual(cameraCut.report.retainedSegments.first?.sourceRange.start, .init(1))
         let result = try write(data, selection: range(0, 10), cuts: [range(2, 3)])
         let output = try TimelineParser.parse(data: result.xmlData)
         XCTAssertEqual(output.clips.last?.timelineRange, range(9, 11))
         XCTAssertEqual(output.clips.last?.hasVideo, true)
     }
 
-    func testRejectsTargetConnectionsTransitionsTimedAutomationAndComponentTrims() throws {
+    func testCameraSegmentsRetainVideoTransformAndAudioEffectState() throws {
+        let data = fixture(spine: """
+        <asset-clip ref="video" offset="0s" start="2s" duration="10s" audioRole="dialogue">
+          <adjust-transform position="1 2" scale="0.9 0.9" anchor="0 0"/>
+          <filter-video ref="au"><param name="Amount" key="amount" value="0.5"/></filter-video>
+          <filter-audio ref="au"><data key="effectState">c3RhdGU=</data></filter-audio>
+        </asset-clip>
+        """)
+        let original = try TimelineParser.parse(data: data).selectedTarget(.init(timelineRange: range(0, 10)), requireExistingMedia: false)
+        let output = try write(data, selection: range(0, 10), cuts: [range(2, 3), range(6, 7)])
+        let clips = try TimelineParser.parse(data: output.xmlData).clips
+        XCTAssertEqual(clips.count, 3)
+        XCTAssertTrue(clips.allSatisfy { $0.hasVideo && $0.hasAudio && $0.effectsFingerprint == original.effectsFingerprint })
+        XCTAssertEqual(clips.map(\.sourceStart), [.init(2), .init(5), .init(9)])
+        XCTAssertEqual(clips.map(\.timelineRange.duration), [.init(2), .init(3), .init(3)])
+    }
+
+    func testRejectsTransitionsTimedAutomationAndComponentTrims() throws {
         let invalidContents = [
-            "<asset-clip ref=\"music\" lane=\"-1\" offset=\"100s\" duration=\"1s\" audioRole=\"music\"/>",
             "<adjust-volume><param name=\"gain\"><keyframeAnimation/></param></adjust-volume>",
             "<audio-channel-source srcCh=\"1\" start=\"100s\" duration=\"10s\"/>",
             "<audio-channel-source srcCh=\"1\"><mute start=\"101s\" duration=\"1s\"/></audio-channel-source>",
             "<timeMap><timept time=\"0s\" value=\"0s\"/></timeMap>",
-            "<filter-video ref=\"au\"/>"
+            "<unknown-video-adjustment/>"
         ]
         for content in invalidContents {
             let data = fixture(spine: "<asset-clip ref=\"a\" offset=\"0s\" start=\"100s\" duration=\"10s\" audioRole=\"dialogue\">\(content)</asset-clip>")
@@ -189,15 +207,60 @@ final class EditedProjectWriterTests: XCTestCase {
         XCTAssertThrowsError(try write(transition, selection: range(0, 10), cuts: [range(2, 3)]))
     }
 
-    func testEarlierConnectedItemAcrossEditIsRejected() throws {
+    func testEarlierConnectedMusicRipplesAcrossEdit() throws {
         let data = fixture(spine: """
         <gap offset="0s" start="0s" duration="1s">
           <asset-clip ref="music" lane="-1" offset="0s" duration="10s" audioRole="music"/>
         </gap>
         <asset-clip ref="a" offset="1s" start="100s" duration="10s" audioRole="dialogue"/>
         """, duration: "11s")
-        XCTAssertThrowsError(try write(data, selection: range(1, 11), cuts: [range(2, 3)])) {
-            XCTAssertTrue($0.localizedDescription.contains("crosses a selected cut"))
+        let result = try write(data, selection: range(1, 11), cuts: [range(2, 3)])
+        let output = try TimelineParser.parse(data: result.xmlData)
+        let music = output.clips.filter { !$0.isPrimaryStoryline }
+        XCTAssertEqual(music.map(\.timelineRange), [range(0, 2), range(2, 9)])
+        XCTAssertEqual(music.map(\.sourceStart), [.zero, .init(3)])
+        XCTAssertEqual(result.report.baselineFingerprint, try TimelineParser.parse(data: data).fingerprint)
+    }
+
+    func testConnectedMusicOnTargetKeepsSourceDSPCurvesAndCutClock() throws {
+        let data = fixture(spine: """
+        <asset-clip ref="a" offset="3600s" start="100s" duration="10s" audioRole="dialogue">
+          <asset-clip ref="music" name="Bed" lane="-1" offset="100s" start="5s" duration="10s" audioRole="music">
+            <adjust-volume amount="-9dB"><param name="amount"><keyframeAnimation>
+              <keyframe time="5s" value="-9dB"/><keyframe time="15s" value="-3dB"/>
+            </keyframeAnimation></param></adjust-volume>
+            <marker start="6s" value="Keep"/><marker start="15/2s" value="Remove"/>
+            <filter-audio ref="au"><data key="effectState">YWJj</data></filter-audio>
+          </asset-clip>
+          <filter-audio ref="au"><data key="effectState">YWJj</data></filter-audio>
+        </asset-clip>
+        """, tcStart: "3600s")
+        let original = try TimelineParser.parse(data: data)
+        let result = try write(data, selection: range(0, 10), cuts: [range(2, 3), range(6, 7)])
+        let output = try TimelineParser.parse(data: result.xmlData)
+        let music = output.clips.filter { !$0.isPrimaryStoryline }
+        XCTAssertEqual(music.map(\.timelineRange), [range(0, 2), range(2, 5), range(5, 8)])
+        XCTAssertEqual(music.map(\.sourceStart), [.init(5), .init(8), .init(12)])
+        XCTAssertTrue(music.allSatisfy { $0.effectsFingerprint == original.clips[1].effectsFingerprint })
+        XCTAssertEqual(output.markers.map(\.value), ["Keep"])
+        try validateDTD(result.xmlData)
+        let gapCut = range(2, 3)
+        let gaps = try EditedProjectWriter.write(projectData: data, selection: .init(timelineRange: range(0, 10)),
+            selectedRanges: [gapCut], outputName: "Gap output", replacementGaps: [gapCut: .init(2)])
+        let gapMusic = try TimelineParser.parse(data: gaps.xmlData).clips.filter { !$0.isPrimaryStoryline }
+        XCTAssertEqual(gapMusic.map(\.timelineRange), [range(0, 2), range(4, 11)])
+        XCTAssertEqual(gapMusic.map(\.sourceStart), [.init(5), .init(8)])
+    }
+
+    func testConnectedDialogueFadesAndNestedContentRemainProtected() throws {
+        let contents = [
+            "<asset-clip ref=\"music\" lane=\"-1\" offset=\"100s\" duration=\"10s\" audioRole=\"dialogue\"/>",
+            "<asset-clip ref=\"music\" lane=\"-1\" offset=\"100s\" duration=\"10s\" audioRole=\"music\"><adjust-volume><param name=\"amount\"><fadeIn type=\"linear\" duration=\"4s\"/></param></adjust-volume></asset-clip>",
+            "<asset-clip ref=\"music\" lane=\"-1\" offset=\"100s\" duration=\"10s\" audioRole=\"music\"><timeMap><timept time=\"0s\" value=\"0s\"/></timeMap></asset-clip>"
+        ]
+        for content in contents {
+            let data = fixture(spine: "<asset-clip ref=\"a\" offset=\"0s\" start=\"100s\" duration=\"10s\" audioRole=\"dialogue\">\(content)</asset-clip>")
+            XCTAssertThrowsError(try write(data, selection: range(0, 10), cuts: [range(2, 3)]))
         }
     }
 
@@ -213,9 +276,13 @@ final class EditedProjectWriterTests: XCTestCase {
     }
 
     func testOutputValidatesAgainstInstalledFinalCutDTDWhenAvailable() throws {
+        let result = try write(nativeFixture("final-cut-12-3-native-audio"), selection: range(0, 10), cuts: [range(2, 3)])
+        try validateDTD(result.xmlData)
+    }
+
+    private func validateDTD(_ data: Data) throws {
         let dtd = URL(fileURLWithPath: "/Applications/Final Cut Pro.app/Contents/Frameworks/Interchange.framework/Versions/A/Resources/FCPXMLv1_14.dtd")
         guard FileManager.default.fileExists(atPath: dtd.path) else { throw XCTSkip("Final Cut's DTD is not installed") }
-        let result = try write(nativeFixture("final-cut-12-3-native-audio"), selection: range(0, 10), cuts: [range(2, 3)])
         let input = Pipe()
         let errors = Pipe()
         let process = Process()
@@ -225,7 +292,7 @@ final class EditedProjectWriterTests: XCTestCase {
         process.standardError = errors
         process.standardOutput = FileHandle.nullDevice
         try process.run()
-        try input.fileHandleForWriting.write(contentsOf: result.xmlData)
+        try input.fileHandleForWriting.write(contentsOf: data)
         try input.fileHandleForWriting.close()
         let diagnostics = errors.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()

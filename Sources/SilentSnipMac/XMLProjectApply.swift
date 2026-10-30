@@ -51,7 +51,9 @@ enum XMLProjectApply {
 
     static func prepare(projectData: Data, selection: TimelineSelection, cuts: [TimeRange],
                         settings: AnalysisSettings, mode: SilentSnipOutputMode,
-                        outputName: String, directory: URL, replaceOriginal: Bool = false) throws -> PreparedXMLProject {
+                        outputName: String, directory: URL, replaceOriginal: Bool = false,
+                        selectedClipOnly: Bool = false, useOriginalEvent: Bool = false,
+                        omitController: Bool = false) throws -> PreparedXMLProject {
         let document = try TimelineParser.parse(data: projectData)
         let xml = try XMLDocument(data: projectData, options: [.nodeLoadExternalEntitiesNever])
         let libraries = try xml.nodes(forXPath: "/fcpxml/library").compactMap { $0 as? XMLElement }
@@ -65,7 +67,9 @@ enum XMLProjectApply {
         if let gap { for cut in cuts { gaps[cut] = gap } }
         let withSettings = try AudioControllerSettings.embedding(settings, in: projectData, selection: selection)
         let output = try EditedProjectWriter.write(projectData: withSettings, selection: selection,
-            selectedRanges: cuts, outputName: outputName, destinationLibrary: library, replacementGaps: gaps, replaceOriginal: replaceOriginal)
+            selectedRanges: cuts, outputName: outputName, destinationLibrary: library, replacementGaps: gaps,
+            replaceOriginal: replaceOriginal, selectedClipOnly: selectedClipOnly, useOriginalEvent: useOriginalEvent,
+            omitController: omitController)
         let recovery = try ProjectRecoverySnapshot.recovery(data: projectData, name: document.projectName + " — Before Cuts")
         guard directory.isFileURL, !FileManager.default.fileExists(atPath: directory.path) else {
             throw EditedProjectWriterError.unsupported("the result folder already exists or is not local")

@@ -15,7 +15,7 @@ struct FinalCutSelectionSnapshot: Equatable {
         }
         let selected = timeline.children.filter { $0.role == kAXLayoutItemRole && $0.selected == true }
         guard selected.count == 1, let clip = selected.first, clip.enabled != false else {
-            throw FinalCutCaptureError.invalidSelection("Final Cut must report exactly one enabled selected audio-only timeline clip.")
+            throw FinalCutCaptureError.invalidSelection("Final Cut must report exactly one enabled selected timeline clip with audio.")
         }
         func handle(_ description: String) -> String? {
             let matches = clip.children.filter { $0.role == "AXHandle" && $0.description == description }

@@ -17,6 +17,7 @@ public struct DialogueRenderContext: Sendable {
     /// Non-nil means selected source audio, not a rendered Dialogue mix.
     public let sourceRange: TimeRange?
     let isolatedTargetID: String?
+    let projectSlice: Bool
 
     /// Use the same exact controller allowlist for export, analysis, and subsequent
     /// baseline checks. Callers must obtain these UIDs from a verified effect export.
@@ -51,7 +52,8 @@ public struct DialogueRenderContext: Sendable {
     private init(projectFingerprint: String, projectUID: String?, projectName: String,
                  projectRange: TimeRange, renderedRoles: Set<String>, audioURL: URL,
                  controllerEffectUIDs: Set<String>, allowOmittedPrivateSettings: Bool,
-                 sourceRange: TimeRange?, audioSHA256: String, isolatedTargetID: String? = nil) {
+                 sourceRange: TimeRange?, audioSHA256: String, isolatedTargetID: String? = nil, projectSlice: Bool = false) {
+        self.projectSlice = projectSlice
         self.isolatedTargetID = isolatedTargetID
         self.sourceRange = sourceRange
         self.allowOmittedPrivateSettings = allowOmittedPrivateSettings
@@ -74,6 +76,16 @@ public struct DialogueRenderContext: Sendable {
             audioSHA256: try MediaContentSnapshot.contentHash(at: canonical), isolatedTargetID: target.id)
     }
 
+    /// Call only after the fresh XML passes DirectAudioRender's scope proof.
+    static func capturedProjectSlice(document: TimelineDocument, target: TimelineClip, audioURL: URL) throws -> Self {
+        let canonical = try MediaContentSnapshot.canonical(audioURL)
+        return Self(projectFingerprint: document.fingerprint, projectUID: document.projectUID,
+            projectName: document.projectName, projectRange: document.projectRange, renderedRoles: [],
+            audioURL: canonical, controllerEffectUIDs: [AudioControllerSettings.effectUID],
+            allowOmittedPrivateSettings: true, sourceRange: nil,
+            audioSHA256: try MediaContentSnapshot.contentHash(at: canonical), isolatedTargetID: target.id, projectSlice: true)
+    }
+
     fileprivate func validateArtifact(at url: URL) async throws {
         guard url.isFileURL else { throw ProjectAnalysisError.invalidRenderArtifact }
         let canonicalURL = url.standardizedFileURL.resolvingSymlinksInPath()
@@ -86,7 +98,7 @@ public struct DialogueRenderContext: Sendable {
         Self(projectFingerprint: projectFingerprint, projectUID: projectUID, projectName: projectName,
             projectRange: projectRange, renderedRoles: renderedRoles, audioURL: url,
             controllerEffectUIDs: controllerEffectUIDs, allowOmittedPrivateSettings: allowOmittedPrivateSettings,
-            sourceRange: sourceRange, audioSHA256: audioSHA256, isolatedTargetID: isolatedTargetID)
+            sourceRange: sourceRange, audioSHA256: audioSHA256, isolatedTargetID: isolatedTargetID, projectSlice: projectSlice)
     }
 
 
@@ -201,7 +213,15 @@ public enum ProjectAudioAnalysis {
             try await renderContext.validateArtifact(at: dialogueAudio)
         }
         let audio: DialogueAudio
-        if let isolatedID = renderContext.isolatedTargetID {
+        if renderContext.projectSlice {
+            guard renderContext.isolatedTargetID == target.id,
+                  try DirectAudioRender.isEligible(projectData: projectData, selection: selection) else {
+                throw ProjectAnalysisError.staleRender
+            }
+            audio = try await SourceAudioReader.read(url: dialogueAudio, range: target.timelineRange,
+                timelineStart: target.timelineRange.start, windowDuration: settings.windowDuration,
+                expectedMediaDuration: document.projectRange.checkedDuration(), progress: progress)
+        } else if let isolatedID = renderContext.isolatedTargetID {
             guard isolatedID == target.id else { throw ProjectAnalysisError.staleRender }
             let decoded = try await DialogueAudioReader.read(url: dialogueAudio,
                 expectedDuration: target.timelineRange.checkedDuration(), frameDuration: document.frameDuration,

@@ -142,6 +142,20 @@ enum ImportedSettingsRecovery {
 
     func markComplete() { complete = true }
 
+    private func verifyDestination(_ data: Data) throws {
+        if let replacementTarget {
+            try replacementTarget.verifyDestination(data)
+        } else {
+            let destination = try XMLReplacementTarget(projectData: expected)
+            let actual = try XMLReplacementTarget(projectData: data)
+            guard actual.libraryURL == destination.libraryURL,
+                  actual.eventUID == destination.eventUID, actual.eventName == destination.eventName,
+                  actual.projectName == destination.projectName else {
+                throw EditedProjectWriterError.verificationFailed("the cleaned project is not in the intended event and library")
+            }
+        }
+    }
+
     func verify(capture: () async throws -> Data,
                 restore: (ImportedSettingsRecovery.Correction, TimelineDocument) async throws -> Void) async throws -> ProjectRoundTripReport {
         guard try Data(contentsOf: outputURL) == expected else {
@@ -160,7 +174,7 @@ enum ImportedSettingsRecovery {
                 }
             }
             let actualData = try await capture()
-            try replacementTarget?.verifyDestination(actualData)
+            try verifyDestination(actualData)
             let actualSnapshot = try ProjectRoundTripVerification.Snapshot(data: actualData)
             let comparison = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
                 allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID)
@@ -180,7 +194,7 @@ enum ImportedSettingsRecovery {
                     try await restore(correction, document)
                 }
                 let recoveredData = try await capture()
-                try replacementTarget?.verifyDestination(recoveredData)
+                try verifyDestination(recoveredData)
                 let recoveredSnapshot = try ProjectRoundTripVerification.Snapshot(data: recoveredData)
                 let recovered = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: recoveredSnapshot,
                     allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID)

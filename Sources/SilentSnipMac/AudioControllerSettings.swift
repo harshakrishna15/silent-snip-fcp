@@ -375,15 +375,15 @@ public enum AudioControllerSettingsError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .targetChanged:
-            return "The selected audio-only clip changed. Select the exact clip and Analyze Again."
+            return "The selected clip changed. Select the exact clip and Analyze Again."
         case .missingController:
-            return "The selected audio-only clip does not carry Silent Snip Audio. Select the clip with this effect, or apply Silent Snip Audio to it, then Analyze Again."
+            return "The selected clip does not carry Silent Snip Audio. Select the clip with this effect, or apply Silent Snip Audio to it, then Analyze Again."
         case .ambiguousController:
             return "Multiple Silent Snip Audio effects on this clip. Remove the extra one in the Audio Inspector, then Analyze Again."
         case .disabledController:
             return "The selected Silent Snip Audio effect is disabled. Enable it and Analyze Again."
         case .unsupportedControllerLocation:
-            return "Silent Snip Audio must be applied directly to the selected audio-only clip. Component-level effects are not supported yet."
+            return "Silent Snip Audio must be applied directly to the selected clip. Component-level effects are not supported yet."
         case .unavailableSettings:
             return "Final Cut did not export a complete, supported set of saved Silent Snip Audio controls. Finish updating all four controls, then Analyze Again."
         case .invalidParameter(let name):

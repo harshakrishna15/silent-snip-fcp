@@ -229,15 +229,11 @@ final class FinalCutProjectCaptureTests: XCTestCase {
         XCTAssertThrowsError(try selection(start: "00:00:08:00", end: "00:00:16:00").resolve(in: document, requireExistingMedia: false))
     }
 
-    func testXMLRejectsVideoTargetEvenWhenAccessibilityCallsItAnAudioClip() throws {
+    func testXMLResolvesLinkedVideoRegardlessOfAccessibilityClipDescription() throws {
         let document = try fixture(videoTarget: true)
         let snapshot = try selection(start: "00:00:08:00", end: "00:00:16:00")
-        XCTAssertThrowsError(try snapshot.resolve(in: document, requireExistingMedia: false)) { error in
-            guard case TimelineError.unsupportedTarget(let reasons) = error else {
-                return XCTFail("Unexpected error: \(error)")
-            }
-            XCTAssertTrue(reasons.contains { $0.contains("audio-only") })
-        }
+        let target = try snapshot.resolve(in: document, requireExistingMedia: false).1
+        XCTAssertTrue(target.hasVideo && target.hasAudio)
     }
 
     func testPartialSelectionChangedNameAndProjectAreRejected() throws {

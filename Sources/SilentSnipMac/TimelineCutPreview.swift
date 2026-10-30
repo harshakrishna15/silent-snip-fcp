@@ -257,11 +257,21 @@ struct PreviewSamplePacer {
     struct Boundary: Equatable { let fraction: Double; let isStart: Bool; let number: Int }
     private struct State: Equatable {
         let bounds: CGRect; let width: CGFloat; let origin: CGFloat
-        let boundaries: [Boundary]; let occlusions: [CGRect]; let scale: CGFloat
+        let revision: Int; let occlusions: [CGRect]; let scale: CGFloat
     }
     var clipWidth: CGFloat = 0
     var clipOriginX: CGFloat = 0
-    var boundaries: [Boundary] = []
+    var boundaries: [Boundary] = [] {
+        didSet {
+            guard boundaries != oldValue else { return }
+            boundaryRevision &+= 1
+            indexedBoundaries = boundaries.filter { $0.fraction.isFinite && (0...1).contains($0.fraction) }
+                .sorted { $0.fraction < $1.fraction }
+        }
+    }
+    private var boundaryRevision = 0
+    private var indexedBoundaries: [Boundary] = []
+    private var previousVisible: [Boundary] = []
     var occlusions: [CGRect] = []
     private let content = CALayer()
     private let clipping = CAShapeLayer()
@@ -284,7 +294,7 @@ struct PreviewSamplePacer {
     override func updateLayer() {
         guard let layer, bounds.width > 0, bounds.height > 0 else { return }
         let scale = window?.backingScaleFactor ?? 1
-        let state = State(bounds: bounds, width: clipWidth, origin: clipOriginX, boundaries: boundaries, occlusions: occlusions, scale: scale)
+        let state = State(bounds: bounds, width: clipWidth, origin: clipOriginX, revision: boundaryRevision, occlusions: occlusions, scale: scale)
         // AppKit may replace a view's backing layer while attaching or changing
         // its window. Geometry equality does not prove the retained drawing is
         // still connected to the layer that is actually being displayed.
@@ -294,16 +304,18 @@ struct PreviewSamplePacer {
         defer { CATransaction.commit() }
         if needsAttachment { layer.addSublayer(content); content.mask = clipping; content.masksToBounds = true }
         content.frame = bounds
-        while lines.count > boundaries.count { lines.removeLast().removeFromSuperlayer(); labels.removeLast().removeFromSuperlayer(); labelWidths.removeLast() }
-        while lines.count < boundaries.count {
+        let visible = Self.visibleBoundaries(indexedBoundaries, origin: clipOriginX, clipWidth: clipWidth,
+                                             viewportWidth: bounds.width)
+        while lines.count > visible.count { lines.removeLast().removeFromSuperlayer(); labels.removeLast().removeFromSuperlayer(); labelWidths.removeLast() }
+        while lines.count < visible.count {
             let line = CAShapeLayer(); line.fillColor = nil; line.lineWidth = 2
             let label = CATextLayer(); label.fontSize = 10; label.font = NSFont.boldSystemFont(ofSize: 10)
             label.backgroundColor = NSColor.black.withAlphaComponent(0.85).cgColor
             content.addSublayer(line); content.addSublayer(label)
             lines.append(line); labels.append(label); labelWidths.append(0)
         }
-        let boundariesChanged = previous?.boundaries != boundaries
-        for (index, boundary) in boundaries.enumerated() {
+        let boundariesChanged = previousVisible != visible
+        for (index, boundary) in visible.enumerated() {
             let line = lines[index], label = labels[index]
             let x = clipOriginX + boundary.fraction * clipWidth
             let hidden = boundary.fraction < 0 || boundary.fraction > 1 || x < 0 || x > bounds.width
@@ -327,6 +339,27 @@ struct PreviewSamplePacer {
         for rect in Self.uncoveredRegions(bounds: bounds, occlusions: occlusions) { maskPath.addRect(rect) }
         clipping.frame = bounds; clipping.path = maskPath; clipping.fillColor = NSColor.white.cgColor
         previous = state
+        previousVisible = visible
+    }
+
+    /// Search the sorted index instead of creating and touching layers for all
+    /// offscreen cuts on every scroll or zoom. Endpoints remain inclusive.
+    static func visibleBoundaries(_ sorted: [Boundary], origin: CGFloat, clipWidth: CGFloat,
+                                  viewportWidth: CGFloat) -> [Boundary] {
+        guard clipWidth > 0, viewportWidth > 0, origin.isFinite, clipWidth.isFinite else { return [] }
+        let lower = max(0, -origin / clipWidth)
+        let upper = min(1, (viewportWidth - origin) / clipWidth)
+        guard lower <= upper else { return [] }
+        func index(_ value: Double, after: Bool) -> Int {
+            var low = 0, high = sorted.count
+            while low < high {
+                let middle = low + (high - low) / 2
+                if sorted[middle].fraction < value || (after && sorted[middle].fraction == value) { low = middle + 1 }
+                else { high = middle }
+            }
+            return low
+        }
+        return Array(sorted[index(lower, after: false)..<index(upper, after: true)])
     }
 
     /// Subtract rectangles independently: overlapping occluders cannot reopen a hole.

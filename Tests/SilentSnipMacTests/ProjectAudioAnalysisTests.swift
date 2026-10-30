@@ -75,6 +75,38 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         XCTAssertEqual(try result.review.selectedDuration, RationalTime(4, 5))
     }
 
+    func testVerifiedProjectSliceExcludesPaddingAndNeighborAndRequiresCompleteRender() async throws {
+        let fixture = try fixture()
+        let xml = try String(contentsOf: fixture.xml)
+            .replacingOccurrences(of: "</resources>", with: "<effect id=\"au\" uid=\"\(AudioControllerSettings.effectUID)\"/></resources>")
+            .replacingOccurrences(of: "duration=\"3s\" tcStart=\"0s\"", with: "duration=\"6s\" tcStart=\"7200s\"")
+            .replacingOccurrences(of: "<spine>", with: "<spine><gap offset=\"7200s\" start=\"0s\" duration=\"2s\"/>")
+            .replacingOccurrences(of: "offset=\"0s\"", with: "offset=\"7202s\"")
+            .replacingOccurrences(of: "audioRole=\"dialogue\"/>", with: "audioRole=\"dialogue\"><filter-audio ref=\"au\"/></asset-clip>")
+            .replacingOccurrences(of: "</spine>", with: "<asset-clip ref=\"r2\" offset=\"7205s\" start=\"0s\" duration=\"1s\" audioRole=\"dialogue\"/></spine>")
+        let data = Data(xml.utf8)
+        let document = try TimelineParser.parse(data: data, exclusions: .init(controllerEffectUIDs: [AudioControllerSettings.effectUID]))
+        let selection = TimelineSelection(timelineRange: .init(start: .init(2), end: .init(5)))
+        let target = try document.selectedTarget(selection)
+        // Silence in the lead-in and neighbor must not become target cuts.
+        let render = try wave(frames: 288_000, channels: 2) { frame, _ in
+            (144_000..<192_000).contains(frame) || frame < 96_000 || frame >= 240_000 ? 0 : 8_192
+        }
+        let context = try DialogueRenderContext.capturedProjectSlice(document: document, target: target, audioURL: render)
+        let result = try await ProjectAudioAnalysis.analyze(projectData: data, selection: selection,
+            dialogueAudio: render, renderContext: context, settings: .defaults, jobID: UUID(), capturedMedia: nil)
+        XCTAssertEqual(result.audio.windows.count, 300)
+        XCTAssertEqual(result.audio.windows.first?.range.start, .init(2))
+        XCTAssertEqual(result.audio.windows.last?.range.end, .init(5))
+        XCTAssertEqual(result.review.selectedCuts.map(\.range), [.init(start: .init(31, 10), end: .init(39, 10))])
+        let shortContext = try DialogueRenderContext.capturedProjectSlice(document: document, target: target, audioURL: fixture.audio)
+        do {
+            _ = try await ProjectAudioAnalysis.analyze(projectData: data, selection: selection,
+                dialogueAudio: fixture.audio, renderContext: shortContext, settings: .defaults, jobID: UUID(), capturedMedia: nil)
+            XCTFail("A partial project render must not be accepted as a slice")
+        } catch ProjectAnalysisError.incompleteRender { }
+    }
+
     func testDialogueInSecondChannelProtectsAudioOnlyTarget() async throws {
         let fixture = try fixture(channels: 2) { frame, channel in
             (48_000..<96_000).contains(frame) && channel == 0 ? 0 : 8_192
@@ -144,20 +176,21 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         XCTAssertEqual(try TimelineParser.parse(data: output.xmlData).clips.count, 2)
     }
 
-    func testVideoWithAudioTargetRejectsBeforeOpeningDialogueRender() async throws {
+    func testVideoWithAudioTargetAnalyzesAndCutsLinkedMediaTogether() async throws {
         let fixture = try fixture()
         let xml = try String(contentsOf: fixture.xml)
             .replacingOccurrences(of: "hasAudio=\"1\"", with: "hasVideo=\"1\" hasAudio=\"1\"")
         try xml.write(to: fixture.xml, atomically: true, encoding: .utf8)
         let document = try TimelineParser.parse(url: fixture.xml)
-        let context = try renderContext(fixture, document: document)
-        do {
-            _ = try await ProjectAudioAnalysis.analyze(projectXML: fixture.xml, selection: fixture.selection,
-                dialogueAudio: directory.appendingPathComponent("not-the-render.wav"), renderContext: context)
-            XCTFail("A video-with-audio target must not produce an analysis or reach audio decoding.")
-        } catch TimelineError.unsupportedTarget(let reasons) {
-            XCTAssertTrue(reasons.contains { $0.contains("audio-only") })
-        }
+        let result = try await ProjectAudioAnalysis.analyze(projectXML: fixture.xml, selection: fixture.selection,
+            dialogueAudio: fixture.audio, renderContext: renderContext(fixture, document: document))
+        XCTAssertTrue(result.target.hasVideo && result.target.hasAudio)
+        XCTAssertFalse(result.review.selectedCuts.isEmpty)
+        let output = try EditedProjectWriter.write(projectData: Data(xml.utf8), selection: fixture.selection,
+            selectedRanges: result.review.selectedCuts.map(\.range), outputName: "Camera cleaned")
+        let edited = try TimelineParser.parse(data: output.xmlData)
+        XCTAssertTrue(edited.clips.allSatisfy { $0.hasVideo && $0.hasAudio })
+        XCTAssertEqual(edited.clips.map(\.sourceStart), output.report.retainedSegments.map { $0.sourceRange.start })
     }
 
     func testAudioOnlyTimelineInstanceOfAVSourceRemainsSupported() async throws {
@@ -174,7 +207,7 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         XCTAssertEqual(result.review.selectedCuts.count, 1)
     }
 
-    func testSurroundingVideoRemainsInContextWithoutBecomingAnEditableTarget() async throws {
+    func testConnectedVideoRipplesWithTheTargetAndRemainsInContext() async throws {
         let fixture = try fixture()
         let resource = """
         <asset id="broll" name="B-roll" start="0s" duration="3s" hasVideo="1" hasAudio="0">
@@ -194,8 +227,12 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         XCTAssertFalse(result.target.hasVideo)
         XCTAssertTrue(result.document.clips.contains { $0.name == "B-roll" && $0.hasVideo })
         XCTAssertEqual(result.review.cuts.count, 1)
-        XCTAssertTrue(result.review.selectedCuts.isEmpty)
-        XCTAssertTrue(try XCTUnwrap(result.review.cuts[0].unavailableReason).contains("connected to the selected clip"))
+        XCTAssertEqual(result.review.selectedCuts.count, 1)
+        let output = try EditedProjectWriter.write(projectData: Data(xml.utf8), selection: fixture.selection,
+            selectedRanges: result.review.selectedCuts.map(\.range), outputName: "With B-roll")
+        let connected = try TimelineParser.parse(data: output.xmlData).clips.filter { !$0.isPrimaryStoryline }
+        XCTAssertEqual(connected.count, 2)
+        XCTAssertTrue(connected.allSatisfy { $0.hasVideo && !$0.hasAudio })
 
         let changed = xml.replacingOccurrences(of: "name=\"B-roll\" lane=\"1\" offset=\"1s\"",
                                                with: "name=\"B-roll\" lane=\"1\" offset=\"3/2s\"")

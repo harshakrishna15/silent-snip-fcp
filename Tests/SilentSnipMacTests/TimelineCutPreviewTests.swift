@@ -3,6 +3,26 @@ import XCTest
 @testable import SilentSnipMac
 
 final class TimelineCutPreviewTests: XCTestCase {
+    @MainActor func testZoomedPreviewAllocatesOnlyVisibleBoundariesAndRetainsGlobalNumbers() {
+        let view = CutBoundaryView(frame: CGRect(x: 0, y: 0, width: 500, height: 120))
+        view.wantsLayer = true
+        view.clipWidth = 100_000
+        view.clipOriginX = -50_000
+        view.boundaries = (0...10_000).map { .init(fraction: Double($0) / 10_000, isStart: true, number: $0 + 1) }
+        view.updateLayer()
+        XCTAssertEqual(view.vectorLayerCount, 51, "Offscreen cuts must not allocate thousands of layers")
+        let visible = CutBoundaryView.visibleBoundaries(view.boundaries, origin: view.clipOriginX,
+            clipWidth: view.clipWidth, viewportWidth: view.bounds.width)
+        XCTAssertEqual(visible.first?.number, 5001)
+        XCTAssertEqual(visible.last?.number, 5051)
+        let identities = view.lineLayerIdentities
+        view.clipOriginX = -60_000
+        view.updateLayer()
+        XCTAssertEqual(view.lineLayerIdentities, identities)
+        view.clipWidth = 500; view.clipOriginX = 0; view.updateLayer()
+        XCTAssertEqual(view.vectorLayerCount, 10_001, "Zooming out must restore every boundary")
+    }
+
     func testPositionPollingDoesNotDependOnNotificationsOrAccelerateWithoutBound() {
         let start = Date(timeIntervalSince1970: 100)
         var pacer = PreviewSamplePacer()

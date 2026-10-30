@@ -12,6 +12,8 @@ import Foundation
     public let controllerEffectUIDs: Set<String>
     public let dropFrame: Bool
     let session: FinalCutAXSession
+    var renderedAudio: ShareDestinationReceipt? = nil
+    var renderedMedia: MediaContentSnapshot? = nil
 
     /// Restore the custom Audio Unit view if a host operation displaced it.
     /// A non-nil result explains how to reconnect manually when safe automatic
@@ -36,6 +38,7 @@ import Foundation
 @MainActor public enum FinalCutProjectCapture {
     static func capture(to directory: URL, controllerEffectUIDs: Set<String> = [],
                                timing: AnalysisTiming? = nil,
+                               directRenderHint: DirectAudioRenderHint? = nil,
                                onSession: (FinalCutAXSession) -> Void = { _ in },
                                progress: (String) -> Void = { _ in }) async throws -> CapturedFinalCutProject {
         let timing = timing ?? AnalysisTiming(request: UUID())
@@ -52,7 +55,7 @@ import Foundation
         let selectionBeforeFocus = try? timing.measure("capture.selectionBeforeFocus") { try session.selectionSnapshot() }
         progress("Focusing the project timeline…")
         try await timing.measure("capture.focusBeforeExport") { try await session.focusTimeline() }
-        progress("Reading the selected audio-only timeline clip…")
+        progress("Reading the selected timeline clip…")
         let selected = try timing.measure("capture.selection") { try session.selectionSnapshot() }
         try session.rememberReviewSelection(selected)
         onSession(session)
@@ -68,7 +71,34 @@ import Foundation
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         progress("Exporting the active project XML…")
         let destination = directory.appendingPathComponent("Project-\(UUID()).fcpxmld")
-        let xml = try await timing.measure("capture.xmlExchange") { try await session.exportProjectXML(to: destination, timing: timing) }
+        var rendered: ShareDestinationReceipt?
+        var media: MediaContentSnapshot?
+        var transferred = false
+        defer {
+            if !transferred, let rendered { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: rendered) }
+        }
+        let xml: URL
+        if let hint = directRenderHint, hint.matches(selected) {
+            // Hash the hinted sources BEFORE rendering. Fresh delivered XML must
+            // reference this exact set; changed scope falls back to isolation.
+            media = try await timing.measure("capture.sourceValidationBeforeRender") {
+                try await MediaContentSnapshot.capture(hint.sourceURLs)
+            }
+            progress("Rendering fresh audio and project XML together…")
+            let receipt = try await timing.measure("capture.combinedExchange") {
+                try await session.shareRenderedAudio(timing: timing, renderSelection: hint.scope == .selectedRange ? selected : nil)
+            }
+            rendered = receipt
+            try ShareDestinationManager.shared.validateReceipt(receipt)
+            guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
+            let source = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
+                ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+            xml = destination.appendingPathComponent("Info.fcpxml")
+            try Data(contentsOf: source).write(to: xml, options: .withoutOverwriting)
+        } else {
+            xml = try await timing.measure("capture.xmlExchange") { try await session.exportProjectXML(to: destination, timing: timing) }
+        }
         // The exporter has confirmed this unique output is complete. Until the
         // caller receives it, capture owns cleanup if validation subsequently fails.
         var delivered = false
@@ -88,10 +118,18 @@ import Foundation
             throw FinalCutCaptureError.invalidSelection("The selected timeline clip changed during export.")
         }
         let (selection, target) = try selected.resolve(in: document)
+        if let receipt = rendered, let hint = directRenderHint, let sourceMedia = media,
+           !(try hint.accepts(projectData: data, selection: selection, media: sourceMedia)) {
+            // The hint was stale. These fresh XML bytes still provide the normal
+            // capture, but this full-project audio cannot represent the target.
+            try ShareDestinationManager.shared.cleanupRenderedMedia(receipt: receipt)
+            rendered = nil; media = nil
+        }
         delivered = true
+        transferred = true
         return CapturedFinalCutProject(xmlURL: xml, document: document, selection: selection,
             target: target, projectName: document.projectName, controllerEffectUIDs: controllerEffectUIDs,
-            dropFrame: formats.first == "DF", session: session)
+            dropFrame: formats.first == "DF", session: session, renderedAudio: rendered, renderedMedia: media)
         } catch {
             if let guidance = await session.restoreReviewWindow() {
                 throw FinalCutCaptureError.reviewRestoration(original: error.localizedDescription, guidance: guidance)

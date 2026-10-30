@@ -15,44 +15,52 @@ struct AnalysisCacheKey: Equatable {
 
     static func make(data: Data, document: TimelineDocument, target: TimelineClip,
                      media: MediaContentSnapshot, windowDuration: Double, hostSession: String = "") throws -> Self? {
+        guard try isEligible(data: data, target: target) else { return nil }
+        return Self(fingerprint: document.fingerprint, projectUID: document.projectUID,
+            projectName: document.projectName, targetID: target.id, media: media, windowDuration: windowDuration, hostSession: hostSession)
+    }
+
+    /// Independent of file IO so an ineligible effect chain can start its host
+    /// render while source hashes are being captured off the main actor.
+    static func isEligible(data: Data, target: TimelineClip) throws -> Bool {
         let xml = try XMLDocument(data: data, options: [.nodeLoadExternalEntitiesNever])
         guard let spine = try xml.nodes(forXPath: "//project/sequence/spine").first as? XMLElement,
-              let index = Int(target.id.split(separator: "/").last ?? "") else { return nil }
+              let index = Int(target.id.split(separator: "/").last ?? "") else { return false }
         let clips = spine.children?.compactMap { $0 as? XMLElement } ?? []
-        guard clips.indices.contains(index) else { return nil }
+        guard clips.indices.contains(index) else { return false }
         let effects = try xml.nodes(forXPath: "/fcpxml/resources/effect").compactMap { $0 as? XMLElement }
         let allowed: Set<String> = ["filter-audio", "adjust-volume", "adjust-panner", "audio-channel-source",
             "audio", "fadeIn", "fadeOut", "marker", "chapter-marker", "keyword", "rating", "metadata", "note"]
         for child in clips[index].children?.compactMap({ $0 as? XMLElement }) ?? [] {
-            guard allowed.contains(child.name ?? "") else { return nil }
+            guard allowed.contains(child.name ?? "") else { return false }
         }
         for node in try clips[index].nodes(forXPath: ".//*").compactMap({ $0 as? XMLElement }) {
-            if node.name?.hasPrefix("adjust-") == true && !allowed.contains(node.name!) { return nil }
+            if node.name?.hasPrefix("adjust-") == true && !allowed.contains(node.name!) { return false }
             // Additional audio resources, retiming and nested mixes require a
             // fresh render; their complete inputs are not represented by this cache.
-            if ["timeMap", "filter-video", "ref-clip", "sync-clip", "mc-clip"].contains(node.name ?? "") { return nil }
-            if node.name == "audio", node.attribute(forName: "ref") != nil { return nil }
+            if ["timeMap", "filter-video", "ref-clip", "sync-clip", "mc-clip"].contains(node.name ?? "") { return false }
+            if node.name == "audio", node.attribute(forName: "ref") != nil { return false }
         }
         for filter in try clips[index].nodes(forXPath: ".//filter-audio").compactMap({ $0 as? XMLElement }) {
             let resource = effects.first { $0.attribute(forName: "id")?.stringValue == filter.attribute(forName: "ref")?.stringValue }
-            guard let uid = resource?.attribute(forName: "uid")?.stringValue else { return nil }
+            guard let uid = resource?.attribute(forName: "uid")?.stringValue else { return false }
             if uid == AudioControllerSettings.effectUID { continue }
             // A preset name alone cannot prove its current contents. External
             // or opaque third-party state is deliberately never cache eligible.
-            guard filter.attribute(forName: "presetID") == nil else { return nil }
+            guard filter.attribute(forName: "presetID") == nil else { return false }
             switch uid {
             case "AudioUnit: 0x61756678000000b3454d4147": // Apple's Noise Gate: require the actual AU state
                 guard filter.elements(forName: "data").contains(where: {
                     $0.attribute(forName: "key")?.stringValue == "effectState" &&
                     Data(base64Encoded: $0.stringValue ?? "", options: .ignoreUnknownCharacters)?.isEmpty == false
-                }) else { return nil }
+                }) else { return false }
             // Native effects with only a parameter list are also conservative
             // misses: a partial list does not prove all processing state.
-            default: return nil
+            default: return false
             }
         }
-        return Self(fingerprint: document.fingerprint, projectUID: document.projectUID,
-            projectName: document.projectName, targetID: target.id, media: media, windowDuration: windowDuration, hostSession: hostSession)
+        return true
+
     }
 }
 

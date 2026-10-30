@@ -16,7 +16,8 @@ extension FinalCutAXSession {
     }
 
     func isSilentSnipReviewWindow(_ window: AXUIElement) -> Bool {
-        guard string(window, kAXRoleAttribute) != kAXSheetRole else { return false }
+        guard string(window, kAXRoleAttribute) != kAXSheetRole,
+              !["save-panel", "open-panel", "GoToWindow"].contains(string(window, kAXIdentifierAttribute) ?? "") else { return false }
         let identified = find(in: window, identifier: "silentsnip.status", maxDepth: 16, maxNodes: 250) != nil
             && find(in: window, role: kAXTextFieldRole, identifier: "silentsnip.setting.0", maxDepth: 16, maxNodes: 250) != nil
             && find(in: window, role: kAXButtonRole, identifier: "silentsnip.saveSettings", maxDepth: 16, maxNodes: 250) != nil
@@ -127,6 +128,8 @@ extension FinalCutAXSession {
                 try validate()
                 if try await self.raiseReviewWindow(expected: expected) { return }
                 let deadline = Date().addingTimeInterval(3)
+                var requestedReveal = false
+                var scrollLower = 0.0, scrollUpper = 1.0
                 while Date() < deadline {
                     try Task.checkCancellation()
                     try validate()
@@ -142,6 +145,41 @@ extension FinalCutAXSession {
                         }
                         if let editor = FinalCutReviewInspector.editorIndex(in: descriptors) {
                             try validate()
+                            // Final Cut resets the Inspector viewport after
+                            // reopening a project. Offscreen effect buttons can
+                            // reject AXPress. Reveal this exact controller, then
+                            // resolve its fresh button again before pressing.
+                            guard let point = self.controlCenter(controls[editor]) else {
+                                throw FinalCutCaptureError.unavailable("The Silent Snip editor has no screen bounds.")
+                            }
+                            var hit: AXUIElement?
+                            let visible = AXUIElementCopyElementAtPosition(self.root, Float(point.x), Float(point.y), &hit) == .success
+                                && hit.map { found in CFEqual(found, controls[editor])
+                                    || self.children(controls[editor]).contains(where: { CFEqual($0, found) }) } == true
+                            if !visible {
+                                if !requestedReveal {
+                                    requestedReveal = true
+                                    if AXUIElementPerformAction(controls[editor], "AXScrollToVisible" as CFString) == .success {
+                                        try await Task.sleep(for: .milliseconds(150))
+                                        continue
+                                    }
+                                }
+                                guard let bar = Self.elementAttribute(inspector, kAXVerticalScrollBarAttribute)
+                                    ?? self.children(inspector).first(where: { self.string($0, kAXRoleAttribute) == kAXScrollBarRole }),
+                                      let current = (self.attribute(bar, kAXValueAttribute) as? NSNumber)?.doubleValue,
+                                      let center = self.controlCenter(inspector), current >= 0, current <= 1 else {
+                                    throw FinalCutCaptureError.unavailable("Scroll Silent Snip Audio into view in the Inspector, then reopen Controls.")
+                                }
+                                if point.y > center.y { scrollLower = max(scrollLower, current) }
+                                else { scrollUpper = min(scrollUpper, current) }
+                                let next = (scrollLower + scrollUpper) / 2
+                                guard abs(next - current) > 0.001,
+                                      AXUIElementSetAttributeValue(bar, kAXValueAttribute as CFString, NSNumber(value: next)) == .success else {
+                                    throw FinalCutCaptureError.unavailable("Final Cut could not reveal the Silent Snip editor.")
+                                }
+                                try await Task.sleep(for: .milliseconds(150))
+                                continue
+                            }
                             // AXPress targets this verified Inspector button directly.
                             // The floating AU editor may own keyboard focus; no
                             // keyboard or timeline edit is sent by this operation.

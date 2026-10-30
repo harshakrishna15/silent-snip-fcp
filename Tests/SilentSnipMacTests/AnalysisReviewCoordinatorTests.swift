@@ -532,6 +532,25 @@ import XCTest
         XCTAssertNotNil(preview)
     }
 
+    func testLinkedCameraReviewCanApplyAfterExplicitAnalyze() async throws {
+        let fixture = try makeFixture(camera: true)
+        defer { fixture.remove() }
+        var latest: ReviewResponse?
+        var applied = false
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            applyOperation: { _, _, _ in applied = true }, authorizeApply: { _ in true },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        let request = try makeRequest()
+        coordinator.start(request)
+        try await waitUntil { latest?.state == "review" }
+        XCTAssertTrue(try XCTUnwrap(latest).canApply)
+        XCTAssertFalse(applied)
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: latest?.revision,
+                                 view: UUID(), applyGesture: UUID()))
+        try await waitUntil { applied }
+    }
+
     func testSourceAndIsolatedMusicReviewsCanApply() async throws {
         for isolated in [false, true] {
             let fixture = try makeFixture(role: "music", isolated: isolated)
@@ -914,7 +933,7 @@ import XCTest
             "silentsnip://analyze?request=\(UUID())&threshold=-40&minimum=0.5&before=0.1&after=0.1")))
     }
 
-    private func makeFixture(uniformLevel: Double? = nil, role: String = "dialogue", isolated: Bool = false) throws -> Fixture {
+    private func makeFixture(uniformLevel: Double? = nil, role: String = "dialogue", isolated: Bool = false, camera: Bool = false) throws -> Fixture {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SilentSnipReviewTest-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         do {
@@ -923,7 +942,7 @@ import XCTest
             let xml = """
             <fcpxml version="1.14"><resources>
             <format id="r1" frameDuration="1/30s" width="1920" height="1080"/>
-            <asset id="r2" name="Voice" start="0s" duration="7s" hasAudio="1" audioSources="1" audioChannels="1">
+            <asset id="r2" name="Voice" start="0s" duration="7s" hasAudio="1" hasVideo="\(camera ? "1" : "0")" audioSources="1" audioChannels="1">
             <media-rep kind="original-media" src="\(artifact.absoluteString)"/></asset></resources>
             <library><event><project name="Review Fixture" uid="review-fixture"><sequence format="r1" duration="5s" tcStart="3600s">
             <spine><asset-clip ref="r2" name="Voice" offset="3600s" start="1s" duration="5s" audioRole="\(role)"/></spine>

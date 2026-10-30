@@ -1,19 +1,23 @@
 # Silent Snip
 
-Remove quiet pauses from audio-only clips in Final Cut Pro, with control over which cuts to keep.
+Remove quiet pauses from clips with audio in Final Cut Pro, with control over which cuts to keep.
 
-Silent Snip combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes audio and prepares an editable project that still references your original media.
+Silent Snip combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes the selected clip and creates a cleaned copy of the full project that still references your original media and preserves its audio effects.
 
-> **Integration in progress:** Live source analysis, Noise Gate/Limiter analysis through visible Share, and verification of an existing cut result have passed on disposable fixtures. Fresh automatic Apply and precise settings recovery still need a complete live editing pass. Builds and analysis alone do not establish that automatic cuts work.
+> **Voice-over milestone verified:** Analyze → Apply created and opened separate editable projects in Final Cut Pro 12.4 for plain narration, narration with Noise Gate and Limiter, and one-second-gap output. Original projects and source media were preserved. See [milestone evidence and limits](docs/voiceover-project.md).
+
+The general-project update adds linked camera clips, full-project copies, a guarded direct-render path, overlapping source validation, and viewport-based preview drawing. Native Analyze → Apply passes for camera projects with connected music and preceding dialogue. Fresh manual reanalysis measured about 64–69% lower elapsed time against the recorded audio baseline; first-analysis timing and unsupported project layouts remain documented in [the verification notes](docs/general-project-performance.md).
 
 ## How it works
 
-1. Select one audio-only clip in the primary storyline and add **Silent Snip Audio**.
+1. Select one normal-speed clip with audio in the primary storyline and add **Silent Snip Audio**.
 2. Open **Controls**, adjust silence detection, and click **Analyze**.
-3. Controls returns to the front when analysis finishes. Review the proposed cuts and choose which to include. Detection or output edits update the current review; finish editing a field or press Return to start verification before Apply becomes available.
-4. Click **Apply Cuts** to replace the project in its original event.
+3. Controls returns to the front when analysis finishes. Review the proposed cuts and choose which to include. Changing detection settings or output mode marks the old results as out of date. Click **Analyze Again** manually before Apply becomes available.
+4. Click **Apply Cuts** to create and open a cleaned copy of the full project in the original event. Its retained segments and audio effects stay editable.
 
-Silent Snip saves recovery XML before replacement. Your source media stays unchanged.
+The original project and source media stay unchanged. Silent Snip also saves the original project's recovery XML before importing the result.
+
+The cleaned segments keep your sound-processing effects. Silent Snip's passthrough detector stays on the original recording; its analysis settings are saved with the result.
 
 Final Cut's native Share panels remain visible during automation; no window covers them. Keep Final Cut in front while Silent Snip operates it. Detection settings are available in both Controls and the Audio Inspector so Final Cut can persist them.
 
@@ -26,12 +30,12 @@ reconnection, and source-integrity checks, including limits for older saved resu
 
 - **Two output modes:** remove selected pauses or replace them with one-second gaps.
 - **Review before applying:** per-cut selection and a timeline preview.
-- **Audio processing:** measure source audio for unprocessed clips or a verified isolated Final Cut render for processed clips.
-- **Faster tuning:** update cuts from the current review's retained measurements, with Apply disabled until fresh checks pass. A new Analyze can also reuse matching verified measurements.
+- **Audio processing:** measure source audio for unprocessed clips or a verified Final Cut render for processed clips.
+- **Manual analysis:** tweak values freely, then click Analyze. Old cuts stay inactive until the new analysis finishes; eligible requests can reuse matching verified measurements internally.
 
 Detection uses loudness, so quiet breaths can qualify as silence. It does not recognize speech or breaths.
 
-Targets must be normal-speed, audio-only clips. Retimed or nested targets, linked-video cutting, component trims, unsupported connections, and cuts crossing fades are outside scope. See [compatibility details](docs/workflow.md#2-select-the-audio-clip) and [analysis behavior](docs/analysis-speed.md).
+Targets must be normal-speed direct asset clips with enabled audio in the primary storyline. Linked video and audio are cut together. Retimed or nested targets, split A/V edits, component trims, unsupported connections, and cuts crossing fades remain outside scope. See [compatibility details](docs/workflow.md#2-select-the-audio-clip) and [analysis behavior](docs/analysis-speed.md).
 
 ## Requirements
 
@@ -52,7 +56,7 @@ Start with **Silent Snip.zip**. You do not need the repository, Xcode, Terminal,
 3. **Open Silent Snip once.** A scissors icon appears in the menu bar. Its menu shows access status and provides saved results and Quit.
 4. **Grant control access.** Open **System Settings → Privacy & Security → Device Control and Data Access** (called **Accessibility** on earlier macOS versions). Enable **Silent Snip**. If it is missing, click **+** and select the app you copied into Applications.
 5. **Set up Final Cut Share.** In **Final Cut Pro → Settings → Destinations**, add **Export File**, name it **Silent Snip**, and choose **Audio Only → WAV**. Under **Action → Other…**, select that same **Silent Snip.app** in Applications.
-6. **Add the effect.** In Final Cut’s Effects browser, add **Silent Snip Audio** to an audio-only clip. Open **Controls**, adjust detection, and choose **Analyze**. Review the ranges before choosing **Apply Cuts**.
+6. **Add the effect.** In Final Cut’s Effects browser, add **Silent Snip Audio** to a normal-speed clip with audio. Open **Controls**, adjust detection, and choose **Analyze**. Review the ranges before choosing **Apply Cuts**.
 
 **Upgrading from an older version:** this release uses a fresh app identity. Grant access to **Silent Snip**, remove obsolete app permission entries, and reselect the new app as the Share action. Old settings are not migrated; old files are left on disk.
 
@@ -75,7 +79,7 @@ For development, `Scripts/build.sh` builds a Debug app and registers it in place
 
 The app also reduces repeated Final Cut control searches while keeping fresh project and selection checks. See [lookup changes and performance verification](docs/accessibility-speed.md).
 
-XML-only exports can finish as soon as a complete, unchanged document is closed by its producer; unsupported systems retain the stability fallback. See [faster exports and settings previews](docs/fast-review.md) for behavior, measurements, and verification limits.
+XML-only exports can finish as soon as a complete, unchanged document is closed by its producer; unsupported systems retain the stability fallback. See [faster exports and manual analysis](docs/fast-review.md) for behavior, measurements, and verification limits.
 
 ## Storage and cleanup
 
@@ -119,7 +123,9 @@ Follow [integration-test setup](docs/setup.md#integration-test-library) and [AGE
 
 ## Verified in this repository copy
 
-Recorded validation includes 442 Swift tests (one existing skip, no failures), 60 audio render/persistence cases, 35 Controls checks, and 53 build-script tests. Current native results and their limits are recorded in [the prototype report](docs/quiet-share-feasibility.md). A verified retry of an existing result does not establish a fresh unattended Analyze → Apply pass.
+The October 28 voice-over build passed 436 Swift tests (one existing skip, no failures), 60 audio render/persistence cases, 35 Controls checks, and 53 build-script tests. Fresh native Analyze → Apply runs passed for plain removal, processed removal, and processed gaps in the required integration library. A separate existing-result verification reused the same project UUID without importing again. See [the milestone report](docs/voiceover-project.md) for evidence and remaining limits; quiet Share feasibility remains documented separately in [the prototype report](docs/quiet-share-feasibility.md).
+
+The manual-Analyze update passed 30 Controls scenarios plus startup/protocol checks and the same 436 Swift checks (one skip). Native testing confirmed that edits, field blur, Save, and idle time do not analyze automatically; a manual Analyze Again followed by Apply verified successfully. See [manual Analyze evidence](docs/fast-review.md#manual-analyze-verification--october-28).
 
 <details>
 <summary>Recorded results — September 2026</summary>

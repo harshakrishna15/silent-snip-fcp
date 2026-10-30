@@ -68,6 +68,52 @@ final class MediaContentSnapshotTests: XCTestCase {
         XCTAssertEqual(reads.count, 0)
     }
 
+    func testConcurrentMutationBeforeHashReachesSourceIsRejected() async throws {
+        let source = directory.appendingPathComponent("source.wav")
+        try Data([1, 2, 3]).write(to: source)
+        let prepared = try MediaContentSnapshot.prepareRead([source])
+        try Data([3, 2, 1]).write(to: source)
+        do { _ = try await MediaContentSnapshot.capture(prepared: prepared); XCTFail("Rendering must not race the initial source hash") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
+    func testMutationDuringHashIsRejected() async throws {
+        let source = directory.appendingPathComponent("source.wav")
+        try Data([1, 2, 3]).write(to: source)
+        do {
+            _ = try await MediaContentSnapshot.capture([source]) { url in
+                try Data([3, 2, 1]).write(to: url)
+                return try MediaContentSnapshot.contentHash(at: url)
+            }
+            XCTFail("The initial hash must cover a stable source")
+        } catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
+    func testSourceChangedThenRestoredDuringRenderStillRejects() async throws {
+        let source = directory.appendingPathComponent("source.wav")
+        let data = Data([1, 2, 3])
+        try data.write(to: source)
+        let snapshot = try await MediaContentSnapshot.capture([source])
+        try Data([3, 2, 1]).write(to: source)
+        try data.write(to: source)
+        XCTAssertEqual(try MediaContentSnapshot.contentHash(at: source), snapshot.hashes[source])
+        do { try await snapshot.validate(); XCTFail("A transient source mutation can contaminate an overlapping render") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
+    func testLegacyRecoveryReceiptRetainsFullContentVerification() async throws {
+        let source = directory.appendingPathComponent("source.wav")
+        try Data([1, 2, 3]).write(to: source)
+        let snapshot = try await MediaContentSnapshot.capture([source])
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any])
+        object.removeValue(forKey: "stamps")
+        let legacy = try JSONDecoder().decode(MediaContentSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        try await legacy.validate()
+        try Data([3, 2, 1]).write(to: source)
+        do { try await legacy.validate(); XCTFail("Legacy recovery must still hash source contents") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
     private final class Reads: @unchecked Sendable {
         private let lock = NSLock()
         private var value = 0

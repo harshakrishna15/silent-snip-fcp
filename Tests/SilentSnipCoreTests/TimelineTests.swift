@@ -257,11 +257,8 @@ final class TimelineTests: XCTestCase {
         XCTAssertEqual(video.sourceFileStart, .zero)
         XCTAssertEqual(video.dialogueRoles, ["dialogue"])
         XCTAssertTrue(video.hasVideo && video.hasAudio)
-        XCTAssertThrowsError(try doc.selectedTarget(.init(timelineRange: range(0, 10)), requireExistingMedia: false)) {
-            XCTAssertEqual($0 as? TimelineError, .unsupportedTarget([
-                "Silent Snip supports audio-only timeline clips; video clips with audio are not supported"
-            ]))
-        }
+        XCTAssertEqual(try doc.selectedTarget(.init(timelineRange: range(0, 10)), requireExistingMedia: false), video)
+
         XCTAssertEqual(doc.markers.count, 1)
         XCTAssertEqual(doc.markers[0].timelinePosition, RationalTime(4))
         XCTAssertEqual(doc.markers[0].sourcePosition, RationalTime(4))

@@ -52,6 +52,8 @@ extension FinalCutAXSession {
         })
     }
 
+    func selectClipRangeCommand() async throws { try await rangeCommand(.clip) }
+
     private func hasTimelineRanges() throws -> Bool {
         try assertInputFocus()
         try refreshTimeline()

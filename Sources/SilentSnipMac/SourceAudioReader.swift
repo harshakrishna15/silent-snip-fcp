@@ -7,6 +7,7 @@ import Foundation
 public enum SourceAudioReader {
     public static func read(url: URL, range: TimeRange, timelineStart: RationalTime,
                             windowDuration: Double,
+                            expectedMediaDuration: RationalTime? = nil,
                             progress: @Sendable (Double) -> Void = { _ in }) async throws -> DialogueAudio {
         guard url.isFileURL, range.start >= .zero, !range.isEmpty,
               windowDuration.isFinite, windowDuration > 0 else { throw SourceAudioError.invalidRange }
@@ -19,6 +20,11 @@ public enum SourceAudioReader {
         let rate = format.sampleRate
         guard rate.isFinite, rate >= 1, rate <= 768_000, rate.rounded() == rate,
               format.channelCount > 0, format.channelCount <= 64 else { throw SourceAudioError.invalidAudio }
+        if let expectedMediaDuration {
+            guard abs(Double(file.length) / rate - expectedMediaDuration.seconds) <= 1.1 / rate else {
+                throw ProjectAnalysisError.incompleteRender
+            }
+        }
         let firstValue = ceil(range.start.seconds * rate)
         let endValue = floor(range.end.seconds * rate)
         let capacity = (windowDuration * rate).rounded()

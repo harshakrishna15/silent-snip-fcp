@@ -56,8 +56,8 @@ public struct TimelineClip: Codable, Hashable, Sendable, Identifiable {
     public let lane: Int
     public let isPrimaryStoryline: Bool
     public let enabled: Bool
-    /// Whether this timeline instance includes video. Video items remain part of
-    /// project context, but cannot be selected as Silent Snip's audio-only target.
+    /// Whether this timeline instance includes video. Cuts retain linked video
+    /// and audio together to preserve source synchronization.
     public let hasVideo: Bool
     /// Whether source audio is present and enabled in this timeline instance.
     public let hasAudio: Bool
@@ -122,7 +122,7 @@ public struct TimelineDocument: Codable, Sendable {
 
     public static let missingDialogueWarning = "No enabled Dialogue role or Dialogue subrole was found. Do not treat an absent dialogue export as silence."
 
-    /// Selects one direct, normal-speed audio-only primary-storyline instance.
+    /// Selects one direct, normal-speed primary-storyline instance with audio.
     /// Other timeline items remain available for dialogue context and validation.
     public func selectedTarget(_ selection: TimelineSelection, requireExistingMedia: Bool = true) throws -> TimelineClip {
         let matches = clips.filter { clip in
@@ -133,9 +133,6 @@ public struct TimelineDocument: Codable, Sendable {
         guard !matches.isEmpty else { throw TimelineError.targetNotFound }
         guard matches.count == 1 else { throw TimelineError.ambiguousTarget }
         let target = matches[0]
-        guard !target.hasVideo else {
-            throw TimelineError.unsupportedTarget(["Silent Snip supports audio-only timeline clips; video clips with audio are not supported"])
-        }
         guard target.unsupportedReasons.isEmpty else { throw TimelineError.unsupportedTarget(target.unsupportedReasons) }
         guard target.hasAudio else { throw TimelineError.unsupportedTarget(["enabled source audio is required"]) }
         guard let mediaURL = target.mediaURL, mediaURL.isFileURL else {
@@ -160,6 +157,20 @@ public struct TimelineDocument: Codable, Sendable {
             protected.append(.init(range: .init(start: try target.timelineRange.end.subtracting(min(duration, target.audioFadeOut)),
                 end: target.timelineRange.end), reason: "Preserve the original fade-out curve"))
         }
+        for clip in clips where clip.enabled && canRippleConnection(clip) {
+            if clip.audioFadeIn > .zero {
+                let end = try clip.timelineRange.start.adding(min(clip.timelineRange.duration, clip.audioFadeIn))
+                if let overlap = target.timelineRange.intersection(.init(start: clip.timelineRange.start, end: end)) {
+                    protected.append(.init(range: overlap, reason: "Preserve connected fade-in: \(clip.name)"))
+                }
+            }
+            if clip.audioFadeOut > .zero {
+                let start = try clip.timelineRange.end.subtracting(min(clip.timelineRange.duration, clip.audioFadeOut))
+                if let overlap = target.timelineRange.intersection(.init(start: start, end: clip.timelineRange.end)) {
+                    protected.append(.init(range: overlap, reason: "Preserve connected fade-out: \(clip.name)"))
+                }
+            }
+        }
         return protected + clips.compactMap { clip in
             guard clip.id != target.id, clip.enabled,
                   let overlap = clip.timelineRange.intersection(target.timelineRange) else { return nil }
@@ -177,12 +188,13 @@ public struct TimelineDocument: Codable, Sendable {
     }
 
     /// Match the XML writer's connection restrictions before presenting cuts.
-    /// A connection on the target or an unresolved nested item blocks every
-    /// cut; other connections block the portion that cannot ripple safely.
+    /// Direct connections can ripple through the same cut map. Unresolved
+    /// nested items retain conservative synchronization restrictions.
     func automaticCutRestrictions(for target: TimelineClip) throws -> [TimelineProtectedRange] {
         var restrictions = try protectedRanges(for: target)
         let primary = clips.filter(\.isPrimaryStoryline)
         for clip in clips where !clip.isPrimaryStoryline {
+            if canRippleConnection(clip) { continue }
             if clip.id.hasPrefix(target.id + "/") {
                 restrictions.append(.init(range: target.timelineRange,
                     reason: "An item is connected to the selected clip: \(clip.name)"))
@@ -206,5 +218,13 @@ public struct TimelineDocument: Codable, Sendable {
             }
         }
         return restrictions
+    }
+
+    /// Structural eligibility only. The XML writer separately validates source
+    /// trims, effect/annotation syntax, fades, and exact output preservation.
+    public func canRippleConnection(_ clip: TimelineClip) -> Bool {
+        !clip.isPrimaryStoryline && clip.kind == "asset-clip" && clip.lane != 0 && !clip.hasUnresolvedTiming &&
+        clips.contains { $0.isPrimaryStoryline && $0.id == clip.parentID } &&
+        !clips.contains { $0.parentID == clip.id }
     }
 }

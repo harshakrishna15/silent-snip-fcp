@@ -61,14 +61,16 @@ extension FinalCutAXSession {
         do {
             _ = try await browserSession.selectBrowserProject(named: name)
             try await browserSession.pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
-        } catch FinalCutCaptureError.changedProject {
+        } catch {
             // A first import can open the exact generated project while we
-            // navigate. Accept that host transition only after re-pinning to
-            // the same window; semantic XML verification still follows.
+            // navigate, including between a menu-state check and its error.
+            // Accept only the exact same-window destination after re-pinning;
+            // no navigation is repeated and semantic XML verification follows.
+            try Task.checkCancellation()
             if let current = try? FinalCutAXSession(),
                current.application.processIdentifier == application.processIdentifier,
                CFEqual(current.mainWindow, mainWindow), current.projectName == name { return current }
-            throw FinalCutCaptureError.changedProject
+            throw error
         }
         return try await browserSession.waitForProject(named: name)
     }

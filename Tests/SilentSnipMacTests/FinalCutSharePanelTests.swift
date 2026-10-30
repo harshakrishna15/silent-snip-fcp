@@ -56,7 +56,7 @@ final class FinalCutSharePanelTests: XCTestCase {
     }
 
     func testDialogueVerificationRejectsWrongMixAndAmbiguousPreset() {
-        let labels = ["All Dialogue", "1 file", ".wav", "Audio Track - 1"]
+        let labels = ["1 file", ".wav", "Audio Track - 1", "All Dialogue", "Roles as:"]
             .enumerated().map { control($0.offset, kAXStaticTextRole, title: $0.element) }
         let preset = control(4, kAXPopUpButtonRole, value: "WAV", description: "Roles formats and presets")
         XCTAssertTrue(Panel(controls: labels + [preset]).verifiesDialogueWAV)
@@ -70,6 +70,39 @@ final class FinalCutSharePanelTests: XCTestCase {
                 description: "Roles formats and presets")]).verifiesDialogueWAV)
         }
         XCTAssertFalse(Panel(controls: Array(labels.dropLast()) + [preset]).verifiesDialogueWAV)
+    }
+
+    func testSeparateFilesSelectsOnlyWholeNonDialogueOutputs() {
+        func layout(_ roles: [[String]], preset: String = "Audio Only as Separate Files (edited)") -> Panel {
+            var controls = [control(0, kAXStaticTextRole, title: "\(roles.count) file"),
+                control(1, kAXPopUpButtonRole, value: preset, description: "Roles formats and presets")]
+            for (index, fileRoles) in roles.enumerated() {
+                controls += [control(10 + index * 20, kAXStaticTextRole, title: ".wav"),
+                    control(11 + index * 20, kAXButtonRole, title: "Remove audio track/file"),
+                    control(12 + index * 20, kAXPopUpButtonRole, value: "Stereo", description: "Audio Channels")]
+                for (roleIndex, role) in fileRoles.enumerated() {
+                    controls += [control(13 + index * 20 + roleIndex * 2, kAXButtonRole, title: "Remove", description: "Remove role"),
+                        control(14 + index * 20 + roleIndex * 2, kAXStaticTextRole, title: role)]
+                }
+            }
+            return Panel(controls: controls)
+        }
+        let mixed = layout([["All Dialogue"], ["All Music"], ["All Effects"]])
+        XCTAssertFalse(mixed.verifiesDialogueWAV)
+        XCTAssertEqual(mixed.unwantedAudioFile?.element, 31)
+        let cleaned = layout([["All Dialogue"]])
+        XCTAssertTrue(cleaned.verifiesDialogueWAV)
+        XCTAssertNil(cleaned.unwantedAudioFile)
+        for bad in [layout([["All Dialogue", "All Music"]]), layout([["All Dialogue", "Ambience"]]),
+                    layout([["All Dialogue"], ["All Dialogue"]]), layout([["All Dialogue"], ["Unknown"]]),
+                    layout([["All Dialogue"]], preset: "Custom")] {
+            XCTAssertFalse(bad.verifiesDialogueWAV)
+            XCTAssertNil(bad.unwantedAudioFile)
+        }
+        var unknownMix = ["1 file", ".wav", "Audio Track - 1", "All Dialogue", "Ambience", "Roles as:"]
+            .enumerated().map { control($0.offset, kAXStaticTextRole, title: $0.element) }
+        unknownMix.append(control(100, kAXPopUpButtonRole, value: "WAV", description: "Roles formats and presets"))
+        XCTAssertFalse(Panel(controls: unknownMix).verifiesDialogueWAV)
     }
 
     func testBoundsAndDeadlineRejectIncompleteSnapshots() {

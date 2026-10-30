@@ -3,7 +3,7 @@ import SilentSnipCore
 import Foundation
 
 /// Connects explicit effect-window actions to capture, PCM analysis and XML
-/// project replacement. Recovery XML is saved before replacing the project; source media is unchanged.
+/// creation of a separate, editable project copy. The original project and source media stay unchanged.
 @MainActor public final class InteractiveAudioSession {
     private struct Context {
         let capture: CapturedFinalCutProject
@@ -12,6 +12,7 @@ import Foundation
     }
     private let preview = TimelineCutPreview()
     private let analysisCache = AnalysisCache()
+    private var directRenderHint: DirectAudioRenderHint?
     public var onPreviewReady: ((UUID, ReviewAnalysisResult) -> Void)?
     private var reviewSession: FinalCutAXSession?
     public private(set) var reviewRequestID: UUID?
@@ -75,6 +76,7 @@ import Foundation
         reviewRequestID = nil
         verifications.removeAll()
         analysisCache.clear()
+        directRenderHint = nil
     }
 
     public func analyze(_ request: AnalyzeRequest,
@@ -90,11 +92,13 @@ import Foundation
         defer { timing.save(to: directory.appendingPathComponent("Analysis-Timing.json"),
             outcome: Task.isCancelled ? "cancelled" : outcome) }
         timing.begin("capture")
+        let renderHint = directRenderHint
+        directRenderHint = nil // A failed/stale hint must not loop on the next click.
         let capture: CapturedFinalCutProject
         do {
             capture = try await FinalCutProjectCapture.capture(to: directory,
                 controllerEffectUIDs: [AudioControllerSettings.effectUID],
-                timing: timing,
+                timing: timing, directRenderHint: renderHint,
                 onSession: { if !Task.isCancelled { self.reviewSession = $0 } }) { progress($0, nil) }
         } catch {
             try? Data(error.localizedDescription.utf8).write(
@@ -103,10 +107,11 @@ import Foundation
         }
         try Task.checkCancellation()
         reviewSession = capture.session
-        var renderedReceipt: ShareDestinationReceipt?
+        var renderedReceipt: ShareDestinationReceipt? = capture.renderedAudio
         var cleanup: (IsolatedAudioProject, Data)?
         var importedAnalysisName: String?
         var cleanupNotice: String?
+        var renderedInOriginal = false
         defer { if let receipt = renderedReceipt { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: receipt) } }
         do {
             // One immutable input for routing, isolation, analysis, and preflight.
@@ -115,14 +120,20 @@ import Foundation
                 requested: request.settings)
             timing.begin("sourceValidation")
             progress("Checking source media before analysis…", nil)
-            let media = try await Self.mediaSnapshot(capture.document)
+            let mediaReadGuard = try MediaContentSnapshot.prepareRead(capture.document.clips.filter(\.enabled).compactMap(\.mediaURL))
+            async let pendingMedia = Self.mediaSnapshot(capture.document, renderedMedia: capture.renderedMedia, prepared: mediaReadGuard)
+            let cacheEligible = try AnalysisCacheKey.isEligible(data: projectData, target: capture.target)
+            // Ineligible effects must render on every manual Analyze. Overlap
+            // their host exchange with hashing, then join before accepting PCM.
+            let earlyMedia: MediaContentSnapshot?
+            if cacheEligible { earlyMedia = try await pendingMedia } else { earlyMedia = nil }
             guard let sourceURL = capture.target.mediaURL else { throw SourceAudioError.invalidAudio }
             let route = try ClipAudioAnalysisRoute.resolve(projectData: projectData,
                 selection: capture.selection)
             timing.begin("cacheValidationAndRecalculation")
-            let key = try AnalysisCacheKey.make(data: projectData, document: capture.document, target: capture.target,
+            let key = try earlyMedia.flatMap { media in try AnalysisCacheKey.make(data: projectData, document: capture.document, target: capture.target,
                 media: media, windowDuration: request.settings.windowDuration,
-                hostSession: "\(capture.session.application.processIdentifier):\(capture.session.application.launchDate?.timeIntervalSince1970 ?? 0)")
+                hostSession: "\(capture.session.application.processIdentifier):\(capture.session.application.launchDate?.timeIntervalSince1970 ?? 0)") }
             let cached = try await analysisCache.reuse(key: key, document: capture.document, target: capture.target,
                 settings: request.settings, jobID: request.id)
             timing.cache = key == nil ? "ineligible: processing state cannot be verified" : (cached == nil ? "miss" : "hit")
@@ -131,7 +142,7 @@ import Foundation
             if let cached {
                 progress("Reusing verified audio measurements with the current detection settings…", nil)
                 timing.begin("sourceValidationAfterReuse")
-                try await media.validate()
+                try await pendingMedia.validate()
                 analyzed = cached
                 scopeNotice = "Reused verified audio measurements after checking the current project and source contents."
             } else {
@@ -140,47 +151,92 @@ import Foundation
                 switch route {
                 case .source:
                     boundContext = try DialogueRenderContext.capturedSource(document: capture.document,
-                        target: capture.target, media: media)
+                        target: capture.target, media: try await pendingMedia)
                     audioURL = sourceURL
                     scopeNotice = "Analyzed original audio; this clip has no audio adjustments or processing effects."
                 case .finalCutRender:
-                    timing.begin("renderPreparation")
-                    let isolated = try IsolatedAudioProject.make(projectData: projectData, selection: capture.selection)
-                    let isolatedURL = directory.appendingPathComponent("Isolated.fcpxml")
-                    try isolated.data.write(to: isolatedURL, options: .withoutOverwriting)
-                    progress("Opening an isolated copy of the selected clip…", nil)
-                    importedAnalysisName = isolated.name
-                    try await XMLProjectApply.importIntoFinalCut(isolatedURL)
-                    let isolatedSession = try await capture.session.openImportedProject(named: isolated.name, importedXML: isolatedURL)
-                    do {
-                        timing.begin("render")
-                        progress("Rendering the isolated clip with its effects…", nil)
-                        let receipt = try await isolatedSession.shareRenderedAudio(timing: timing)
-                        renderedReceipt = receipt
+                    if let renderScope = try DirectAudioRender.scope(projectData: projectData, selection: capture.selection) {
+                        timing.recordCounters(["directRender.scope." + renderScope.rawValue: 1])
+                        timing.begin("directRender")
+                        progress("Rendering the selected clip with its effects…", nil)
+                        let receipt: ShareDestinationReceipt
+                        if let combined = capture.renderedAudio {
+                            receipt = combined
+                        } else {
+                            let renderSelection: FinalCutSelectionSnapshot?
+                            if renderScope != .selectedRange { renderSelection = nil }
+                            else {
+                                guard let active = capture.session.reviewOwnership.active else { throw AudioControllerSettingsError.targetChanged }
+                                renderSelection = active
+                            }
+                            receipt = try await capture.session.shareRenderedAudio(timing: timing, renderSelection: renderSelection)
+                            renderedReceipt = receipt
+                        }
                         guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
                         try ShareDestinationManager.shared.validateReceipt(receipt)
                         let deliveredXML = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
                             ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
-                        // The render delivers its own project XML. Compare that
-                        // directly with the intended isolation before using any PCM,
-                        // binding the host-assigned UUID here. A preceding XML-only
-                        // Share would duplicate this same semantic verification.
-                        timing.begin("renderVerification")
-                        progress("Verifying the rendered clip and its effects…", nil)
                         let deliveredData = try Data(contentsOf: deliveredXML)
-                        try ProjectRoundTripVerification.verify(expected: isolated.data, actual: deliveredData,
-                            reportURL: directory.appendingPathComponent("Render-Verification.json"), allowHostAssignedIdentity: true)
-                        try isolated.destination.verifyDestination(deliveredData)
-                        cleanup = (isolated, deliveredData)
+                        timing.begin("directRenderVerification")
+                        // The same exchange delivers PCM and fresh XML. Identity,
+                        // source trim, effects and scope all remain authoritative.
+                        try ProjectRoundTripVerification.verify(expected: projectData, actual: deliveredData,
+                            reportURL: directory.appendingPathComponent("Render-Verification.json"))
+                        guard try DirectAudioRender.scope(projectData: deliveredData, selection: capture.selection) == renderScope else {
+                            throw ProjectAnalysisError.staleRender
+                        }
+                        try await capture.session.focusTimeline()
+                        guard try capture.session.selectionSnapshot() == capture.session.reviewOwnership.active else {
+                            throw AudioControllerSettingsError.targetChanged
+                        }
                         audioURL = receipt.mediaURLs[0]
-                        boundContext = try DialogueRenderContext.capturedIsolated(document: capture.document, target: capture.target, audioURL: audioURL)
-                        timing.begin("returnToOriginal")
-                        _ = try await isolatedSession.returnToPreviousProject(named: capture.projectName)
-                    } catch {
-                        _ = try? await Task { @MainActor in
-                            try await isolatedSession.returnToPreviousProject(named: capture.projectName)
-                        }.value
-                        throw error
+                        if renderScope == .projectSlice {
+                            boundContext = try DialogueRenderContext.capturedProjectSlice(document: capture.document,
+                                target: capture.target, audioURL: audioURL)
+                        } else {
+                            boundContext = try DialogueRenderContext.capturedIsolated(document: capture.document,
+                                target: capture.target, audioURL: audioURL)
+                        }
+                        renderedInOriginal = true
+                    } else {
+                        timing.begin("renderPreparation")
+                        let isolated = try IsolatedAudioProject.make(projectData: projectData, selection: capture.selection)
+                        let isolatedURL = directory.appendingPathComponent("Isolated.fcpxml")
+                        try isolated.data.write(to: isolatedURL, options: .withoutOverwriting)
+                        progress("Opening an isolated copy of the selected clip…", nil)
+                        importedAnalysisName = isolated.name
+                        try await XMLProjectApply.importIntoFinalCut(isolatedURL)
+                        let isolatedSession = try await capture.session.openImportedProject(named: isolated.name, importedXML: isolatedURL)
+                        do {
+                            timing.begin("render")
+                            progress("Rendering the isolated clip with its effects…", nil)
+                            let receipt = try await isolatedSession.shareRenderedAudio(timing: timing)
+                            renderedReceipt = receipt
+                            guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
+                            try ShareDestinationManager.shared.validateReceipt(receipt)
+                            let deliveredXML = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
+                                ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
+                            // The render delivers its own project XML. Compare that
+                            // directly with the intended isolation before using any PCM,
+                            // binding the host-assigned UUID here. A preceding XML-only
+                            // Share would duplicate this same semantic verification.
+                            timing.begin("renderVerification")
+                            progress("Verifying the rendered clip and its effects…", nil)
+                            let deliveredData = try Data(contentsOf: deliveredXML)
+                            try ProjectRoundTripVerification.verify(expected: isolated.data, actual: deliveredData,
+                                reportURL: directory.appendingPathComponent("Render-Verification.json"), allowHostAssignedIdentity: true)
+                            try isolated.destination.verifyDestination(deliveredData)
+                            cleanup = (isolated, deliveredData)
+                            audioURL = receipt.mediaURLs[0]
+                            boundContext = try DialogueRenderContext.capturedIsolated(document: capture.document, target: capture.target, audioURL: audioURL)
+                            timing.begin("returnToOriginal")
+                            _ = try await isolatedSession.returnToPreviousProject(named: capture.projectName)
+                        } catch {
+                            _ = try? await Task { @MainActor in
+                                try await isolatedSession.returnToPreviousProject(named: capture.projectName)
+                            }.value
+                            throw error
+                        }
                     }
                     scopeNotice = "Analyzed Final Cut’s rendered audio, including clip volume and enabled effects."
                 }
@@ -188,7 +244,7 @@ import Foundation
                 analyzed = try await ProjectAudioAnalysis.analyze(projectData: projectData,
                     selection: capture.selection, dialogueAudio: audioURL,
                     renderContext: boundContext, settings: request.settings, jobID: request.id,
-                    capturedMedia: route == .source ? media : nil,
+                    capturedMedia: route == .source ? try await pendingMedia : nil,
                     progress: { fraction in
                         Task { @MainActor in progress(route == .source
                             ? "Measuring selected source audio…" : "Measuring audio rendered by Final Cut…", fraction) }
@@ -199,24 +255,29 @@ import Foundation
                         }
                     }, detecting: { await MainActor.run { timing.begin("detection") } })
             }
+            let media = try await pendingMedia
+            try mediaReadGuard.validate()
             if route == .finalCutRender && cached == nil {
                 timing.begin("sourceValidationAfterRender")
                 try await media.validate()
-                timing.begin("originalProjectVerification")
-                progress("Checking the original project after rendering…", nil)
-                let restored = try FinalCutAXSession()
-                guard restored.projectName == capture.projectName else { throw FinalCutCaptureError.changedProject }
-                let restoredURL = try await restored.exportProjectXML(to: directory.appendingPathComponent("After-Isolation.fcpxmld"), timing: timing)
-                let restoredDocument = try TimelineParser.parse(url: restoredURL, exclusions: analyzed.dialogueContext.fingerprintExclusions)
-                try XMLProjectApply.verifyBaseline(restoredDocument, analyzed: capture.document)
-                capture.session.lastXMLShareDirectory = restored.lastXMLShareDirectory
+                if !renderedInOriginal {
+                    timing.begin("originalProjectVerification")
+                    progress("Checking the original project after rendering…", nil)
+                    let restored = try FinalCutAXSession()
+                    guard restored.projectName == capture.projectName else { throw FinalCutCaptureError.changedProject }
+                    let restoredURL = try await restored.exportProjectXML(to: directory.appendingPathComponent("After-Isolation.fcpxmld"), timing: timing)
+                    let restoredDocument = try TimelineParser.parse(url: restoredURL, exclusions: analyzed.dialogueContext.fingerprintExclusions)
+                    try XMLProjectApply.verifyBaseline(restoredDocument, analyzed: capture.document)
+                    capture.session.lastXMLShareDirectory = restored.lastXMLShareDirectory
+                }
             }
             timing.begin("previewPreparation")
             // Prove that the selected cuts can be represented before enabling Apply.
             if !analyzed.review.selectedCuts.isEmpty {
                 _ = try EditedProjectWriter.write(projectData: projectData,
                     selection: capture.selection, selectedRanges: analyzed.review.selectedCuts.map(\.range),
-                    outputName: capture.projectName + " — Silent Snip")
+                    outputName: Self.outputName(clip: capture.target, request: request.id),
+                    selectedClipOnly: false, useOriginalEvent: true, omitController: true)
             }
             contexts[request.id] = Context(capture: capture,
                 directory: directory, mediaSnapshot: media)
@@ -251,9 +312,15 @@ import Foundation
             let notice = await capture.presentReviewWindow()
             recordPresentation(notice, in: directory)
             try Task.checkCancellation()
+            if renderedInOriginal, key == nil, let selection = capture.session.reviewOwnership.active,
+               let scope = try DirectAudioRender.scope(projectData: projectData, selection: capture.selection) {
+                directRenderHint = DirectAudioRenderHint(selection: selection,
+                    sourceURLs: capture.document.clips.filter(\.enabled).compactMap(\.mediaURL),
+                    scope: scope)
+            }
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
-                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply replaces this project in its current event and saves recovery XML before import. Import verification automatically recovers saved Silent Snip settings if Final Cut resets them. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "))
+                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply creates a new cleaned project copy in this event, preserving editable audio effects. The original project stays unchanged. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "))
         } catch {
             // A cancellation must not prevent bounded cleanup of a verified,
             // request-owned project after returning to the original timeline.
@@ -313,7 +380,9 @@ import Foundation
             timing.begin("editValidation")
             if !result.analyzed.review.selectedCuts.isEmpty {
                 _ = try EditedProjectWriter.write(projectData: data, selection: context.capture.selection,
-                    selectedRanges: result.analyzed.review.selectedCuts.map(\.range), outputName: context.capture.projectName + " — Silent Snip")
+                    selectedRanges: result.analyzed.review.selectedCuts.map(\.range),
+                    outputName: Self.outputName(clip: context.capture.target, request: request.id),
+                    selectedClipOnly: false, useOriginalEvent: true, omitController: true)
             }
             try Task.checkCancellation()
             timing.begin("restoreControls")
@@ -352,7 +421,7 @@ import Foundation
             guard !removals.isEmpty else { throw EditedProjectWriterError.noSelectedCuts }
             let exclusions = result.analyzed.dialogueContext.fingerprintExclusions
             try await session.activate()
-            progress("Checking the current project before replacing it…", 0)
+            progress("Checking the selected clip and its effects…", 0)
             let finalURL = try await session.exportProjectXML(to: context.directory.appendingPathComponent("Before-XML-Apply.fcpxmld"))
             let finalData = try Data(contentsOf: finalURL)
             let final = try TimelineParser.parse(data: finalData, exclusions: exclusions)
@@ -361,17 +430,13 @@ import Foundation
             try AudioControllerSettings.validateForApply(projectData: finalData,
                 target: final.selectedTarget(capture.selection), requested: result.analyzed.settings)
             try Task.checkCancellation()
-            progress("Creating all selected cuts in the edited project…", 0.4)
-            let outputName = capture.projectName
+            progress("Creating a new editable project copy…", 0.4)
+            let outputName = Self.outputName(clip: capture.target, request: request.id)
             let artifact = try XMLProjectApply.prepare(projectData: finalData, selection: capture.selection,
                 cuts: removals, settings: result.analyzed.settings, mode: request.outputMode,
-                outputName: outputName, directory: parent, replaceOriginal: true)
+                outputName: outputName, directory: parent, selectedClipOnly: false, useOriginalEvent: true, omitController: true)
             prepared = artifact
-            if let target = artifact.output.report.replacementTarget {
-                try await session.prepareReplacementBrowser(target)
-            }
             try session.assertCurrentProject()
-            let originalTimelineSignature = session.timelineLayoutSignature()
             progress("Sending ‘\(outputName)’ to Final Cut Pro…", 0.8)
             try Data("Import requested; verification pending. Do not import again until checking Final Cut.\n".utf8)
                 .write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
@@ -385,8 +450,7 @@ import Foundation
                 self.verifications.remember(request.id, at: verification.outputURL)
                 try await XMLProjectApply.importIntoFinalCut(url)
             }
-            try await retryVerification(request.id, progress: progress, acceptReplacement: true,
-                                        originalTimelineSignature: originalTimelineSignature)
+            try await retryVerification(request.id, progress: progress)
         } catch {
             _ = await capture.restoreReviewWindow()
             if error is XMLProjectApplyFailure { throw error }
@@ -432,7 +496,11 @@ import Foundation
             progress("Checking the existing imported project…", 0.9)
             let imported = try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL,
                 replacement: result.replacementTarget, acceptReplacement: acceptReplacement, originalTimelineSignature: originalTimelineSignature)
-            _ = try await result.verify(capture: {
+            let report = try await result.verify(capture: {
+                // Verification can start from an already-open result's remote
+                // Controls window. Pin keyboard focus to the project before
+                // Share reads its selection or dispatches any host input.
+                try await imported.activate()
                 let url = try await imported.exportProjectXML(to: parent.appendingPathComponent("Verification-\(UUID().uuidString).fcpxmld"))
                 return try Data(contentsOf: url)
             }, restore: { correction, document in
@@ -444,7 +512,10 @@ import Foundation
                 try await imported.restoreControllerSettings(correction.settings, clip: correction.clip, document: document)
             })
             let disposition = result.replacementTarget == nil ? "Original project unchanged." : "Project replaced in its original event. Recovery XML saved in the result folder."
-            let message = "Verified ‘\(result.projectName)’: timeline, rendering effects, and Silent Snip settings match. \(result.sourceMediaNotice) \(disposition)"
+            let settingsNotice = report.controllerSettingsPreserved == nil
+                ? "Analysis settings are saved with the result; the detector stays on the original recording."
+                : "Silent Snip settings match."
+            let message = "Verified ‘\(result.projectName)’: timeline and audio effects match. \(settingsNotice) \(result.sourceMediaNotice) \(disposition)"
             try Data((message + "\n").utf8).write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             result.markComplete()
             verifications.remove(id)
@@ -467,7 +538,24 @@ import Foundation
         try await session.movePlayhead(to: cut.range.start, document: document, dropFrame: result.dropFrame)
     }
 
-    private nonisolated static func mediaSnapshot(_ document: TimelineDocument) async throws -> MediaContentSnapshot {
-        try await MediaContentSnapshot.capture(document.clips.filter(\.enabled).compactMap(\.mediaURL))
+    private nonisolated static func mediaSnapshot(_ document: TimelineDocument,
+                                                 renderedMedia: MediaContentSnapshot? = nil,
+                                                 prepared: MediaContentSnapshot.ReadGuard? = nil) async throws -> MediaContentSnapshot {
+        if let renderedMedia {
+            guard renderedMedia.covers(document.clips.filter(\.enabled).compactMap(\.mediaURL)) else {
+                throw ProjectAnalysisError.changedRenderArtifact
+            }
+            try await renderedMedia.validate()
+            return renderedMedia
+        }
+        if let prepared { return try await MediaContentSnapshot.capture(prepared: prepared) }
+        return try await MediaContentSnapshot.capture(document.clips.filter(\.enabled).compactMap(\.mediaURL))
+    }
+
+    /// A request keeps its name across delivery and verification retries. A new
+    /// Analyze gets another name, so Apply never needs a Replace decision.
+    static func outputName(clip: TimelineClip, request: UUID) -> String {
+        let name = clip.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (name.isEmpty ? "Clip" : name) + " — Cleaned — " + String(request.uuidString.prefix(8))
     }
 }

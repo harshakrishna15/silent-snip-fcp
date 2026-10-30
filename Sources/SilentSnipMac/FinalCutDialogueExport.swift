@@ -31,6 +31,9 @@ import Foundation
         }
         try await timing.measure("share.render.rolesTab") { try await selectTab("Roles", in: dialog, session: session) }
         try await timing.measure("share.render.rolesVerification") {
+            if try !panel(in: dialog).verifiesDialogueWAV {
+                try await configureDialogueFile(in: dialog, session: session, timing: timing)
+            }
             try await session.waitUntil(timeout: 5, context: "isolated Dialogue WAV output") {
                 (try? panel(in: dialog).verifiesDialogueWAV) == true
             }
@@ -39,9 +42,42 @@ import Foundation
 
     private typealias Panel = FinalCutSharePanel<AXUIElement>
 
+    private static func configureDialogueFile(in dialog: AXUIElement, session: FinalCutAXSession, timing: AnalysisTiming) async throws {
+        guard let preset = try panel(in: dialog).rolePreset else { throw ExportError.unverifiedDialogueOutput }
+        try await session.restoreOwnShareActivation(panel: dialog)
+        try session.press(preset.element)
+        var choice: Panel.Control?
+        try await session.waitUntil(timeout: 3, context: "separate audio role preset") {
+            choice = (try? panel(in: preset.element))?.menuItem("Audio Only as Separate Files")
+            return choice != nil
+        }
+        guard let choice else { throw ExportError.unverifiedDialogueOutput }
+        try session.press(choice.element)
+        timing.recordCounters(["share.render.rolePresetResets": 1])
+        try await session.waitUntil(timeout: 3, context: "separate audio role layout") {
+            (try? panel(in: dialog).separateAudioFileCount) != nil
+        }
+        // Bounded, one fresh snapshot per mutation. These controls remove an
+        // export output, never a project role or any source media.
+        for removed in 0..<32 {
+            let current = try panel(in: dialog)
+            if current.verifiesDialogueWAV { return }
+            guard let remove = current.unwantedAudioFile, let count = current.separateAudioFileCount else { throw ExportError.unverifiedDialogueOutput }
+            try await session.restoreOwnShareActivation(panel: dialog)
+            try session.press(remove.element)
+            timing.recordCounters(["share.render.nonDialogueFilesRemoved": removed + 1])
+            try await session.waitUntil(timeout: 3, context: "removed non-Dialogue export output") {
+                guard let updated = try? panel(in: dialog).separateAudioFileCount else { return false }
+                return updated == count - 1
+            }
+        }
+        throw ExportError.unverifiedDialogueOutput
+    }
+
     private static func selectTab(_ title: String, in dialog: AXUIElement, session: FinalCutAXSession) async throws {
         guard let tab = try panel(in: dialog).tab(title) else { throw ExportError.unverifiedControl(title) }
         if tab.role == kAXRadioButtonRole, tab.selected { return }
+        try await session.restoreOwnShareActivation(panel: dialog)
         try session.press(tab.element)
         // The next operation waits for the actual Settings or Roles controls.
         // A fixed pause neither proves readiness nor helps an already-ready host.
@@ -67,6 +103,7 @@ import Foundation
         // same unchanged panel a second time. press() still validates live focus.
         guard let popup else { throw ExportError.unverifiedControl(label) }
         if Panel.normalized(popup.value ?? "") == Panel.normalized(value) { return }
+        try await session.restoreOwnShareActivation(panel: dialog)
         try session.press(popup.element)
         var item: Panel.Control?
         try await session.waitUntil(timeout: 3, context: "\(value) export menu item") {

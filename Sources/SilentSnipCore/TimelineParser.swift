@@ -186,9 +186,6 @@ private struct TimelineBuilder {
         if node.name != "asset-clip" { unsupported.append("only a direct asset clip in the primary storyline is supported") }
         if !isPrimary { unsupported.append("connected or nested targets are not supported") }
         if !enabled { unsupported.append("the clip is disabled") }
-        // Only audio-only timeline instances can be targets. An audio-only
-        // insertion has no timeline video even when its source contains video.
-        if hasVideo { unsupported.append("Silent Snip supports audio-only timeline clips; video clips with audio are not supported") }
         if !hasAudio || !audioActive { unsupported.append("enabled source audio is required") }
         let retimed = node.children.contains(where: { $0.name == "timeMap" })
         let speedConformed = node.children.contains(where: { $0.name == "conform-rate" && $0.attributes["scaleEnabled"] != "0" })

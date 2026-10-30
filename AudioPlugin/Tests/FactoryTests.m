@@ -21,7 +21,6 @@
 - (void)updateMoreMenuVisibility;
 - (void)retryVerification:(id)sender;
 - (BOOL)restoreSettingsData:(NSData *)data;
-- (void)sendSettingsPreview;
 @end
 
 @interface TestFactory : SilentSnipAudioUnitFactory
@@ -183,8 +182,8 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         (void)factory.view;
         NSArray<NSTextField *> *fields = [factory valueForKey:@"fields"];
         require(fields[0].doubleValue == -37 && [(NSButton *)[factory valueForKey:@"analyzeButton"] isEnabled] &&
-            NSEqualSizes(factory.preferredContentSize, NSMakeSize(580, 220)),
-            @"Both startup orders refresh settings, actions and compact size on the main thread");
+            NSEqualSizes(factory.preferredContentSize, NSMakeSize(680, 476)),
+            @"Both startup orders refresh settings, actions and stable review-ready size on the main thread");
         [factory viewDidDisappear];
     }
     puts("PASS: background AudioToolbox creation before and after view loading");
@@ -205,6 +204,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     run(@"busy Controls still publish native parameter state without replacing review fields", ^(Fixture *f) {
         [f review];
         float submitted = f.fields[0].floatValue;
+        connection(f.factory).operationBusy = YES;
         StateObserver *observer = [StateObserver new];
         [f.unit addObserver:observer forKeyPath:@"fullStateForDocument" options:0 context:NULL];
         [f.unit.parameterTree parameterWithAddress:1].value = -37.25f;
@@ -423,22 +423,25 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         response(f.factory, 4, @"review", nil); require(f.apply.enabled, @"Select All acknowledged");
     });
 
-    run(@"review appears only when ranges exist", ^(Fixture *f) {
+    run(@"stable host size reserves an uncluttered review area", ^(Fixture *f) {
         NSView *review = [f.factory valueForKey:@"reviewArea"];
         NSView *heading = [f.factory valueForKey:@"reviewHeading"];
-        require(review.hidden && heading.hidden && !f.analyze.hidden && f.fields.count == 4,
-            @"Idle Controls contains detection and Analyze without an empty review section");
+        NSView *table = [f.factory valueForKey:@"reviewScroll"];
+        NSTextField *empty = [f.factory valueForKey:@"emptyReviewLabel"];
+        require(!review.hidden && !heading.hidden && table.hidden && !empty.hidden && !f.analyze.hidden,
+            @"Idle Controls reserves review space with one native empty-state message");
+        NSSize initial = f.factory.preferredContentSize;
         [f review];
-        require(!review.hidden && !heading.hidden, @"Returned ranges reveal review");
-        require(f.factory.preferredContentSize.width == 680 && f.factory.preferredContentSize.height >= 476,
-            @"Returned ranges request a larger host window");
+        require(!review.hidden && !heading.hidden && !table.hidden && empty.hidden &&
+            NSEqualSizes(initial, f.factory.preferredContentSize),
+            @"Returned cuts replace the placeholder without depending on host window resizing");
         response(f.factory, 2, @"review", @{@"canApply":@NO, @"cuts":@[@{@"id":@"cut-1", @"start":@"1s", @"end":@"2s", @"duration":@"1s", @"eligible":@YES, @"included":@NO}]});
-        require(!review.hidden && !heading.hidden && !f.apply.enabled,
-            @"Deselecting all cuts keeps ranges visible so they can be selected again");
+        require(!table.hidden && !f.apply.enabled,
+            @"Deselecting all cuts keeps the list available");
         response(f.factory, 3, @"review", @{@"canApply":@NO, @"cuts":@[]});
-        require(review.hidden && heading.hidden, @"An empty result removes the whole review section");
-        require(NSEqualSizes(f.factory.preferredContentSize, NSMakeSize(580, 220)),
-            @"An empty result returns to compact detection size");
+        require(table.hidden && !empty.hidden && [empty.stringValue isEqual:@"No cuts to review"] &&
+            NSEqualSizes(initial, f.factory.preferredContentSize),
+            @"An empty result explains its state without collapsing the host window");
     });
 
     run(@"review numbers stay aligned when earlier cuts are excluded", ^(Fixture *f) {
@@ -561,13 +564,13 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require(![f.factory restoreSettingsData:[@"{\"thresholdDBFS\":true}" dataUsingEncoding:NSUTF8StringEncoding]], @"Malformed settings rejected");
         f.fields[0].stringValue = @"-29"; NSURL *launch = f.factory.openedURL; [f.factory saveSettings:nil];
         NSTextField *status = [f.factory valueForKey:@"statusLabel"];
-        require([f.unit.analysisParameterTree parameterWithAddress:1].value == -29 && [status.stringValue isEqual:@"Settings saved."] && [launch isEqual:f.factory.openedURL] && !f.apply.enabled, @"Save commits without analyzing or reviving Apply");
+        require([f.unit.analysisParameterTree parameterWithAddress:1].value == -29 && [status.stringValue isEqual:@"Settings saved. Analyze again to update the cuts."] && [launch isEqual:f.factory.openedURL] && !f.apply.enabled, @"Save commits without analyzing or reviving Apply");
         f.fields[0].stringValue = @"invalid"; [f.factory saveSettings:nil];
         require([f.unit.analysisParameterTree parameterWithAddress:1].value == -29, @"Invalid automated save preserves values");
         status.stringValue = [@"Long recovery notice. " stringByPaddingToLength:1200 withString:@"More information. " startingAtIndex:0];
         [f.factory.view setFrameSize:f.factory.preferredContentSize];
         [f.factory.view layoutSubtreeIfNeeded];
-        require(f.apply.hidden && NSContainsRect(f.factory.view.bounds, [f.analyze convertRect:f.analyze.bounds toView:f.factory.view]),
+        require(!f.apply.enabled && !f.apply.hidden && NSContainsRect(f.factory.view.bounds, [f.analyze convertRect:f.analyze.bounds toView:f.factory.view]),
             @"The relevant footer action stays visible with a long notice");
         NSButton *more = [f.factory valueForKey:@"moreButton"];
         require(NSContainsRect(f.factory.view.bounds, [more convertRect:more.bounds toView:f.factory.view]), @"More actions stay inside the single window");
@@ -582,6 +585,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         require(menu.itemArray[5].enabled && menu.itemArray[6].enabled, @"Recovery menu is available while idle");
         connection(f.factory).operationBusy = YES; [menu update];
         require(!menu.itemArray[5].enabled && !menu.itemArray[6].enabled, @"Recovery menu cannot interrupt an active operation");
+        f.fields[0].stringValue = @"-29"; [f.analyze performClick:nil];
         response(f.factory, 2, @"analyzing", @{@"canCancel":@YES, @"progress":@0.5, @"message":status.stringValue});
         [f.factory.view setFrameSize:f.factory.preferredContentSize];
         [f.factory.view layoutSubtreeIfNeeded];
@@ -590,6 +594,41 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         NSView *results = [f.factory valueForKey:@"resultsView"];
         require(!NSIntersectsRect([results convertRect:results.bounds toView:f.factory.view], [f.analyze convertRect:f.analyze.bounds toView:f.factory.view]),
             @"Scrollable review does not overlap the fixed footer");
+    });
+
+    run(@"fixed-size AU hosts can scroll to every review control", ^(Fixture *f) {
+        [f review];
+        NSView *host = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 580, 220)];
+        NSView *view = f.factory.view;
+        view.translatesAutoresizingMaskIntoConstraints = NO;
+        [host addSubview:view];
+        [NSLayoutConstraint activateConstraints:@[
+            [host.widthAnchor constraintEqualToConstant:580],
+            [host.heightAnchor constraintEqualToConstant:220],
+            [view.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+            [view.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+            [view.topAnchor constraintEqualToAnchor:host.topAnchor],
+            [view.bottomAnchor constraintEqualToAnchor:host.bottomAnchor]
+        ]];
+        [host layoutSubtreeIfNeeded];
+        NSScrollView *inspector = [f.factory valueForKey:@"inspectorScroll"];
+        NSView *document = inspector.documentView;
+        NSView *review = [f.factory valueForKey:@"reviewArea"];
+        NSRect reviewRect = [review convertRect:review.bounds toView:document];
+        require(document.frame.size.height > inspector.contentView.bounds.size.height &&
+            NSMaxY(reviewRect) <= NSHeight(document.bounds) + 1,
+            @"The review belongs to a full-height scrolling document, even when Final Cut ignores preferredContentSize");
+        [review scrollRectToVisible:review.bounds];
+        [inspector reflectScrolledClipView:inspector.contentView];
+        NSPoint scrolled = inspector.contentView.bounds.origin;
+        [host layoutSubtreeIfNeeded];
+        require(scrolled.y > 0 && NSEqualPoints(scrolled, inspector.contentView.bounds.origin) &&
+            NSIntersectsRect(reviewRect, inspector.documentVisibleRect),
+            @"Scrolling to the cut list must persist through layout instead of snapping back to Detection");
+        [document scrollRectToVisible:NSMakeRect(0, 0, 1, 1)];
+        [host layoutSubtreeIfNeeded];
+        require(inspector.contentView.bounds.origin.y < scrolled.y,
+            @"Detection remains reachable after reviewing cuts");
     });
 
     run(@"always-visible detection and full status details", ^(Fixture *f) {
@@ -615,111 +654,84 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
             @"Repeated failure status cannot queue the same alert again");
     });
 
-    run(@"settings preview keeps controls editable and Apply blocked until matching verification", ^(Fixture *f) {
-        [f review];
-        f.fields[0].stringValue = @"-35";
-        [f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
-        [f.factory sendSettingsPreview];
-        NSDictionary *command = f.factory.previewCommand;
-        require([command[@"command"] isEqual:@"recalculate"] && command[@"settingsEdit"] && [command[@"settingsSequence"] isEqual:@1], @"New settings command carries ordering and identity");
-        require(!f.apply.enabled, @"Changing settings immediately disables Apply");
-        response(f.factory, 2, @"recalculating", @{@"canApply":@NO, @"provisional":@YES,
-            @"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
-        require(!f.apply.enabled && f.fields[0].enabled, @"Provisional rows cannot apply and detection stays editable");
-        response(f.factory, 3, @"review", @{@"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
-        require(f.apply.enabled, @"Matching fresh verification enables Apply");
-    });
-    run(@"new settings edits reject old acknowledgments and retry their exact payload", ^(Fixture *f) {
-        [f review];
-        f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
-        NSDictionary *old = f.factory.previewCommand;
-        f.fields[0].stringValue = @"-38"; [f.factory sendSettingsPreview];
-        NSDictionary *newest = f.factory.previewCommand;
-        require([newest[@"settingsSequence"] isEqual:@2], @"Edits use increasing sequence numbers");
-        response(f.factory, 2, @"review", @{@"settingsEdit":old[@"settingsEdit"], @"settings":old[@"settings"], @"output":old[@"output"]});
-        require(!f.apply.enabled, @"An old verified result cannot enable new settings");
-        SilentSnipReviewConnection *connection = [f.factory valueForKey:@"connection"];
-        require([[connection commandsToRetry] containsObject:newest], @"Dropped settings request retries unchanged");
-        response(f.factory, 3, @"review", @{@"settingsEdit":newest[@"settingsEdit"], @"settings":newest[@"settings"], @"output":newest[@"output"]});
-        require(f.apply.enabled && !connection.pendingSettings, @"Newest settings acknowledgment clears retry");
-    });
-    run(@"host focus changes keep the current settings identity and Analyze numeric values", ^(Fixture *f) {
-        [f review];
-        f.fields[2].stringValue = @"0.1";
-        [f.factory sendSettingsPreview];
-        NSDictionary *command = f.factory.previewCommand;
-        NSUInteger count = f.factory.packets.count;
-        response(f.factory, 2, @"recalculating", @{@"canApply":@NO, @"provisional":@YES,
-            @"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
-        [f.factory controlTextDidEndEditing:[NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:f.fields[2]]];
-        [f.factory sendSettingsPreview];
-        require(f.factory.packets.count == count && [f.factory.previewCommand[@"settingsEdit"] isEqual:command[@"settingsEdit"]], @"Ending the editor during host verification cannot replace its acknowledgment identity");
-        SilentSnipAudioAnalysisRequest *request = [f.unit analysisRequestWithError:nil];
-        for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO].queryItems) {
-            NSNumber *wire = command[@"settings"][item.name];
-            if (wire) require(wire.doubleValue == item.value.doubleValue, @"Preview and Analyze use identical numeric settings at frame boundaries");
+    run(@"every detection setting waits for a manual Analyze click", ^(Fixture *f) {
+        NSArray *tweaks = @[@"-35.25", @"0.65", @"0.15", @"0.35"];
+        for (NSUInteger i = 0; i < 4; i++) {
+            if (i == 0) [f review];
+            NSString *request = connection(f.factory).requestID;
+            NSURL *launched = f.factory.openedURL;
+            NSArray *cuts = [[f.factory valueForKey:@"cutRows"] copy];
+            f.fields[i].stringValue = tweaks[i];
+            [(id<NSTextFieldDelegate>)f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[i]]];
+            [(id<NSTextFieldDelegate>)f.factory controlTextDidEndEditing:[NSNotification notificationWithName:NSControlTextDidEndEditingNotification
+                object:f.fields[i] userInfo:@{@"NSTextMovement":@(NSReturnTextMovement)}]];
+            NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.25];
+            while (deadline.timeIntervalSinceNow > 0) [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            [f.factory pollStatus];
+            require([f.factory.openedURL isEqual:launched] && commandCount(f.factory, @"recalculate") == 0,
+                @"Typing, Return, focus loss and polling never start analysis or recalculation");
+            require(f.analyze.enabled && !f.apply.enabled && !f.apply.hidden &&
+                !connection(f.factory).operationBusy && f.fields[i].enabled, @"Manual Analyze stays available; Apply stays visibly disabled");
+            require([[f.factory valueForKey:@"cutRows"] isEqual:cuts] &&
+                [[(NSTextField *)[f.factory valueForKey:@"summaryLabel"] stringValue] isEqual:@"Settings changed—Analyze again."],
+                @"Keep the previous cuts inactive with an explicit stale message");
+            response(f.factory, 20+i, @"review", nil);
+            require(!f.apply.enabled, @"A delayed old review cannot restore Apply");
+            [f.analyze performClick:nil];
+            require(![connection(f.factory).requestID isEqual:request] && ![f.factory.openedURL isEqual:launched],
+                @"Only the Analyze click creates the next request");
+            response(f.factory, 1, @"review", nil);
+            require(f.apply.enabled, @"The new analysis result restores Apply");
         }
-        response(f.factory, 3, @"review", @{@"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
-        require(f.apply.enabled, @"The original latest verification can still enable Apply after focus changes");
-        [f.factory controlTextDidEndEditing:[NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:f.fields[2]]];
-        require(![f.factory valueForKey:@"settingsTimer"], @"A late editor-end event cannot restart an already verified edit");
     });
-    run(@"incomplete typing and mismatched verified values cannot enable Apply", ^(Fixture *f) {
-        [f review];
-        f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
-        NSDictionary *command = f.factory.previewCommand;
-        f.fields[0].stringValue = @"-";
-        [f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
-        [f.factory sendSettingsPreview];
-        response(f.factory, 2, @"review", @{@"settingsEdit":command[@"settingsEdit"], @"settings":command[@"settings"], @"output":command[@"output"]});
-        require(!f.apply.enabled, @"Unfinished local text cannot inherit an older settings check");
-        require(![f.factory valueForKey:@"pendingErrorMessage"], @"Intermediate typing does not pop up validation errors");
+    run(@"Save and output changes do not start analysis", ^(Fixture *f) {
+        [f review]; NSURL *launched = f.factory.openedURL;
+        f.fields[0].stringValue = @"-34";
+        [(id<NSTextFieldDelegate>)f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
+        [f.factory saveSettings:nil];
+        NSPopUpButton *output = [f.factory valueForKey:@"outputMode"];
+        [output selectItemAtIndex:1]; [NSApp sendAction:output.action to:output.target from:output];
+        for (NSUInteger i = 0; i < 3; i++) [f.factory pollStatus];
+        require([f.factory.openedURL isEqual:launched] && commandCount(f.factory, @"recalculate") == 0 && !f.apply.enabled,
+            @"Save, output changes and status polls keep the old result invalidated");
+        require([f.unit.analysisParameterTree parameterWithAddress:1].value == -34, @"Saving persists the draft without analyzing it");
+        require(commandCount(f.factory, @"cancel") > 0, @"The old helper review is consumed without an export");
     });
-    run(@"typing updates preview without starting host verification until editing ends", ^(Fixture *f) {
-        [f review];
-        NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 680, 500)
-            styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-        window.contentView = f.factory.view;
-        [window makeFirstResponder:f.fields[0]];
-        [f.fields[0] selectText:nil];
-        require(f.fields[0].currentEditor != nil, @"Fixture owns an active field editor");
+    run(@"outdated edits reject reconnects and late packets", ^(Fixture *f) {
+        [f review]; NSString *old = connection(f.factory).requestID;
         f.fields[0].stringValue = @"-35";
-        [f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
-        [f.factory sendSettingsPreview];
-        NSDictionary *first = f.factory.previewCommand;
-        require([first[@"verifySettings"] isEqual:@NO], @"Typing requests preview only, preserving keyboard focus");
-        response(f.factory, 2, @"recalculating", @{@"canApply":@NO, @"provisional":@YES,
-            @"settingsEdit":first[@"settingsEdit"], @"settings":first[@"settings"], @"output":first[@"output"]});
-        [window endEditingFor:nil]; [window makeFirstResponder:nil];
-        [f.factory pollStatus];
-        require([f.factory.previewCommand[@"verifySettings"] isEqual:@YES], @"Finishing field edit permits one background host check");
-        window.contentView = nil;
-    });
-    run(@"unacknowledged settings edits time out despite replayed review heartbeat", ^(Fixture *f) {
-        [f review];
-        f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
-        SilentSnipReviewConnection *connection = [f.factory valueForKey:@"connection"];
-        connection.lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16];
-        response(f.factory, 1, @"review", nil);
-        [f.factory pollStatus];
-        require(connection.timedOut && !f.apply.enabled && !connection.pendingSettings, @"Stale heartbeat cannot suppress settings timeout");
-        [f.factory sendSettingsPreview];
-        require(!connection.pendingSettings && !connection.operationBusy, @"Typing after timeout cannot start an untracked settings request; Analyze reconnects");
-    });
-
-    run(@"late settings success cannot revive a timed-out review", ^(Fixture *f) {
-        [f review]; f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
-        NSDictionary *edit = f.factory.previewCommand;
-        connection(f.factory).lastResponse = [NSDate dateWithTimeIntervalSinceNow:-16];
-        [f.factory pollStatus];
-        require(connection(f.factory).timedOut && !f.apply.enabled, @"Timeout consumes the review");
-        response(f.factory, 2, @"review", @{@"settingsEdit":edit[@"settingsEdit"], @"settings":edit[@"settings"],
-            @"output":edit[@"output"], @"canHighlight":@YES});
+        [(id<NSTextFieldDelegate>)f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
+        NSDictionary *packet = @{@"version":@1, @"view":[f.factory valueForKey:@"viewID"], @"request":old,
+            @"output":@"remove", @"settings":@{@"threshold":@-26,@"minimum":@.75,@"before":@.125,@"after":@.25}};
+        [f.factory reconnect:[NSNotification notificationWithName:@"test" object:json(packet)]];
+        response(f.factory, 30, @"review", @{@"canHighlight":@YES});
         [f.factory apply:nil];
-        require(connection(f.factory).timedOut && !f.apply.enabled && !connection(f.factory).operationBusy && f.analyze.enabled &&
-            commandCount(f.factory, @"apply") == 0, @"Delayed success neither enables Apply nor hides Analyze");
-        response(f.factory, 3, @"failed", @{@"message":@"Actual final failure", @"canApply":@NO});
-        require([[f.factory valueForKey:@"statusDetails"] isEqual:@"Actual final failure"], @"Late terminal outcome remains visible");
+        require(f.fields[0].floatValue == -35 && !f.apply.enabled && commandCount(f.factory, @"apply") == 0,
+            @"Late replies cannot overwrite the draft or apply the previous cuts");
+        [f.analyze performClick:nil];
+        deliver(f.factory, json(@{@"version":@1,@"request":old,@"revision":@31,@"state":@"review",@"message":@"Old result",@"cuts":@[],@"canApply":@YES}));
+        require(!f.apply.enabled, @"A stale request cannot supply the new analysis result");
+        response(f.factory, 1, @"review", nil); require(f.apply.enabled, @"Only a fresh matching request can restore Apply");
+    });
+    run(@"incomplete typing never starts work or shows an automatic validation alert", ^(Fixture *f) {
+        [f review]; NSURL *launched = f.factory.openedURL;
+        f.fields[0].stringValue = @"-";
+        [(id<NSTextFieldDelegate>)f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
+        [f.factory pollStatus];
+        require(![f.factory valueForKey:@"pendingErrorMessage"] && !f.apply.enabled && [f.factory.openedURL isEqual:launched],
+            @"An unfinished edit remains local");
+        f.fields[0].stringValue = @"-35";
+        [(id<NSTextFieldDelegate>)f.factory controlTextDidEndEditing:[NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:f.fields[0]]];
+        require(!f.apply.enabled && [f.factory.openedURL isEqual:launched], @"Finishing a valid edit still requires manual Analyze");
+    });
+    run(@"idle host parameter changes invalidate the current review without analysis", ^(Fixture *f) {
+        [f review]; NSURL *launched = f.factory.openedURL;
+        [f.unit.analysisParameterTree parameterWithAddress:1].value = -37.25f;
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+        while (f.fields[0].floatValue != -37.25f && deadline.timeIntervalSinceNow > 0)
+            [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        require(f.fields[0].floatValue == -37.25f && !f.apply.enabled && f.analyze.enabled && [f.factory.openedURL isEqual:launched],
+            @"Inspector edits update the draft, consume the old review and wait for Analyze");
     });
     run(@"reconnect uses the processor's full supported minimum range", ^(Fixture *f) {
         for (NSNumber *minimum in @[@0.0001, @0.01, @0.1, @0.00001]) {
@@ -734,18 +746,19 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     run(@"invalid settings block row double-click navigation", ^(Fixture *f) {
         [f review]; response(f.factory, 2, @"review", @{@"canHighlight":@YES});
         f.fields[0].stringValue = @"-";
-        [f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
+        [(id<NSTextFieldDelegate>)f.factory controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:f.fields[0]]];
         NSTableView *table = [f.factory valueForKey:@"resultsView"];
         [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
         [f.factory jumpToCut:nil];
         require(commandCount(f.factory, @"highlight") == 0, @"Double-click cannot use the old review while text is invalid");
-        f.fields[0].stringValue = @"-35"; [f.factory sendSettingsPreview];
-        NSDictionary *edit = f.factory.previewCommand;
-        response(f.factory, 3, @"review", @{@"canHighlight":@YES, @"settingsEdit":edit[@"settingsEdit"],
-            @"settings":edit[@"settings"], @"output":edit[@"output"]});
+        f.fields[0].stringValue = @"-35";
+        [(id<NSTextFieldDelegate>)f.factory controlTextDidEndEditing:[NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:f.fields[0]]];
+        [f.factory jumpToCut:nil];
+        require(commandCount(f.factory, @"highlight") == 0, @"Finishing the edit does not revive old navigation");
+        [f.analyze performClick:nil]; response(f.factory, 1, @"review", @{@"canHighlight":@YES});
         [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
         [f.factory jumpToCut:nil];
-        require(commandCount(f.factory, @"highlight") == 1, @"Matching verification restores navigation");
+        require(commandCount(f.factory, @"highlight") == 1, @"Manual Analyze restores navigation for the new result");
     });
 
     NSArray *states = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:@"AudioPlugin/Tests/review-states.json"] options:0 error:nil];
