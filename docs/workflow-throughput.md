@@ -43,6 +43,22 @@ An additional generated one-minute Gate → Limiter → AUDelay → Silent Snip 
 
 Final build checks: 492 Swift tests with one opt-in benchmark skipped and no failures; 81 Python tests; 35 Controls harness groups; 60 exact mono/stereo Audio Unit passthrough cases. Built, installed, and ZIP helper executable hashes match; deep signature checks passed. The processed-PCM comparisons in the build 37 table remain fixture-specific evidence, not a universal plugin certification.
 
+## Stateful delay: measured quality limitation
+
+The additional build 39 delay test exposed a real retained-audio difference. Two full original native renders had exactly matching decoded PCM hashes, so the observed original was deterministic. The normal editable three-cut result had the expected 2,833,600 stereo frames, but its second join at result time 27.766667 s differed: the original processed reference sample was -0.0173425674 and the cleaned sample was 0. This is consistent with lost effect history when the source clip is split; matching effect XML does not prevent it. The difference is in processed output, not a modification of original source media.
+
+Two independent disposable output experiments used the exact same retained source ranges in the required library:
+
+| Output representation | Exact retained PCM | First difference |
+| --- | --- | --- |
+| Normal split asset clips with live effects | Fail | 27.766667 s; expected -0.0173425674, actual 0 |
+| One full processed compound source, cut through outer references | Fail | Same join; actual -0.0173296928 |
+| Original native lossless processed WAV referenced in place, with no additional processing | Pass | None across all retained samples and joins |
+
+All comparison inputs were native 24-bit stereo 48 kHz WAVs. The processed-WAV experiment preserves the sound of this tested native export, while the untouched original project retains its live editable effects. Its cleaned copy contains rendered sound rather than live processing. It is **an experiment, not the production output route**, and does not establish universal plugin compatibility or the five-second workflow target. Production still preserves editable effect instances and cannot promise identical stateful tails at joins. The captured default AUDelay XML contained its exact effect identity but no serialized parameters/archive; native PCM, not an inferred settings archive, supplied the sound evidence.
+
+Evidence remains under `build/Throughput/StatefulQuality`: `PCM/Split39-Deterministic-Comparison.json`, `PCM/Compound39-Comparison.json`, `PCM/Baked39-Comparison.json`, original/repeat/result native exports, and the independent experiment XML/manifests. Every fixture references generated sources in place; no existing user project or external library was used.
+
 ## What changed
 
 - Source decoding reads bounded blocks rather than issuing a file read for every 10 ms measurement window. The existing window boundaries, per-channel RMS calculation, detector, and sample-range checks remain in use.
