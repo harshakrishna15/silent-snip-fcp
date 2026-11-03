@@ -116,6 +116,54 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
         }
     }
 
+    /// Final Cut can update xattrs on newly imported durable PCM, changing only
+    /// ctime. Historical bytes and all identity/size/mtime evidence remain
+    /// authoritative. The returned snapshot is CURRENT-PHASE evidence only;
+    /// callers must keep the original snapshot in their persistent receipt.
+    func validatedForImport(renderedAudio: LosslessRenderedAudio?) async throws -> Self {
+        let phaseGuard = try Self.prepareRead(originalURLs)
+        let current = try await Self.capture(prepared: phaseGuard)
+        guard current.hashes == hashes, current.originalURLs == originalURLs else {
+            throw ProjectAnalysisError.changedRenderArtifact
+        }
+        guard let stamps else {
+            // Existing hash-only receipts retain their old strict-content
+            // behavior, but cannot prove the identity/mtime side of a new PCM
+            // import exception.
+            guard renderedAudio == nil else { throw ProjectAnalysisError.changedRenderArtifact }
+            try phaseGuard.validate()
+            return current
+        }
+        if stamps == current.stamps { try phaseGuard.validate(); return current }
+        guard let renderedAudio, renderedAudio.scope == .projectMix,
+              renderedAudio.mediaIdentity != nil, renderedAudio.nativeSourceSHA256 != nil,
+              renderedAudio.pcmDataSHA256 != nil, renderedAudio.formatDataSHA256 != nil,
+              originalURLs.contains(renderedAudio.url),
+              try Self.canonical(renderedAudio.url) == renderedAudio.url,
+              hashes[renderedAudio.url] == renderedAudio.sha256,
+              let currentStamps = current.stamps, Set(stamps.keys) == Set(currentStamps.keys) else {
+            throw ProjectAnalysisError.changedRenderArtifact
+        }
+        for (url, historical) in stamps {
+            guard let now = currentStamps[url] else { throw ProjectAnalysisError.changedRenderArtifact }
+            if url == renderedAudio.url {
+                guard historical.device == now.device, historical.inode == now.inode,
+                      historical.size == now.size,
+                      historical.modifiedSeconds == now.modifiedSeconds,
+                      historical.modifiedNanoseconds == now.modifiedNanoseconds else {
+                    throw ProjectAnalysisError.changedRenderArtifact
+                }
+            } else if historical != now {
+                throw ProjectAnalysisError.changedRenderArtifact
+            }
+        }
+        // Independently prove encoded bytes, PCM payload, format, and the new
+        // media identity. A missing legacy proof never grants this exception.
+        try renderedAudio.validate()
+        try phaseGuard.validate()
+        return current
+    }
+
     static func contentHash(at url: URL) throws -> String {
         try Task.checkCancellation()
         let file = try FileHandle(forReadingFrom: url)

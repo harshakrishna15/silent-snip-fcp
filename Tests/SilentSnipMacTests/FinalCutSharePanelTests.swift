@@ -172,6 +172,69 @@ final class FinalCutSharePanelTests: XCTestCase {
         XCTAssertFalse(Panel(controls: wrongHeader + footer).verifiesFullProjectMixWAV(expectedRoles: roles))
     }
 
+    func testFullProjectMixAcceptsOnlyTheObservedNativeStaticKindWAVFooter() throws {
+        // Sanitized controls from the native three-role failure diagnostic.
+        // No project names, source paths, request IDs, or other private values.
+        let controls = [
+            control(0, kAXWindowRole, title: "Silent Snip"),
+            control(1, kAXImageRole, description: "PE Share WindowBackground"),
+            control(2, kAXTabGroupRole),
+            control(3, kAXRadioButtonRole, title: "Info", value: "0"),
+            control(4, kAXRadioButtonRole, title: "Settings", value: "0"),
+            control(5, kAXRadioButtonRole, title: "Roles", value: "1"),
+            control(6, kAXScrollAreaRole),
+            control(7, kAXImageRole, description: "FC Glyphs Share Audio File"),
+            control(8, kAXStaticTextRole, value: ".wav"),
+            control(9, kAXStaticTextRole, value: "1 file"),
+            control(10, kAXStaticTextRole, value: "audio track-1"),
+            control(11, kAXImageRole, description: "FC Glyphs Share Audio Track"),
+            control(12, kAXStaticTextRole, value: "All Dialogue"),
+            control(13, kAXStaticTextRole, value: "All Music"),
+            control(14, kAXStaticTextRole, value: "All Room Tone"),
+            control(15, kAXStaticTextRole, value: "Roles as:"),
+            control(16, kAXPopUpButtonRole, value: "WAV", description: "Roles formats and presets"),
+            control(17, kAXScrollBarRole, value: "1"),
+            control(18, kAXStaticTextRole, value: "Silent Snip"),
+            control(19, kAXButtonRole, title: "Next…"),
+            control(20, kAXButtonRole, title: "Cancel"),
+            control(21, kAXImageRole, description: ""),
+            control(22, kAXStaticTextRole, value: "Stereo (L R)", description: "audio channel layout"),
+            control(23, kAXImageRole, description: "PE Share InfoBar TextSeparator"),
+            control(24, kAXStaticTextRole, value: "48 kHz", description: "audio sample rate"),
+            control(25, kAXStaticTextRole, value: "00:01:00.000", description: "duration"),
+            control(26, kAXStaticTextRole, value: ".wav", description: "kind"),
+            control(27, kAXStaticTextRole, value: "17.3 MB est.", description: "estimated file size"),
+            control(28, kAXStaticTextRole, value: "Silent Snip")
+        ]
+        let roles: Set<String> = ["dialogue", "music", "Room Tone"]
+        XCTAssertTrue(Panel(controls: controls).verifiesFullProjectMixWAV(expectedRoles: roles))
+        XCTAssertTrue(Panel(controls: controls + [control(100, kAXStaticTextRole, value: "2 files")])
+            .verifiesFullProjectMixWAV(expectedRoles: roles), "WAV+XML attachment summary remains outside the audio count")
+
+        for extra in [control(101, kAXStaticTextRole, value: ".wav"),
+                      control(102, kAXStaticTextRole, value: ".wav", description: "kind"),
+                      control(103, kAXButtonRole, value: ".wav", description: "kind"),
+                      control(104, kAXStaticTextRole, value: "audio track-2"),
+                      control(105, kAXButtonRole, value: "audio track-2")] {
+            XCTAssertFalse(Panel(controls: controls + [extra]).verifiesFullProjectMixWAV(expectedRoles: roles),
+                "No additional WAV/track output can be hidden by the known footer")
+        }
+        for description in [nil, "Kind", "file kind", "audio channel layout"] as [String?] {
+            var altered = controls
+            altered[26] = control(26, kAXStaticTextRole, value: ".wav", description: description)
+            XCTAssertFalse(Panel(controls: altered).verifiesFullProjectMixWAV(expectedRoles: roles),
+                "Only the exact observed AX description qualifies as a second WAV footer")
+        }
+        var duplicateHeader = controls
+        duplicateHeader.insert(control(106, kAXStaticTextRole, value: ".wav", description: "kind"), at: 9)
+        XCTAssertFalse(Panel(controls: duplicateHeader).verifiesFullProjectMixWAV(expectedRoles: roles),
+            "A second header WAV cannot qualify as the footer")
+        var missingHeader = controls
+        missingHeader.remove(at: 8)
+        XCTAssertFalse(Panel(controls: missingHeader).verifiesFullProjectMixWAV(expectedRoles: roles),
+            "The footer cannot substitute for the required header WAV")
+    }
+
     private func fullMix(roles: [String], layout: String? = "Stereo (L R)", preset: String = "WAV") -> Panel {
         let labels = [".wav", "1 file", "audio track-1"] + roles + ["Roles as:"]
         var controls = labels.enumerated().map { control($0.offset, kAXStaticTextRole, title: $0.element) }

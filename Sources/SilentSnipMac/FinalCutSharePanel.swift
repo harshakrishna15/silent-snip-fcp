@@ -92,17 +92,23 @@ struct FinalCutSharePanel<Element> {
         let end = controls.indices.filter { controls[$0].role == kAXStaticTextRole && Self.normalized(controls[$0].text) == "rolesas:" }
         guard end.count == 1 else { return false }
         // The footer counts delivery attachments (WAV plus FCPXML), not audio
-        // outputs. Scope only that summary count above Roles as:, while keeping
-        // duplicate WAV/track detection strict throughout the whole panel.
+        // outputs. Another observed footer exposes a `.wav` static text whose
+        // exact AX description is `kind`. Only that one footer control is an
+        // allowed second WAV label; unknown/duplicate outputs remain forbidden.
         let labels = controls[..<end[0]].filter { $0.role == kAXStaticTextRole }.map { Self.normalized($0.text) }
-        let allLabels = controls.filter { $0.role == kAXStaticTextRole }.map { Self.normalized($0.text) }
+        let wav = controls.indices.filter { Self.normalized(controls[$0].text) == ".wav" }
+        let headerWAV = wav.filter { $0 < end[0] }
+        let footerWAV = wav.filter { $0 > end[0] }
+        let allTracks = controls.map { Self.normalized($0.text) }.filter { $0.hasPrefix("audiotrack-") }
         let summaries = labels.filter {
             let number = $0.hasSuffix("files") ? String($0.dropLast(5))
                 : ($0.hasSuffix("file") ? String($0.dropLast(4)) : "")
             return !number.isEmpty && number.allSatisfy(\.isNumber)
         }
-        guard summaries == ["1file"], allLabels.filter({ $0 == ".wav" }).count == 1,
-              allLabels.filter({ $0.hasPrefix("audiotrack-") }) == ["audiotrack-1"],
+        guard summaries == ["1file"], headerWAV.count == 1,
+              controls[headerWAV[0]].role == kAXStaticTextRole, footerWAV.count <= 1,
+              footerWAV.allSatisfy({ controls[$0].role == kAXStaticTextRole && controls[$0].description == "kind" }),
+              allTracks == ["audiotrack-1"],
               let preset = rolePreset, Self.normalized(preset.value ?? "") == "wav" else { return false }
         let track = controls.indices.filter { controls[$0].role == kAXStaticTextRole && Self.normalized(controls[$0].text) == "audiotrack-1" }
         let layouts = controls.filter { $0.role == kAXStaticTextRole && $0.description == "audio channel layout" }

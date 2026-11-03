@@ -1,6 +1,9 @@
 import CryptoKit
 import SilentSnipCore
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 /// Recover only settings belonging to occurrences in an otherwise verified
 /// imported timeline. Never guess using a clip name or last-used defaults.
@@ -47,6 +50,7 @@ enum ImportedSettingsRecovery {
         var hostProjectUID: String?
         var hostAudioAssetUIDs: [String: String]?
         var sourceMedia: MediaContentSnapshot?
+        var renderedAudio: LosslessRenderedAudio?
     }
     let request: AnalyzeRequest
     let expected: Data
@@ -58,13 +62,15 @@ enum ImportedSettingsRecovery {
     private(set) var hostAudioAssetUIDs: [String: String]?
     private(set) var complete = false
     private let sourceMedia: MediaContentSnapshot?
+    private let renderedAudio: LosslessRenderedAudio?
     var sourceMediaNotice: String {
         sourceMedia == nil ? "Historical source integrity is unverified: this older result has no saved media fingerprints. Current media is available and unchanged during this verification." : "Source media contents match the saved fingerprints."
     }
 
     init(expected: Data, outputURL: URL, originalProjectName: String, request: AnalyzeRequest, replacementTarget: XMLReplacementTarget? = nil,
-         sourceMedia: MediaContentSnapshot? = nil) throws {
+         sourceMedia: MediaContentSnapshot? = nil, renderedAudio: LosslessRenderedAudio? = nil) throws {
         self.sourceMedia = sourceMedia
+        self.renderedAudio = try Self.boundRenderedAudio(renderedAudio, expected: expected, outputURL: outputURL, sourceMedia: sourceMedia)
         self.replacementTarget = replacementTarget
         self.request = request
         self.expected = expected; self.outputURL = outputURL
@@ -84,10 +90,63 @@ enum ImportedSettingsRecovery {
     private var receiptURL: URL { outputURL.deletingLastPathComponent().appendingPathComponent("Verification-Receipt.json") }
     private static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
+    private static func boundRenderedAudio(_ saved: LosslessRenderedAudio?, expected: Data, outputURL: URL,
+                                           sourceMedia: MediaContentSnapshot?) throws -> LosslessRenderedAudio? {
+        var candidate = saved
+        if candidate == nil {
+            // Build 41 receipts predate this field. Derive it only from the
+            // generated edit report, then bind it to immutable expected XML and
+            // the ORIGINAL saved content hash before granting any exception.
+            let reportURL = outputURL.deletingLastPathComponent().appendingPathComponent("Edit-Report.json")
+            if let data = try? Data(contentsOf: reportURL),
+               let report = try? JSONDecoder().decode(EditedProjectReport.self, from: data),
+               let audio = report.losslessAudio {
+                let document = try TimelineParser.parse(data: expected)
+                guard report.projectName == document.projectName, report.projectUID.uuidString == document.projectUID,
+                      report.resultProjectDuration == document.projectRange.duration,
+                      audio.timelineRange.start == .zero, audio.timelineRange.duration == report.originalProjectDuration else {
+                    throw EditedProjectWriterError.verificationFailed("the saved processed-audio proof does not match this result")
+                }
+                candidate = audio
+            }
+        }
+        guard let audio = candidate else { return nil }
+        // Older rendered results can still use the original strict historical
+        // check. They never receive a ctime exception without complete proof.
+        guard audio.mediaIdentity != nil, audio.nativeSourceSHA256 != nil,
+              audio.pcmDataSHA256 != nil, audio.formatDataSHA256 != nil else { return nil }
+        guard audio.scope == .projectMix, audio.mediaIdentity != nil, audio.nativeSourceSHA256 != nil,
+              audio.pcmDataSHA256 != nil, audio.formatDataSHA256 != nil,
+              let sourceMedia, sourceMedia.containsReferences([audio.url]),
+              try MediaContentSnapshot.canonical(audio.url) == audio.url,
+              sourceMedia.hashes[audio.url] == audio.sha256 else {
+            throw EditedProjectWriterError.verificationFailed("the saved processed-audio proof lacks its original content evidence")
+        }
+        let xml = try XMLDocument(data: expected, options: [.nodeLoadExternalEntitiesNever])
+        let matches = try xml.nodes(forXPath: "/fcpxml/resources/asset").compactMap { $0 as? XMLElement }.filter { asset in
+            let representations = asset.elements(forName: "media-rep")
+            return representations.count == 1 && representations[0].attribute(forName: "kind")?.stringValue == "original-media"
+                && representations[0].attribute(forName: "src")?.stringValue == audio.url.absoluteString
+        }
+        guard matches.count == 1, let asset = matches.first, let id = asset.attribute(forName: "id")?.stringValue,
+              asset.attribute(forName: "uid") == nil, asset.attribute(forName: "hasAudio")?.stringValue == "1",
+              (asset.attribute(forName: "hasVideo")?.stringValue ?? "0") == "0",
+              asset.attribute(forName: "audioSources")?.stringValue == "1",
+              asset.attribute(forName: "audioChannels")?.stringValue == String(audio.channelCount),
+              asset.attribute(forName: "audioRate")?.stringValue == String(audio.sampleRate),
+              try RationalTime.parse(asset.attribute(forName: "start")?.stringValue ?? "0s") == .zero,
+              try RationalTime.parse(asset.attribute(forName: "duration")?.stringValue ?? "invalid") == audio.physicalDuration,
+              asset.elements(forName: "media-rep").allSatisfy({ $0.attribute(forName: "sig") == nil }),
+              try TimelineParser.parse(data: expected).clips.contains(where: { $0.assetID == id && $0.enabled && $0.hasAudio }) else {
+            throw EditedProjectWriterError.verificationFailed("processed-audio evidence is not bound to the exact new result asset")
+        }
+        return audio
+    }
+
     func savePending() throws {
         let receipt = Receipt(requestID: request.id, settings: request.settings, outputMode: request.outputMode.rawValue,
             originalProjectName: originalProjectName, expectedSHA256: Self.digest(expected), replacementTarget: replacementTarget, hostProjectUID: hostProjectUID,
-            hostAudioAssetUIDs: hostAudioAssetUIDs, sourceMedia: sourceMedia)
+            hostAudioAssetUIDs: hostAudioAssetUIDs, sourceMedia: sourceMedia, renderedAudio: renderedAudio)
         try JSONEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
     }
 
@@ -138,7 +197,7 @@ enum ImportedSettingsRecovery {
         let result = try ImportedResultVerification(expected: data, outputURL: outputURL,
             originalProjectName: receipt.originalProjectName,
             request: AnalyzeRequest(id: receipt.requestID, settings: receipt.settings, outputMode: mode), replacementTarget: receipt.replacementTarget,
-            sourceMedia: receipt.sourceMedia)
+            sourceMedia: receipt.sourceMedia, renderedAudio: receipt.renderedAudio)
         result.hostProjectUID = receipt.hostProjectUID
         result.hostAudioAssetUIDs = receipt.hostAudioAssetUIDs
         return result
@@ -172,6 +231,10 @@ enum ImportedSettingsRecovery {
         var report = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: expectedSnapshot).report
         do {
             let resultURLs = expectedSnapshot.document.clips.filter(\.enabled).compactMap(\.mediaURL)
+            // This CURRENT guard spans the initial historical validation and
+            // every later capture/recovery step, including ctime. Only a prior
+            // import phase may have touched a proven new render's xattrs.
+            let captureGuard = try MediaContentSnapshot.prepareRead(sourceMedia?.sourceURLs ?? resultURLs)
             let media: MediaContentSnapshot
             if let sourceMedia {
                 guard sourceMedia.containsReferences(resultURLs) else {
@@ -180,16 +243,14 @@ enum ImportedSettingsRecovery {
                 // A rendered-audio result can replace the raw audio references.
                 // Keep checking all historical originals as well as the durable
                 // render instead of restricting evidence to the new timeline.
-                try await sourceMedia.validate()
-                media = sourceMedia
+                media = try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
             } else {
-                media = try await MediaContentSnapshot.capture(resultURLs)
+                media = try await MediaContentSnapshot.capture(prepared: captureGuard)
             }
             // Keep the initial full-content check before any host access. A
             // second full scan can overlap the read-only XML capture, provided
             // file identities/change stamps span BOTH operations. Even a write
             // that restores the original bytes during capture must invalidate it.
-            let captureGuard = try MediaContentSnapshot.prepareRead(media.sourceURLs)
             async let captureValidation: Void = validateMedia(media)
             let actualData = try await capture()
             try await captureValidation
@@ -236,6 +297,7 @@ enum ImportedSettingsRecovery {
                 // without rereading every source file a third time.
                 try captureGuard.validate()
             }
+            try captureGuard.validate()
             guard report.controllerSettingsPreserved != false else {
                 throw EditedProjectWriterError.verificationFailed("Final Cut did not retain the recovered Silent Snip settings. Retry Verification to try recovery again; no new import is needed")
             }

@@ -561,7 +561,7 @@ import Foundation
                 .write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             let verification = try ImportedResultVerification(expected: artifact.output.xmlData, outputURL: artifact.outputURL,
                 originalProjectName: capture.projectName, request: request, replacementTarget: artifact.output.report.replacementTarget,
-                sourceMedia: outputMedia)
+                sourceMedia: outputMedia, renderedAudio: durable)
             try await artifact.send { url in
                 timing.begin("finalProjectVerification")
                 // Hashing and durable retention yield while Final Cut remains
