@@ -1,0 +1,153 @@
+import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
+import SilentSnipCore
+import XCTest
+@testable import SilentSnipMac
+
+final class ImportedVerificationIOTests: XCTestCase {
+    private var folder: URL!
+    private var source: URL { folder.appendingPathComponent("Voice.wav") }
+
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("SilentSnipVerificationIO-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("Fixture.fcpbundle"), withIntermediateDirectories: true)
+        try Data("unchanged source audio".utf8).write(to: source)
+    }
+
+    override func tearDownWithError() throws { try FileManager.default.removeItem(at: folder) }
+
+    private func prepare() throws -> PreparedXMLProject {
+        let xml = Data("""
+        <fcpxml version="1.11"><resources><format id="f" frameDuration="1/30s"/>
+        <asset id="a" name="Voice" start="0s" duration="10s" hasAudio="1"><media-rep kind="original-media" src="\(source.absoluteString)"/></asset>
+        <effect id="e" name="Silent Snip Audio" uid="\(AudioControllerSettings.effectUID)"/>
+        </resources><library location="\(folder.appendingPathComponent("Fixture.fcpbundle").absoluteString)"><event name="Fixture" uid="fixture-event"><project name="Original" uid="original-project">
+        <sequence format="f" duration="10s" tcStart="0s"><spine>
+        <asset-clip ref="a" name="Voice" offset="0s" start="0s" duration="10s" audioRole="dialogue"><filter-audio ref="e"/></asset-clip>
+        </spine></sequence></project></event></library></fcpxml>
+        """.utf8)
+        return try XMLProjectApply.prepare(projectData: xml,
+            selection: .init(timelineRange: .init(start: .zero, end: .init(10))),
+            cuts: [.init(start: .init(2), end: .init(3))], settings: .defaults, mode: .remove,
+            outputName: "Edited", directory: folder.appendingPathComponent("Result"))
+    }
+
+    private func hostCopy(_ data: Data, strippingSettings: Bool = false) throws -> Data {
+        let xml = try XMLDocument(data: data)
+        if let uid = try xml.nodes(forXPath: "//project/@uid").first { uid.stringValue = "host-project" }
+        if strippingSettings {
+            for node in try xml.nodes(forXPath: "//filter-audio/param | //filter-audio/data") { node.detach() }
+        }
+        return xml.xmlData
+    }
+
+    @MainActor private func makeVerification(_ result: PreparedXMLProject) async throws -> ImportedResultVerification {
+        let media = try await MediaContentSnapshot.capture([source])
+        return try ImportedResultVerification(expected: result.output.xmlData, outputURL: result.outputURL,
+            originalProjectName: "Original", request: .init(id: UUID(), settings: .defaults, outputMode: .remove),
+            sourceMedia: media)
+    }
+
+    @MainActor func testUnchangedImportUsesOneFullValidationAcrossCaptureAndNoRecovery() async throws {
+        let result = try prepare()
+        let verification = try await makeVerification(result)
+        let events = Events()
+        let actual = try hostCopy(result.output.xmlData)
+        let report = try await verification.verify(capture: {
+            events.append("capture")
+            return actual
+        }, restore: { _, _ in
+            XCTFail("Matching imported settings require no native writes")
+        }, validateMedia: { media in
+            events.append("validation")
+            try await media.validate()
+        })
+        XCTAssertTrue(report.verified)
+        XCTAssertEqual(report.sourceMediaVerified, true)
+        XCTAssertEqual(events.values.filter { $0 == "validation" }.count, 1,
+            "The same read-only host capture phase must not rescan every source twice")
+    }
+
+    @MainActor func testCaptureMutationAfterConcurrentValidationEvenWhenBytesAreRestoredFails() async throws {
+        let result = try prepare()
+        let verification = try await makeVerification(result)
+        let actual = try hostCopy(result.output.xmlData)
+        let source = self.source
+        let original = try Data(contentsOf: source)
+        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        let phase = ValidationCompletion()
+        do {
+            _ = try await verification.verify(capture: {
+                // Deterministically finish the overlapping hash first, then
+                // mutate during the still-active native XML capture phase.
+                guard try await phase.wait() else {
+                    XCTFail("Full source validation must overlap native capture rather than wait for it")
+                    throw CocoaError(.fileReadUnknown)
+                }
+                try Data("changed source bytes".utf8).write(to: source)
+                try original.write(to: source)
+                try FileManager.default.setAttributes([.modificationDate: attributes[.modificationDate]!], ofItemAtPath: source.path)
+                return actual
+            }, restore: { _, _ in
+                XCTFail("A source mutation must stop before native recovery writes")
+            }, validateMedia: { media in
+                try await media.validate()
+                await phase.finish()
+            })
+            XCTFail("Restoring bytes and mtime must not hide a capture-time source mutation")
+        } catch { }
+        let report = try JSONDecoder().decode(ProjectRoundTripReport.self,
+            from: Data(contentsOf: result.outputURL.deletingLastPathComponent().appendingPathComponent("Import-Verification.json")))
+        XCTAssertFalse(report.verified)
+        XCTAssertEqual(report.sourceMediaVerified, false)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    @MainActor func testRecoveryJoinsCaptureValidationBeforeWritesAndFullyValidatesAfterRecovery() async throws {
+        let result = try prepare()
+        let verification = try await makeVerification(result)
+        let events = Events()
+        var actual = try hostCopy(result.output.xmlData, strippingSettings: true)
+        var captures = 0
+        let report = try await verification.verify(capture: {
+            captures += 1
+            events.append("capture\(captures)")
+            return actual
+        }, restore: { correction, _ in
+            XCTAssertTrue(events.values.contains("validated1"), "Recovery must await the content check spanning its initial capture")
+            events.append("restore")
+            actual = try AudioControllerSettings.embedding(correction.settings, in: actual,
+                selection: .init(timelineRange: correction.clip.timelineRange))
+        }, validateMedia: { media in
+            let number = events.values.filter { $0.hasPrefix("validated") }.count + 1
+            try await media.validate()
+            events.append("validated\(number)")
+        })
+        XCTAssertTrue(report.verified)
+        XCTAssertEqual(report.controllerSettingsPreserved, true)
+        XCTAssertEqual(captures, 2)
+        XCTAssertEqual(events.values.filter { $0.hasPrefix("validated") }, ["validated1", "validated2"])
+        XCTAssertEqual(events.values.last, "validated2", "The final full-content check follows the recovered host export")
+    }
+
+    private final class Events: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [String] = []
+        var values: [String] { lock.lock(); defer { lock.unlock() }; return storage }
+        func append(_ value: String) { lock.lock(); defer { lock.unlock() }; storage.append(value) }
+    }
+
+    private actor ValidationCompletion {
+        private var completed = false
+        func wait() async throws -> Bool {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !completed, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            return completed
+        }
+        func finish() { completed = true }
+    }
+}

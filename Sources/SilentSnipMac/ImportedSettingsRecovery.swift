@@ -157,7 +157,8 @@ enum ImportedSettingsRecovery {
     }
 
     func verify(capture: () async throws -> Data,
-                restore: (ImportedSettingsRecovery.Correction, TimelineDocument) async throws -> Void) async throws -> ProjectRoundTripReport {
+                restore: (ImportedSettingsRecovery.Correction, TimelineDocument) async throws -> Void,
+                validateMedia: @escaping @Sendable (MediaContentSnapshot) async throws -> Void = { try await $0.validate() }) async throws -> ProjectRoundTripReport {
         guard try Data(contentsOf: outputURL) == expected else {
             throw EditedProjectWriterError.verificationFailed("the saved result changed; verification did not run")
         }
@@ -173,14 +174,21 @@ enum ImportedSettingsRecovery {
                     throw EditedProjectWriterError.verificationFailed("source media contents changed since Apply; no settings were restored")
                 }
             }
+            // Keep the initial full-content check before any host access. A
+            // second full scan can overlap the read-only XML capture, provided
+            // file identities/change stamps span BOTH operations. Even a write
+            // that restores the original bytes during capture must invalidate it.
+            let captureGuard = try MediaContentSnapshot.prepareRead(urls)
+            async let captureValidation: Void = validateMedia(media)
             let actualData = try await capture()
+            try await captureValidation
+            try captureGuard.validate()
             try verifyDestination(actualData)
             let actualSnapshot = try ProjectRoundTripVerification.Snapshot(data: actualData)
             let comparison = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
                 allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID)
             report = comparison.report
             _ = try comparison.verify(reportURL: reportURL)
-            try await media.validate()
             if let bound = hostProjectUID, bound != report.actualProjectUID {
                 throw EditedProjectWriterError.verificationFailed("the imported project identity changed")
             }
@@ -188,6 +196,9 @@ enum ImportedSettingsRecovery {
             try savePending()
             let corrections = try ImportedSettingsRecovery.plan(comparison)
             if !corrections.isEmpty {
+                // The joined full scan and guard must still authorize the
+                // original source files immediately before recovery writes.
+                try captureGuard.validate()
                 let document = actualSnapshot.document
                 for correction in corrections {
                     try Task.checkCancellation()
@@ -203,8 +214,16 @@ enum ImportedSettingsRecovery {
                 guard report.actualProjectUID == hostProjectUID else {
                     throw EditedProjectWriterError.verificationFailed("the project changed during settings recovery")
                 }
+                // Recovery deliberately mutates the host. It needs its own
+                // post-recovery content verification rather than the earlier
+                // capture's read-only phase evidence.
+                try await validateMedia(media)
+            } else {
+                // No host writes happened after the joined capture/scan. The
+                // same phase's mutation guard closes receipt/report processing
+                // without rereading every source file a third time.
+                try captureGuard.validate()
             }
-            try await media.validate()
             guard report.controllerSettingsPreserved != false else {
                 throw EditedProjectWriterError.verificationFailed("Final Cut did not retain the recovered Silent Snip settings. Retry Verification to try recovery again; no new import is needed")
             }

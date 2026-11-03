@@ -4,6 +4,47 @@ import SilentSnipCore
 import Foundation
 
 extension FinalCutAXSession {
+    /// Use only the shortcut advertised by this exact retained menu command.
+    /// A missing, disabled, or changing assignment falls back before any input;
+    /// a dispatched or uncertain keyboard event must never trigger a retry.
+    func pressAdvertisedMenuShortcut(path: [String]) throws -> Bool {
+        try assertInputFocus()
+        guard currentSheet() == nil else {
+            throw FinalCutCaptureError.unavailable("Close the current dialog before sharing.")
+        }
+        guard !path.isEmpty, let bar = Self.elementAttribute(root, kAXMenuBarAttribute) else { return false }
+        func resolve() -> AXUIElement? {
+            var container = bar
+            for (index, title) in path.enumerated() {
+                let matches = children(container).filter { string($0, kAXTitleAttribute) == title }
+                guard matches.count == 1 else { return nil }
+                let item = matches[0]
+                if index == path.count - 1 { return item }
+                let menus = children(item).filter { string($0, kAXRoleAttribute) == kAXMenuRole }
+                guard menus.count == 1 else { return nil }
+                container = menus[0]
+            }
+            return nil
+        }
+        func shortcut(_ item: AXUIElement) -> FinalCutMenuShortcut? {
+            FinalCutMenuShortcut(
+                virtualKey: (attribute(item, kAXMenuItemCmdVirtualKeyAttribute) as? NSNumber)?.intValue,
+                modifiers: (attribute(item, kAXMenuItemCmdModifiersAttribute) as? NSNumber)?.intValue,
+                character: attribute(item, kAXMenuItemCmdCharAttribute) as? String,
+                glyph: (attribute(item, kAXMenuItemCmdGlyphAttribute) as? NSNumber)?.intValue,
+                enabled: (attribute(item, kAXEnabledAttribute) as? NSNumber)?.boolValue)
+        }
+        guard let item = resolve(), let advertised = shortcut(item) else { return false }
+        try assertInputFocus()
+        guard currentSheet() == nil else {
+            throw FinalCutCaptureError.unavailable("The Final Cut dialog changed before sharing.")
+        }
+        guard let fresh = resolve(), CFEqual(item, fresh), let checked = shortcut(fresh),
+              checked.keyCode == advertised.keyCode, checked.flags == advertised.flags else { return false }
+        try key(code: checked.keyCode, flags: checked.flags)
+        return true
+    }
+
     func pressMenu(path: [String], allowDisabled: Bool = false, openingProject: String? = nil) async throws {
 #if DEBUG
         if quietPrototypeMenu {

@@ -124,7 +124,26 @@ extension FinalCutAXSession {
         var ownsPanel = false
         do {
             try await timing.measure(prefix + ".openPanel") {
-                try await pressMenu(path: ["File", "Share", "Silent Snip…"])
+                let usedShortcut = try await FinalCutShareInvocation.perform(shortcut: {
+#if DEBUG
+                    // Explicit legacy probes and the processed-audio prototype
+                    // select visible menu input before dispatch. Preserve that
+                    // choice without disabling the normal Release shortcut.
+                    if (self.quietPrototypeStage != nil || QuietSharePrototype.pluginLease != nil),
+                       !self.quietPrototypeMenu {
+                        self.quietPrototypeInvocation?("File → Share → Silent Snip…: legacy-visible-menu")
+                        return false
+                    }
+#endif
+                    let used = try self.pressAdvertisedMenuShortcut(path: ["File", "Share", "Silent Snip…"])
+#if DEBUG
+                    if used { self.quietPrototypeInvocation?("File → Share → Silent Snip…: advertised-shortcut") }
+#endif
+                    return used
+                }, menu: {
+                    try await self.pressMenu(path: ["File", "Share", "Silent Snip…"])
+                })
+                timing.recordCounters([prefix + ".advertisedShortcut": usedShortcut ? 1 : 0])
                 try await waitUntil(timeout: 10, context: "Silent Snip Share confirmation") {
 #if DEBUG
                     if self.quietPrototypeStage != nil,
@@ -215,4 +234,15 @@ extension FinalCutAXSession {
 
     /// Open only an exact, uniquely named generated project. XML verification
     /// after opening establishes its UID and contents; a name alone never does.
+}
+
+/// Share may deliver after an input call reports failure. The alternate route
+/// is available only when shortcut discovery returned without posting input.
+enum FinalCutShareInvocation {
+    @MainActor static func perform(shortcut: () throws -> Bool,
+                                   menu: () async throws -> Void) async throws -> Bool {
+        if try shortcut() { return true }
+        try await menu()
+        return false
+    }
 }
