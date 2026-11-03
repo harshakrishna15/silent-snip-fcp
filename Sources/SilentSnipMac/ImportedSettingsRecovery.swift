@@ -231,36 +231,63 @@ enum ImportedSettingsRecovery {
         var report = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: expectedSnapshot).report
         do {
             let resultURLs = expectedSnapshot.document.clips.filter(\.enabled).compactMap(\.mediaURL)
-            // This CURRENT guard spans the initial historical validation and
-            // every later capture/recovery step, including ctime. Only a prior
-            // import phase may have touched a proven new render's xattrs.
-            let captureGuard = try MediaContentSnapshot.prepareRead(sourceMedia?.sourceURLs ?? resultURLs)
-            let media: MediaContentSnapshot
-            if let sourceMedia {
-                guard sourceMedia.containsReferences(resultURLs) else {
-                    throw EditedProjectWriterError.verificationFailed("the saved media evidence does not include every result media reference; no settings were restored")
+            var boundProjectUID = hostProjectUID
+            var boundAudioUIDs = hostAudioAssetUIDs
+            var accepted: (comparison: ProjectRoundTripVerification.Comparison, media: MediaContentSnapshot,
+                           readGuard: MediaContentSnapshot.ReadGuard)?
+            for phase in 0...1 {
+                try Task.checkCancellation()
+                let captureGuard = try MediaContentSnapshot.prepareRead(sourceMedia?.sourceURLs ?? resultURLs)
+                let media: MediaContentSnapshot
+                if let sourceMedia {
+                    guard sourceMedia.containsReferences(resultURLs) else {
+                        throw EditedProjectWriterError.verificationFailed("the saved media evidence does not include every result media reference; no settings were restored")
+                    }
+                    // Always validate the ORIGINAL historical content and PCM
+                    // proof. A local current snapshot never replaces a receipt.
+                    media = try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
+                } else {
+                    media = try await MediaContentSnapshot.capture(prepared: captureGuard)
                 }
-                // A rendered-audio result can replace the raw audio references.
-                // Keep checking all historical originals as well as the durable
-                // render instead of restricting evidence to the new timeline.
-                media = try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
-            } else {
-                media = try await MediaContentSnapshot.capture(prepared: captureGuard)
+                async let captureValidation: Void = validateMedia(media)
+                // A throw may mean uncertain host delivery. It exits this loop
+                // immediately: only SUCCESSFULLY RETURNED XML can be discarded
+                // for one subsequent read-only capture below.
+                let actualData = try await capture()
+                var sourceFailure: Error?
+                do {
+                    try await captureValidation
+                    try captureGuard.validate()
+                } catch { sourceFailure = error }
+                try verifyDestination(actualData)
+                let actualSnapshot = try ProjectRoundTripVerification.Snapshot(data: actualData)
+                let comparison = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
+                    allowHostAssignedIdentity: true, expectedHostProjectUID: boundProjectUID, expectedHostAudioAssetUIDs: boundAudioUIDs)
+                report = comparison.report
+                _ = try comparison.verify(reportURL: reportURL)
+                if let sourceFailure {
+                    if sourceFailure is CancellationError || Task.isCancelled { throw sourceFailure }
+                    guard phase == 0, let sourceMedia, let renderedAudio,
+                          sourceMedia.hashes[renderedAudio.url] == renderedAudio.sha256,
+                          try captureGuard.onlyRenderedCTimeChanged(renderedAudio) else { throw sourceFailure }
+                    // Native Final Cut can attach protected provenance while
+                    // exporting its FIRST XML bookmark. Discard that completed,
+                    // semantically verified phase only after a new full scan
+                    // proves unchanged raw sources and encoded/PCM/format/ID.
+                    _ = try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
+                    guard try captureGuard.onlyRenderedCTimeChanged(renderedAudio) else { throw sourceFailure }
+                    // Bind the actual objects locally BEFORE the second read;
+                    // another same-named project/asset must not be substituted.
+                    boundProjectUID = report.actualProjectUID
+                    boundAudioUIDs = report.hostAssignedAudioAssetUIDs ?? [:]
+                    continue
+                }
+                accepted = (comparison, media, captureGuard)
+                break
             }
-            // Keep the initial full-content check before any host access. A
-            // second full scan can overlap the read-only XML capture, provided
-            // file identities/change stamps span BOTH operations. Even a write
-            // that restores the original bytes during capture must invalidate it.
-            async let captureValidation: Void = validateMedia(media)
-            let actualData = try await capture()
-            try await captureValidation
-            try captureGuard.validate()
-            try verifyDestination(actualData)
-            let actualSnapshot = try ProjectRoundTripVerification.Snapshot(data: actualData)
-            let comparison = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
-                allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID, expectedHostAudioAssetUIDs: hostAudioAssetUIDs)
-            report = comparison.report
-            _ = try comparison.verify(reportURL: reportURL)
+            guard let accepted else { throw ProjectAnalysisError.changedRenderArtifact }
+            let comparison = accepted.comparison, actualSnapshot = comparison.actual
+            let media = accepted.media, captureGuard = accepted.readGuard
             if let bound = hostProjectUID, bound != report.actualProjectUID {
                 throw EditedProjectWriterError.verificationFailed("the imported project identity changed")
             }

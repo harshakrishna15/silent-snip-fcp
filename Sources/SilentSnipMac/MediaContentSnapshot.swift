@@ -59,6 +59,25 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
                 throw ProjectAnalysisError.changedRenderArtifact
             }
         }
+
+        /// Eligibility to discard one COMPLETED, verified read-only XML phase.
+        /// Canonical references and every raw-source stamp remain exact. The
+        /// sole permitted delta is ctime on one already-bound durable render.
+        func onlyRenderedCTimeChanged(_ audio: LosslessRenderedAudio) throws -> Bool {
+            guard audio.scope == .projectMix, audio.mediaIdentity != nil, audio.nativeSourceSHA256 != nil,
+                  audio.pcmDataSHA256 != nil, audio.formatDataSHA256 != nil,
+                  originals.contains(audio.url), canonicalURLs.filter({ $0 == audio.url }).count == 1,
+                  try originals.map(MediaContentSnapshot.canonical) == canonicalURLs else { return false }
+            var changed = false
+            for (url, old) in stamps {
+                let now = try FileStamp(url)
+                if url == audio.url {
+                    guard old.sameIdentitySizeAndModification(as: now) else { return false }
+                    changed = old != now
+                } else if old != now { return false }
+            }
+            return changed
+        }
     }
 
     struct FileStamp: Sendable, Equatable, Codable {
@@ -75,6 +94,11 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
             device = value.st_dev; inode = value.st_ino; size = value.st_size
             modifiedSeconds = value.st_mtimespec.tv_sec; modifiedNanoseconds = value.st_mtimespec.tv_nsec
             changedSeconds = value.st_ctimespec.tv_sec; changedNanoseconds = value.st_ctimespec.tv_nsec
+        }
+
+        func sameIdentitySizeAndModification(as other: Self) -> Bool {
+            device == other.device && inode == other.inode && size == other.size
+                && modifiedSeconds == other.modifiedSeconds && modifiedNanoseconds == other.modifiedNanoseconds
         }
     }
 
@@ -134,7 +158,11 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
             try phaseGuard.validate()
             return current
         }
-        if stamps == current.stamps { try phaseGuard.validate(); return current }
+        if stamps == current.stamps {
+            if let renderedAudio { try renderedAudio.validate() }
+            try phaseGuard.validate()
+            return current
+        }
         guard let renderedAudio, renderedAudio.scope == .projectMix,
               renderedAudio.mediaIdentity != nil, renderedAudio.nativeSourceSHA256 != nil,
               renderedAudio.pcmDataSHA256 != nil, renderedAudio.formatDataSHA256 != nil,
@@ -147,10 +175,7 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
         for (url, historical) in stamps {
             guard let now = currentStamps[url] else { throw ProjectAnalysisError.changedRenderArtifact }
             if url == renderedAudio.url {
-                guard historical.device == now.device, historical.inode == now.inode,
-                      historical.size == now.size,
-                      historical.modifiedSeconds == now.modifiedSeconds,
-                      historical.modifiedNanoseconds == now.modifiedNanoseconds else {
+                guard historical.sameIdentitySizeAndModification(as: now) else {
                     throw ProjectAnalysisError.changedRenderArtifact
                 }
             } else if historical != now {

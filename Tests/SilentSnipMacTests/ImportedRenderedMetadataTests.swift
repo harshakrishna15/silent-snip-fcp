@@ -8,7 +8,7 @@ import XCTest
 @testable import SilentSnipMac
 
 final class ImportedRenderedMetadataTests: XCTestCase {
-    private struct Fixture {
+    private struct Fixture: Sendable {
         let raw: URL
         let audio: LosslessRenderedAudio
         let historical: MediaContentSnapshot
@@ -33,7 +33,7 @@ final class ImportedRenderedMetadataTests: XCTestCase {
         receipt.removeValue(forKey: "renderedAudio") // The build-41 receipt format.
         try JSONSerialization.data(withJSONObject: receipt).write(to: receiptURL)
         let before = try MediaContentSnapshot.FileStamp(f.audio.url)
-        try touchMetadata(f.audio.url)
+        try Self.touchMetadata(f.audio.url)
         let after = try MediaContentSnapshot.FileStamp(f.audio.url)
         XCTAssertNotEqual(before, after)
         XCTAssertEqual(before.inode, after.inode)
@@ -53,24 +53,27 @@ final class ImportedRenderedMetadataTests: XCTestCase {
         catch ProjectAnalysisError.changedRenderArtifact { }
     }
 
-    @MainActor func testCurrentCaptureCTimeMutationStillFailsAfterPriorImportMetadataChange() async throws {
+    @MainActor func testRepeatedCompletedCaptureCTimeMutationStopsAfterOneRecapture() async throws {
         let f = try await fixture()
         let verification = try makeVerification(f)
-        try touchMetadata(f.audio.url) // Prior host import phase: allowed.
+        try Self.touchMetadata(f.audio.url) // Prior host import phase: allowed.
+        var captures = 0
         do {
             _ = try await verification.verify(capture: {
-                try self.touchMetadata(f.audio.url) // Current verification phase: forbidden.
+                captures += 1
+                try Self.touchMetadata(f.audio.url) // Current verification phase: forbidden.
                 return try self.hostCopy(f.expected)
             }, restore: { _, _ in XCTFail("A current-phase mutation cannot authorize writes") })
-            XCTFail("The current-phase guard must include ctime even for the new render")
+            XCTFail("The accepted phase must remain stable even for the new render")
         } catch { }
+        XCTAssertEqual(captures, 2, "At most one completed metadata-only XML phase may be discarded")
         XCTAssertFalse(try report(for: f).verified)
     }
 
     @MainActor func testRawMetadataChangeStillFailsBeforeHostAccess() async throws {
         let f = try await fixture()
         let verification = try makeVerification(f)
-        try touchMetadata(f.raw)
+        try Self.touchMetadata(f.raw)
         do {
             _ = try await verification.verify(capture: {
                 XCTFail("Original sources retain every historical stamp check")
@@ -116,7 +119,7 @@ final class ImportedRenderedMetadataTests: XCTestCase {
 
     func testLegacyRenderAndHashOnlyHistoryCannotGrantCTimeException() async throws {
         let f = try await fixture()
-        try touchMetadata(f.audio.url)
+        try Self.touchMetadata(f.audio.url)
         let legacy = try LosslessRenderedAudio(url: f.audio.url, sha256: f.audio.sha256,
             sampleRate: f.audio.sampleRate, channelCount: f.audio.channelCount, frameCount: f.audio.frameCount,
             timelineRange: f.audio.timelineRange, scope: .projectMix)
@@ -157,6 +160,135 @@ final class ImportedRenderedMetadataTests: XCTestCase {
         }
     }
 
+    @MainActor func testOneCompletedNativeMetadataCaptureCanBeDiscardedBeforeStrictStableCapture() async throws {
+        let f = try await fixture()
+        let verification = try makeVerification(f)
+        var captures = 0
+        let result = try await verification.verify(capture: {
+            captures += 1
+            if captures == 1 { try Self.touchMetadata(f.audio.url) }
+            return try self.hostCopy(f.expected)
+        }, restore: { _, _ in XCTFail("A new read-only capture never authorizes settings writes") })
+        XCTAssertEqual(captures, 2)
+        XCTAssertTrue(result.verified)
+        XCTAssertEqual(result.sourceMediaVerified, true)
+        do { try await f.historical.validate(); XCTFail("The original historical receipt remains unchanged") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
+    @MainActor func testCaptureChangedBytesWithRestoredMTimeFailFullProofBeforeAnyRecapture() async throws {
+        let f = try await fixture()
+        let verification = try makeVerification(f)
+        var captures = 0
+        do {
+            _ = try await verification.verify(capture: {
+                captures += 1
+                try Self.changeSampleRestoringMTime(f.audio.url)
+                return try self.hostCopy(f.expected)
+            }, restore: { _, _ in XCTFail("Changed PCM must not authorize writes") })
+            XCTFail("A ctime delta cannot authorize changed PCM")
+        } catch { }
+        XCTAssertEqual(captures, 1, "The full historical proof must precede any new host exchange")
+    }
+
+    @MainActor func testCaptureRawCanonicalIdentitySizeOrMTimeChangesNeverRecapture() async throws {
+        for mutation in ["rawCTime", "renderInode", "renderSize", "renderMTime", "canonical"] {
+            let f = try await fixture()
+            var historical = f.historical
+            let alias = f.raw.deletingLastPathComponent().appendingPathComponent("Alias.wav")
+            let other = f.raw.deletingLastPathComponent().appendingPathComponent("Other.wav")
+            if mutation == "canonical" {
+                try Data(contentsOf: f.raw).write(to: other)
+                try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: f.raw)
+                historical = try await MediaContentSnapshot.capture([alias, f.audio.url])
+            }
+            let verification = try ImportedResultVerification(expected: f.expected, outputURL: f.output,
+                originalProjectName: "Original", request: .init(id: UUID(), settings: .defaults, outputMode: .remove), sourceMedia: historical)
+            var captures = 0
+            do {
+                _ = try await verification.verify(capture: {
+                    captures += 1
+                    switch mutation {
+                    case "rawCTime": try Self.touchMetadata(f.raw)
+                    case "renderInode": try Data(contentsOf: f.audio.url).write(to: f.audio.url, options: .atomic)
+                    case "renderSize":
+                        let file = try FileHandle(forWritingTo: f.audio.url)
+                        try file.seekToEnd(); try file.write(contentsOf: Data([0])); try file.close()
+                    case "renderMTime":
+                        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_001)], ofItemAtPath: f.audio.url.path)
+                    default:
+                        try FileManager.default.removeItem(at: alias)
+                        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: other)
+                    }
+                    return try self.hostCopy(f.expected)
+                }, restore: { _, _ in XCTFail("Changed source identity cannot authorize writes") })
+                XCTFail("Only render ctime can discard a completed XML phase: \(mutation)")
+            } catch { }
+            XCTAssertEqual(captures, 1, "Non-ctime or original-source changes must not recapture: \(mutation)")
+        }
+    }
+
+    @MainActor func testUncertainCaptureFirstXMLMismatchOrMissingProofNeverRecapture() async throws {
+        enum Uncertain: Error { case delivery }
+        for failure in ["uncertain", "project", "DSP", "destination", "noProof"] {
+            let f = try await fixture()
+            if failure == "noProof" {
+                let reportURL = f.output.deletingLastPathComponent().appendingPathComponent("Edit-Report.json")
+                var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: reportURL)) as? [String: Any])
+                object.removeValue(forKey: "losslessAudio")
+                try JSONSerialization.data(withJSONObject: object).write(to: reportURL)
+            }
+            let verification = try makeVerification(f)
+            var captures = 0
+            do {
+                _ = try await verification.verify(capture: {
+                    captures += 1
+                    try Self.touchMetadata(f.audio.url)
+                    if failure == "uncertain" { throw Uncertain.delivery }
+                    let xml = try XMLDocument(data: self.hostCopy(f.expected))
+                    if failure == "project" { try XCTUnwrap(xml.nodes(forXPath: "//project/@name").first).stringValue = "Unrelated" }
+                    if failure == "destination" { try XCTUnwrap(xml.nodes(forXPath: "//event/@uid").first).stringValue = UUID().uuidString }
+                    if failure == "DSP" {
+                        let clip = try XCTUnwrap(xml.nodes(forXPath: "//asset-clip").first as? XMLElement)
+                        clip.addChild(try XMLElement(xmlString: "<adjust-volume amount='-3dB'/>"))
+                    }
+                    return xml.xmlData
+                }, restore: { _, _ in XCTFail("An invalid first capture never authorizes recovery") })
+                XCTFail("Invalid first capture must stop: \(failure)")
+            } catch { }
+            XCTAssertEqual(captures, 1, "A dispatched/uncertain or invalid capture must not be retried: \(failure)")
+        }
+    }
+
+    @MainActor func testSecondCaptureCannotSubstituteAnotherProjectOrAudioAsset() async throws {
+        for identity in ["project", "audioAsset"] {
+            let f = try await fixture()
+            let verification = try makeVerification(f)
+            var captures = 0
+            do {
+                _ = try await verification.verify(capture: {
+                    captures += 1
+                    if captures == 1 { try Self.touchMetadata(f.audio.url) }
+                    let xml = try XMLDocument(data: self.hostCopy(f.expected))
+                    if identity == "project", captures == 2 {
+                        try XCTUnwrap(xml.nodes(forXPath: "//project/@uid").first).stringValue = "different-host-project"
+                    }
+                    if identity == "audioAsset" {
+                        let asset = try XCTUnwrap(xml.nodes(forXPath: "//asset[media-rep/@src='\(f.audio.url.absoluteString)']").first as? XMLElement)
+                        let uid = String(repeating: captures == 1 ? "A" : "B", count: 32)
+                        asset.addAttribute(XMLNode.attribute(withName: "uid", stringValue: uid) as! XMLNode)
+                        try XCTUnwrap(asset.elements(forName: "media-rep").first)
+                            .addAttribute(XMLNode.attribute(withName: "sig", stringValue: uid) as! XMLNode)
+                    }
+                    return xml.xmlData
+                }, restore: { _, _ in XCTFail("A substituted object must not receive recovery writes") })
+                XCTFail("The first actual host identities must bind the second phase")
+            } catch { }
+            XCTAssertEqual(captures, 2)
+            XCTAssertFalse(try report(for: f).verified)
+        }
+    }
+
     @MainActor private func makeVerification(_ f: Fixture) throws -> ImportedResultVerification {
         try ImportedResultVerification(expected: f.expected, outputURL: f.output,
             originalProjectName: "Original", request: .init(id: UUID(), settings: .defaults, outputMode: .remove), sourceMedia: f.historical)
@@ -170,12 +302,22 @@ final class ImportedRenderedMetadataTests: XCTestCase {
         try XCTUnwrap(xml.nodes(forXPath: "//project/@uid").first).stringValue = "host-project"
         return xml.xmlData
     }
-    private func touchMetadata(_ url: URL) throws {
+    private static func touchMetadata(_ url: URL) throws {
         let value = Data(UUID().uuidString.utf8)
         let result = value.withUnsafeBytes { bytes in
             setxattr(url.path, "com.silentsnip.test-import-metadata", bytes.baseAddress, bytes.count, 0, 0)
         }
         guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    }
+    private static func changeSampleRestoringMTime(_ url: URL) throws {
+        let date = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date)
+        let layout = try WAVMediaIdentity.layout(at: url, allowExistingIdentity: true)
+        let chunk = try XCTUnwrap(layout.chunks.first { $0.name == "data" })
+        let bytes = try Data(contentsOf: url)
+        let file = try FileHandle(forWritingTo: url)
+        try file.seek(toOffset: chunk.offset + 8)
+        try file.write(contentsOf: Data([bytes[Int(chunk.offset + 8)] ^ 1])); try file.close()
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
     }
     private func fixture() async throws -> Fixture {
         let directory = folder.appendingPathComponent(UUID().uuidString)
@@ -193,6 +335,9 @@ final class ImportedRenderedMetadataTests: XCTestCase {
         wave.append(Data(repeating: 0x13, count: bytes)); try wave.write(to: raw)
         let audio = try await LosslessRenderedAudio.retain(from: raw, expectedSHA256: MediaContentSnapshot.contentHash(at: raw),
             in: directory.appendingPathComponent("Durable"), timelineRange: .init(start: .zero, end: .init(1)), scope: .projectMix)
+        // Exact whole-second mtime makes restoration in race fixtures precise,
+        // rather than relying on Foundation Date's submicrosecond conversion.
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: audio.url.path)
         let input = Data("""
         <fcpxml version="1.14"><resources><format id="f" frameDuration="1/30s"/>
         <asset id="a" name="Original" start="0s" duration="1s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000"><media-rep kind="original-media" src="\(raw.absoluteString)"/></asset>
