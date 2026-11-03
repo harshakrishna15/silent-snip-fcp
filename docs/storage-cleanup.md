@@ -15,12 +15,15 @@ Before deletion, cleanup validates the permitted location, regular-file type, si
 ## What stays
 
 - The entire `Results` directory, including before/after XML, recovery and verification receipts, edit reports, and settings snapshots.
+- Durable `Processed Audio/<request UUID>/Processed-Audio.wav` media referenced by cleaned Final Cut projects. It is never registered as disposable audio, and uninstall data removal also preserves it.
 - Every XML/FCPXML/FCPXMLD export, including diagnostic exports in temporary jobs.
 - Original media, Final Cut libraries/projects, source files, extension settings, and preferences.
 - Manual Share exports. They are user output, not automatically generated analysis cache.
 - Unregistered legacy files, incomplete exports whose ownership was not recorded, modified files, and unknown files placed beside a disposable copy.
 
 These exceptions mean total application storage is not hard-capped: saved results and recovery history accumulate deliberately. A crash before an incomplete render is inventoried can also leave an unknown file. The cleanup command does not guess that an audio extension or an old timestamp makes such a file safe to delete. Review these files manually if needed; automated cleanup never trades away recovery or media safety to reclaim more space.
+
+Keep durable processed audio when archiving or moving a cleaned project. Manual deletion or moving it without relinking can make that project's audio unavailable. Archive or relink the media and confirm no remaining project depends on its old location before removing it. Container identity metadata distinguishes each durable file; its PCM and format bytes retain the native render exactly.
 
 ## Logs
 

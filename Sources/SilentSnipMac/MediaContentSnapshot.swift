@@ -9,8 +9,20 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
     private let originalURLs: [URL]
     private let stamps: [URL: FileStamp]?
 
+    /// Every historical input protected by this receipt, including original
+    /// sources that a rendered-audio result no longer references directly.
+    var sourceURLs: [URL] { originalURLs }
+
     func covers(_ urls: [URL]) -> Bool {
         originalURLs == Array(Set(urls)).sorted { $0.absoluteString < $1.absoluteString }
+    }
+
+    /// Import receipts may additionally protect the original raw sources after
+    /// a result adopts a lossless processed render. Every result reference must
+    /// still have its exact original URL represented; this is not a content or
+    /// canonical-path substitute for validating the whole historical snapshot.
+    func containsReferences(_ urls: [URL]) -> Bool {
+        Set(urls).isSubset(of: Set(originalURLs))
     }
 
     /// A selected-clip result references only part of the original project.

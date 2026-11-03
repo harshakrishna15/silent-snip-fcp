@@ -137,6 +137,18 @@ exec /bin/rm "$@"
                      self.inside_library, self.other_data, REPO / "Scripts/uninstall-local.sh"]:
             self.assertTrue(path.exists(), str(path))
 
+    def processed_media(self):
+        folder = self.data[0] / "Processed Audio/4A37BA0B-7698-46B4-A523-F6377C389067"
+        folder.mkdir(parents=True)
+        audio = folder / "Processed-Audio.wav"
+        audio.write_bytes(b"durable native PCM referenced by a cleaned project")
+        nested = folder / "Project Dependencies/retained.fcpxml"
+        nested.parent.mkdir()
+        nested.write_text(f'<media-rep kind="original-media" src="{audio.as_uri()}"/>')
+        hidden = folder / ".media-provenance"
+        hidden.write_text("preserve every durable-media sibling")
+        return {path: path.read_bytes() for path in (audio, nested, hidden)}
+
     def test_default_removes_only_owned_apps_after_all_unregistrations(self):
         result = self.run_uninstall()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -155,6 +167,77 @@ exec /bin/rm "$@"
         self.assertTrue(all(not path.exists() for path in self.apps + self.data + [self.preferences]))
         self.assertIn(f"defaults delete {HELPER}", self.calls())
         self.assert_protected_files()
+
+    def test_remove_data_preserves_durable_media_and_nested_references_but_removes_other_app_data(self):
+        preserved = self.processed_media()
+        for name in (".private-state", "..old-cache"):
+            (self.data[0] / name).write_text("disposable app state")
+        result = self.run_uninstall("--remove-data")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path, original in preserved.items():
+            self.assertEqual(path.read_bytes(), original)
+        self.assertEqual([p.name for p in self.data[0].iterdir()], ["Processed Audio"])
+        self.assertTrue(all(not path.exists() for path in self.apps + self.data[1:] + [self.preferences]))
+        self.assertIn("durable Processed Audio", result.stdout)
+        self.assert_protected_files()
+        # An already uninstalled account can remove remaining app state again
+        # without deleting the source files or their stable referenced paths.
+        repeated = self.run_uninstall("--remove-data")
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        for path, original in preserved.items():
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_dry_run_lists_only_removable_siblings_and_keeps_durable_media(self):
+        preserved = self.processed_media()
+        result = self.run_uninstall("--dry-run", "--remove-data")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [line for line in result.stdout.splitlines() if line.startswith("Would run:")]
+        self.assertTrue(any("/Results" in line for line in commands))
+        self.assertFalse(any("Processed\\ Audio" in line for line in commands))
+        self.assertEqual(self.calls(), [])
+        self.assertTrue(all(path.exists() for path in self.apps + self.data + [self.preferences]))
+        for path, original in preserved.items():
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_processed_audio_symlink_and_external_media_are_preserved(self):
+        preserved = self.processed_media()
+        processed = self.data[0] / "Processed Audio"
+        external = self.user_home / "Archived processed audio"
+        processed.rename(external)
+        processed.symlink_to(external, target_is_directory=True)
+        result = self.run_uninstall("--remove-data")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(processed.is_symlink())
+        for path, original in preserved.items():
+            self.assertEqual(path.read_bytes(), original)
+        self.assertFalse((self.data[0] / "Results").exists())
+        self.assertFalse(any(str(external) in call for call in self.calls()))
+
+    def test_alias_to_durable_media_is_not_deleted_as_a_differently_named_sibling(self):
+        preserved = self.processed_media()
+        alias = self.data[0] / "Processed audio alias"
+        alias.symlink_to(self.data[0] / "Processed Audio", target_is_directory=True)
+        result = self.run_uninstall("--remove-data")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(alias.is_symlink())
+        for path, original in preserved.items():
+            self.assertEqual(path.read_bytes(), original)
+        self.assertFalse((self.data[0] / "Results").exists())
+
+    def test_linked_data_root_is_kept_when_removing_it_would_break_durable_media_references(self):
+        preserved = self.processed_media()
+        support = self.data[0]
+        external = self.user_home / "External app data"
+        support.rename(external)
+        support.symlink_to(external, target_is_directory=True)
+        result = self.run_uninstall("--remove-data")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(support.is_symlink())
+        for path, original in preserved.items():
+            self.assertEqual(path.read_bytes(), original)
+        self.assertTrue((external / "Results/Job/Before-Cuts.fcpxml").exists())
+        self.assertIn("linked Silent Snip data directory", result.stdout)
+        self.assertFalse(any(str(external) in call for call in self.calls()))
 
     def test_dry_run_is_read_only_even_with_remove_data_and_running_host(self):
         result = self.run_uninstall("--dry-run", "--remove-data", RUNNING_APP="Final Cut Pro")

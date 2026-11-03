@@ -19,7 +19,8 @@ Unregister and remove Silent Snip app bundles built in this checkout.
 
 Quit Final Cut Pro and Silent Snip first. No apps are stopped automatically.
 By default, saved settings and results are kept. Source code, build caches,
-source media, integration evidence, and Final Cut libraries are always kept.
+original source media, durable Processed Audio, integration evidence, and
+Final Cut libraries are always kept, including with --remove-data.
 App copies outside this checkout are not removed. See docs/setup.md#uninstall
 for removing the Final Cut Share destination and macOS privacy entries.
 HELP
@@ -154,9 +155,30 @@ done
 
 if [[ "$remove_data" == true ]]; then
   require_stopped
-  for path in "$user_library/Application Support/Silent Snip" "$user_library/Application Support/Silent Snip Audio"; do
-    if [[ -e "$path" || -L "$path" ]]; then run /bin/rm -rf -- "$path"; fi
-  done
+  support_data="$user_library/Application Support/Silent Snip"
+  processed_audio="$support_data/Processed Audio"
+  if [[ -e "$processed_audio" || -L "$processed_audio" ]]; then
+    if [[ -L "$support_data" ]]; then
+      # The link itself is part of the project's durable media path. Keep it,
+      # and never traverse its target to remove neighboring data.
+      echo 'Preserving the linked Silent Snip data directory: cleaned projects reference its Processed Audio.'
+    else
+      # Remove only siblings of the durable media, including hidden app data.
+      # Do not recursively walk Processed Audio or unlink its path/aliases.
+      for path in "$support_data"/* "$support_data"/.[!.]* "$support_data"/..?*; do
+        [[ -e "$path" || -L "$path" ]] || continue
+        [[ "$path" != "$processed_audio" ]] || continue
+        # On the usual case-insensitive macOS volume, the preserved directory
+        # can have different capitalization while naming the same media.
+        [[ ! "$path" -ef "$processed_audio" ]] || continue
+        run /bin/rm -rf -- "$path"
+      done
+    fi
+  elif [[ -e "$support_data" || -L "$support_data" ]]; then
+    run /bin/rm -rf -- "$support_data"
+  fi
+  legacy_data="$user_library/Application Support/Silent Snip Audio"
+  if [[ -e "$legacy_data" || -L "$legacy_data" ]]; then run /bin/rm -rf -- "$legacy_data"; fi
   for identity in ${preference_domains[@]+"${preference_domains[@]}"}; do
     delete_preferences "$identity"
   done
@@ -173,7 +195,7 @@ if [[ "$dry_run" == true ]]; then
 else
   echo "Removed ${#apps[@]} Silent Snip app bundle(s) from this checkout and unregistered them."
   if [[ "$remove_data" == true ]]; then
-    echo 'Removed local app data. Source media, Final Cut libraries, integration evidence, and developer build caches were kept.'
+    echo 'Removed local app data. Original source media, durable Processed Audio, Final Cut libraries, integration evidence, and developer build caches were kept.'
   else
     echo 'Saved settings and results were kept. Add --remove-data to erase them.'
   fi

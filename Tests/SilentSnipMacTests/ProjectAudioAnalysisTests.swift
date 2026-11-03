@@ -75,6 +75,113 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         XCTAssertEqual(try result.review.selectedDuration, RationalTime(4, 5))
     }
 
+    func testFractionalVideoInitialAndRecalculatedCutsUseTheSameNativeSampleGrid() async throws {
+        let fixture = try fixture()
+        let data = Data(try String(contentsOf: fixture.xml)
+            .replacingOccurrences(of: "frameDuration=\"1/30s\"", with: "frameDuration=\"1001/30000s\"").utf8)
+        try data.write(to: fixture.xml)
+        let document = try TimelineParser.parse(data: data)
+        let context = try renderContext(fixture, document: document)
+        var reviewed = try await ProjectAudioAnalysis.analyze(projectXML: fixture.xml, selection: fixture.selection,
+            dialogueAudio: fixture.audio, renderContext: context)
+        XCTAssertEqual(reviewed.cutFrameDuration, RationalTime(1001, 6000))
+        XCTAssertFalse(reviewed.review.cuts.isEmpty)
+        let updated = try AnalysisSettings(minimumSilenceDuration: 0.1,
+            beforeSpeechPadding: 0.05, afterSpeechPadding: 0.05)
+        try reviewed.recalculate(settings: updated)
+        let fresh = try await ProjectAudioAnalysis.analyze(projectXML: fixture.xml, selection: fixture.selection,
+            dialogueAudio: fixture.audio, renderContext: context, settings: updated)
+        XCTAssertEqual(reviewed.review.cuts.map(\.range), fresh.review.cuts.map(\.range))
+        for boundary in reviewed.review.cuts.flatMap({ [$0.range.start, $0.range.end] }) {
+            XCTAssertEqual(try boundary.multiplied(by: .init(48_000)).denominator, 1)
+            XCTAssertEqual(try boundary.roundedDown(toFrame: document.frameDuration), boundary)
+        }
+        XCTAssertEqual(reviewed.retainingAudio(at: fixture.audio).cutFrameDuration, reviewed.cutFrameDuration)
+    }
+
+    func testSourceGridUsesDeclaredProjectRateAndRenderedGridUsesVerifiedWAVRate() throws {
+        let data = Data("""
+        <fcpxml><library><event><project><sequence audioRate="44.1k"/></project></event></library></fcpxml>
+        """.utf8)
+        let frame = RationalTime(1001, 30_000)
+        XCTAssertEqual(try ProjectAudioAnalysis.analysisCutGrid(projectData: data,
+            frameDuration: frame, decodedSampleRate: 48_000, sourceAudio: true),
+            try frame.multiplied(by: .init(100)))
+        XCTAssertEqual(try ProjectAudioAnalysis.analysisCutGrid(projectData: data,
+            frameDuration: frame, decodedSampleRate: 48_000, sourceAudio: false),
+            try frame.multiplied(by: .init(5)))
+        let unknown = Data(String(decoding: data, as: UTF8.self).replacingOccurrences(of: "44.1k", with: "unknown").utf8)
+        XCTAssertThrowsError(try ProjectAudioAnalysis.analysisCutGrid(projectData: unknown,
+            frameDuration: frame, decodedSampleRate: 48_000, sourceAudio: true))
+    }
+
+    func testSilentNativeFloorTailsAgreeAcrossInitialLocalAndFreshSliceAnalysis() async throws {
+        for frames in [1796, 1797] {
+            let fixture = try fractionalTailFixture(videoFrames: frames, silent: true)
+            let target = try fixture.document.selectedTarget(fixture.selection)
+            let isolated = try DialogueRenderContext.capturedIsolated(document: fixture.document,
+                target: target, audioURL: fixture.audio)
+            var initial = try await ProjectAudioAnalysis.analyze(projectData: fixture.data,
+                selection: fixture.selection, dialogueAudio: fixture.audio, renderContext: isolated,
+                settings: .defaults, jobID: UUID(), capturedMedia: nil)
+            XCTAssertEqual(initial.analysis.disposition, .entirelySilent, "\(frames)-frame native floor tail")
+            XCTAssertTrue(initial.analysis.candidates.isEmpty)
+            XCTAssertEqual(initial.audio.duration, fixture.physicalDuration,
+                "The clock correction must not manufacture decoded PCM frames")
+            XCTAssertEqual(initial.audio.windows.last?.range.end, target.timelineRange.end)
+            try initial.recalculate(settings: .defaults)
+            let slice = try DialogueRenderContext.capturedProjectSlice(document: fixture.document,
+                target: target, audioURL: fixture.audio)
+            let fresh = try await ProjectAudioAnalysis.analyze(projectData: fixture.data,
+                selection: fixture.selection, dialogueAudio: fixture.audio, renderContext: slice,
+                settings: .defaults, jobID: UUID(), capturedMedia: nil)
+            XCTAssertEqual(initial.analysis.disposition, fresh.analysis.disposition)
+            XCTAssertEqual(initial.analysis.candidates, fresh.analysis.candidates)
+            XCTAssertEqual(initial.audio.duration, fresh.audio.duration)
+            XCTAssertNoThrow(try ReviewedCutValidation.verify(reviewed: initial, fresh: fresh))
+        }
+    }
+
+    func testAudibleNativeFloorTailCutsAgreeAcrossInitialLocalAndFreshSliceAnalysis() async throws {
+        let settings = try AnalysisSettings(minimumSilenceDuration: 0.1,
+            beforeSpeechPadding: 0.05, afterSpeechPadding: 0.05)
+        for frames in [1796, 1797] {
+            let fixture = try fractionalTailFixture(videoFrames: frames, silent: false)
+            let target = try fixture.document.selectedTarget(fixture.selection)
+            let isolated = try DialogueRenderContext.capturedIsolated(document: fixture.document,
+                target: target, audioURL: fixture.audio)
+            var initial = try await ProjectAudioAnalysis.analyze(projectData: fixture.data,
+                selection: fixture.selection, dialogueAudio: fixture.audio, renderContext: isolated,
+                settings: .defaults, jobID: UUID(), capturedMedia: nil)
+            XCTAssertEqual(initial.analysis.disposition, .cuts)
+            XCTAssertFalse(initial.analysis.candidates.isEmpty)
+            try initial.recalculate(settings: settings)
+            let slice = try DialogueRenderContext.capturedProjectSlice(document: fixture.document,
+                target: target, audioURL: fixture.audio)
+            let fresh = try await ProjectAudioAnalysis.analyze(projectData: fixture.data,
+                selection: fixture.selection, dialogueAudio: fixture.audio, renderContext: slice,
+                settings: settings, jobID: UUID(), capturedMedia: nil)
+            XCTAssertEqual(initial.analysis.disposition, fresh.analysis.disposition)
+            XCTAssertEqual(initial.analysis.candidates, fresh.analysis.candidates)
+            XCTAssertNoThrow(try ReviewedCutValidation.verify(reviewed: initial, fresh: fresh))
+        }
+    }
+
+    func testIsolatedMeasurementDoesNotNormalizeAnEntireMissingSampleOrMore() async throws {
+        for frames in [1795, 1796, 1797] {
+            let fixture = try fractionalTailFixture(videoFrames: frames, silent: true, missingFrames: 1)
+            let target = try fixture.document.selectedTarget(fixture.selection)
+            let isolated = try DialogueRenderContext.capturedIsolated(document: fixture.document,
+                target: target, audioURL: fixture.audio)
+            do {
+                _ = try await ProjectAudioAnalysis.analyze(projectData: fixture.data,
+                    selection: fixture.selection, dialogueAudio: fixture.audio, renderContext: isolated,
+                    settings: .defaults, jobID: UUID(), capturedMedia: nil)
+                XCTFail("A full missing PCM sample must not become logical measurement coverage")
+            } catch ProjectAnalysisError.incompleteRender { }
+        }
+    }
+
     func testVerifiedProjectSliceExcludesPaddingAndNeighborAndRequiresCompleteRender() async throws {
         let fixture = try fixture()
         let xml = try String(contentsOf: fixture.xml)
@@ -470,6 +577,34 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         let audio: URL
         let document: TimelineDocument
         let selection = TimelineSelection(timelineRange: TimeRange(start: .zero, end: RationalTime(3)))
+    }
+
+    private func fractionalTailFixture(videoFrames: Int, silent: Bool, missingFrames: Int = 0) throws
+        -> (data: Data, document: TimelineDocument, selection: TimelineSelection, audio: URL, physicalDuration: RationalTime) {
+        let duration = try RationalTime(1001, 30_000).multiplied(by: .init(Int64(videoFrames)))
+        let logicalSamples = try duration.multiplied(by: .init(48_000))
+        let count = Int(logicalSamples.numerator / logicalSamples.denominator) - missingFrames
+        let sample: (Int, Int) -> Int16 = { frame, _ in
+            silent || (48_000..<96_000).contains(frame) ? 0 : 8_192
+        }
+        let source = try wave(frames: 2_880_000, channels: 1, sample: sample)
+        let audio = try wave(frames: count, channels: 2, sample: sample)
+        let time = "\(duration.numerator)/\(duration.denominator)s"
+        let data = Data("""
+        <fcpxml version="1.14"><resources>
+        <format id="f" frameDuration="1001/30000s" width="640" height="360"/>
+        <asset id="a" name="Generated narration" start="0s" duration="60s" hasAudio="1" audioSources="1" audioChannels="1" audioRate="48000">
+        <media-rep kind="original-media" src="\(source.absoluteString)"/></asset>
+        <effect id="c" name="Silent Snip Audio" uid="\(AudioControllerSettings.effectUID)"/>
+        </resources><library><event><project name="Floor tail \(videoFrames)" uid="floor-tail-\(videoFrames)">
+        <sequence format="f" duration="\(time)" tcStart="0s" audioLayout="stereo" audioRate="48k"><spine>
+        <asset-clip ref="a" name="Narration" offset="0s" start="0s" duration="\(time)" audioRole="dialogue"><filter-audio ref="c"/></asset-clip>
+        </spine></sequence></project></event></library></fcpxml>
+        """.utf8)
+        let document = try TimelineParser.parse(data: data,
+            exclusions: .init(controllerEffectUIDs: [AudioControllerSettings.effectUID]))
+        return (data, document, .init(timelineRange: .init(start: .zero, end: duration)), audio,
+            .init(Int64(count), 48_000))
     }
 
     func testFreshAudioValidationAcceptsSameCutsAndPreservesUserExclusions() async throws {

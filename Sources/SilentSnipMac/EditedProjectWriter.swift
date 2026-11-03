@@ -28,6 +28,9 @@ public struct EditedProjectReport: Codable, Sendable {
     public let selectedRanges: [TimeRange]
     public let retainedSegments: [EditedProjectSegment]
     public let removedPointMarkerCount: Int
+    /// Native processed PCM used by the cleaned copy. Original sources and the
+    /// recoverable project remain separate historical dependencies.
+    public var losslessAudio: LosslessRenderedAudio? = nil
 }
 
 public struct EditedProjectOutput: Sendable {
@@ -75,8 +78,23 @@ public enum EditedProjectWriter {
         replaceOriginal: Bool = false,
         selectedClipOnly: Bool = false,
         useOriginalEvent: Bool = false,
-        omitController: Bool = false
+        omitController: Bool = false,
+        losslessAudio: LosslessRenderedAudio? = nil
     ) throws -> EditedProjectOutput {
+        if let losslessAudio {
+            // First use the established edit/ripple checks. The processed-audio
+            // substitution is a separate strict transformation of that exact
+            // verified result, including its already-rippled connected items.
+            let base = try write(projectData: projectData, selection: selection,
+                selectedRanges: selectedRanges, outputName: outputName,
+                projectUID: projectUID, eventUID: eventUID,
+                destinationLibrary: destinationLibrary, replacementGaps: replacementGaps,
+                replaceOriginal: replaceOriginal, selectedClipOnly: selectedClipOnly,
+                useOriginalEvent: useOriginalEvent, omitController: omitController)
+            return try LosslessAudioProjectWriter.replacing(base, originalData: projectData,
+                selection: selection, audio: losslessAudio, replacementGaps: replacementGaps,
+                selectedClipOnly: selectedClipOnly)
+        }
         let name = outputName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw EditedProjectWriterError.invalidName }
         // Run the bounded/entity-safe parser before FoundationXML. All later

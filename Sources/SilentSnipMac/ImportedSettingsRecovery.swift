@@ -45,6 +45,7 @@ enum ImportedSettingsRecovery {
         let expectedSHA256: String
         var replacementTarget: XMLReplacementTarget?
         var hostProjectUID: String?
+        var hostAudioAssetUIDs: [String: String]?
         var sourceMedia: MediaContentSnapshot?
     }
     let request: AnalyzeRequest
@@ -54,6 +55,7 @@ enum ImportedSettingsRecovery {
     let projectName: String
     let replacementTarget: XMLReplacementTarget?
     private(set) var hostProjectUID: String?
+    private(set) var hostAudioAssetUIDs: [String: String]?
     private(set) var complete = false
     private let sourceMedia: MediaContentSnapshot?
     var sourceMediaNotice: String {
@@ -85,7 +87,7 @@ enum ImportedSettingsRecovery {
     func savePending() throws {
         let receipt = Receipt(requestID: request.id, settings: request.settings, outputMode: request.outputMode.rawValue,
             originalProjectName: originalProjectName, expectedSHA256: Self.digest(expected), replacementTarget: replacementTarget, hostProjectUID: hostProjectUID,
-            sourceMedia: sourceMedia)
+            hostAudioAssetUIDs: hostAudioAssetUIDs, sourceMedia: sourceMedia)
         try JSONEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
     }
 
@@ -123,6 +125,7 @@ enum ImportedSettingsRecovery {
                 from: Data(contentsOf: directory.appendingPathComponent("Import-Verification.json"))),
                previous.verified, previous.expectedProjectUID == document.projectUID {
                 result.hostProjectUID = previous.actualProjectUID
+                result.hostAudioAssetUIDs = previous.hostAssignedAudioAssetUIDs
             }
             try result.savePending()
             return result
@@ -137,6 +140,7 @@ enum ImportedSettingsRecovery {
             request: AnalyzeRequest(id: receipt.requestID, settings: receipt.settings, outputMode: mode), replacementTarget: receipt.replacementTarget,
             sourceMedia: receipt.sourceMedia)
         result.hostProjectUID = receipt.hostProjectUID
+        result.hostAudioAssetUIDs = receipt.hostAudioAssetUIDs
         return result
     }
 
@@ -167,18 +171,25 @@ enum ImportedSettingsRecovery {
         let reportURL = directory.appendingPathComponent("Import-Verification.json")
         var report = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: expectedSnapshot).report
         do {
-            let urls = expectedSnapshot.document.clips.filter(\.enabled).compactMap(\.mediaURL)
-            let media = try await MediaContentSnapshot.capture(urls)
+            let resultURLs = expectedSnapshot.document.clips.filter(\.enabled).compactMap(\.mediaURL)
+            let media: MediaContentSnapshot
             if let sourceMedia {
-                guard sourceMedia.covers(urls), media == sourceMedia else {
-                    throw EditedProjectWriterError.verificationFailed("source media contents changed since Apply; no settings were restored")
+                guard sourceMedia.containsReferences(resultURLs) else {
+                    throw EditedProjectWriterError.verificationFailed("the saved media evidence does not include every result media reference; no settings were restored")
                 }
+                // A rendered-audio result can replace the raw audio references.
+                // Keep checking all historical originals as well as the durable
+                // render instead of restricting evidence to the new timeline.
+                try await sourceMedia.validate()
+                media = sourceMedia
+            } else {
+                media = try await MediaContentSnapshot.capture(resultURLs)
             }
             // Keep the initial full-content check before any host access. A
             // second full scan can overlap the read-only XML capture, provided
             // file identities/change stamps span BOTH operations. Even a write
             // that restores the original bytes during capture must invalidate it.
-            let captureGuard = try MediaContentSnapshot.prepareRead(urls)
+            let captureGuard = try MediaContentSnapshot.prepareRead(media.sourceURLs)
             async let captureValidation: Void = validateMedia(media)
             let actualData = try await capture()
             try await captureValidation
@@ -186,13 +197,14 @@ enum ImportedSettingsRecovery {
             try verifyDestination(actualData)
             let actualSnapshot = try ProjectRoundTripVerification.Snapshot(data: actualData)
             let comparison = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
-                allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID)
+                allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID, expectedHostAudioAssetUIDs: hostAudioAssetUIDs)
             report = comparison.report
             _ = try comparison.verify(reportURL: reportURL)
             if let bound = hostProjectUID, bound != report.actualProjectUID {
                 throw EditedProjectWriterError.verificationFailed("the imported project identity changed")
             }
             hostProjectUID = report.actualProjectUID
+            hostAudioAssetUIDs = report.hostAssignedAudioAssetUIDs
             try savePending()
             let corrections = try ImportedSettingsRecovery.plan(comparison)
             if !corrections.isEmpty {
@@ -208,7 +220,7 @@ enum ImportedSettingsRecovery {
                 try verifyDestination(recoveredData)
                 let recoveredSnapshot = try ProjectRoundTripVerification.Snapshot(data: recoveredData)
                 let recovered = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: recoveredSnapshot,
-                    allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID)
+                    allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID, expectedHostAudioAssetUIDs: hostAudioAssetUIDs)
                 report = recovered.report
                 _ = try recovered.verify(reportURL: reportURL)
                 guard report.actualProjectUID == hostProjectUID else {

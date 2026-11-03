@@ -424,7 +424,7 @@ static BOOL booleanValue(id value) {
     self.applyButton.controlSize = NSControlSizeRegular;
     self.applyButton.font = [NSFont systemFontOfSize:13];
     self.applyButton.identifier = @"silentsnip.apply";
-    self.applyButton.toolTip = @"Create and open a cleaned project copy, keeping the surrounding edit and editable effects. The original project stays unchanged.";
+    self.applyButton.toolTip = @"Create and open a cleaned project with the same processed sound in the kept audio. Effects stay editable in the unchanged original project.";
     self.applyButton.enabled = NO;
     self.analyzeButton = [NSButton buttonWithTitle:@"Analyze" target:self action:@selector(analyze:)];
     self.analyzeButton.bezelStyle = NSBezelStyleRounded;

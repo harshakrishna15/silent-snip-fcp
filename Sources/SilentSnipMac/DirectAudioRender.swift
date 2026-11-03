@@ -78,8 +78,14 @@ enum DirectAudioRender {
         for clip in document.clips where clip.id != target.id && clip.enabled && clip.hasAudio {
             guard let node = element(clip) else { return nil }
             let excluded = roles(node) { value in
-                guard let role = value?.lowercased() else { return false }
-                return ["music", "effects"].contains { role == $0 || role.hasPrefix($0 + ".") }
+                // A verified Dialogue-only Share excludes every other explicit
+                // role group, including custom roles. Missing/blank roles are
+                // unknown, not proof that the clip is absent from Dialogue.
+                guard let role = value, !role.isEmpty,
+                      role.trimmingCharacters(in: .whitespacesAndNewlines) == role,
+                      role.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
+                      role.components(separatedBy: ".").allSatisfy({ !$0.isEmpty }) else { return false }
+                return !isDialogue(role)
             }
             if !excluded {
                 if clip.timelineRange.intersection(target.timelineRange) != nil { return nil }

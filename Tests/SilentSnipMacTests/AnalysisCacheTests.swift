@@ -72,6 +72,30 @@ import XCTest
         cache.clear()
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
+    func testSourceProjectGridSurvivesCacheAndFurtherLocalUpdates() async throws {
+        let data = Data(String(decoding: xml(), as: UTF8.self)
+            .replacingOccurrences(of: "frameDuration=\"1/30s\"", with: "frameDuration=\"1001/30000s\"")
+            .replacingOccurrences(of: "sequence format=\"f\"", with: "sequence format=\"f\" audioRate=\"44.1k\"").utf8)
+        let raw = try await analysis(data, rendered: false)
+        let grid = try AudioVideoCutGrid.frameDuration(videoFrameDuration: raw.document.frameDuration, sampleRate: 44_100)
+        let detected = try SilenceDetector.analyze(windows: raw.audio.windows, target: raw.target.timelineRange,
+            frameDuration: grid)
+        let bound = try AnalyzedAudioProject(document: raw.document, target: raw.target,
+            dialogueContext: raw.dialogueContext, audio: raw.audio, settings: .defaults, analysis: detected,
+            review: ReviewPlan(jobID: UUID(), document: raw.document, target: raw.target, analysis: detected),
+            cutFrameDuration: grid)
+        let cache = AnalysisCache(storage: StorageCleanup(root: directory)); defer { cache.clear() }
+        let baseline = try await key(data)
+        try await cache.store(key: baseline, analysis: bound, directory: cacheDirectory)
+        let cached = try await cache.reuse(key: baseline, document: bound.document,
+            target: bound.target, settings: .defaults, jobID: UUID())
+        var reused = try XCTUnwrap(cached)
+        XCTAssertEqual(reused.cutFrameDuration, grid)
+        XCTAssertTrue(reused.review.cuts.isEmpty)
+        try reused.recalculate(settings: .defaults)
+        XCTAssertTrue(reused.review.cuts.isEmpty,
+            "A further local update must not switch from the bound 44.1 kHz project grid to the 48 kHz raw decoder grid")
+    }
     func testProcessingChangesInvalidateFullSemanticKey() async throws {
         let data = xml(gate + secondGate), original = try await key(data)
         XCTAssertNotNil(original)

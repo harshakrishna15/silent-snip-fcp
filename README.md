@@ -2,26 +2,32 @@
 
 Remove quiet pauses from clips with audio in Final Cut Pro, with control over which cuts to keep.
 
-Silent Snip combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes the selected clip and creates a cleaned copy of the full project that still references your original media and preserves its audio effects.
+Silent Snip combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes the selected clip and creates a cleaned copy of the full project.
+
+The build 40 changes prioritize identical retained sound: Apply captures the complete native project mix, including connected Music, Effects, and custom roles, and cuts that continuous lossless PCM instead of restarting live effects at each join. Original video edits stay in the cleaned project. The untouched original project retains its editable audio effects; the cleaned copy uses rendered sound and does not retain a live processing chain on its audio.
+
+> **Build 40 status:** the compiled production writer has passed native PCM and strict imported-project/source verification for generated full-mix, camera/music, custom-role, and fractional-frame-rate fixtures. The final metadata identity path also preserved the intended new PCM file URL and exact retained samples. Final packaged/installed build 40 Analyze → review → Apply verification is pending. These writer tests do not establish the complete button-to-finish flow or the five-second target for five-minute clips. See [current evidence and limits](docs/workflow-throughput.md#build-40-preserve-the-continuous-native-mix).
 
 > **Voice-over milestone verified:** Analyze → Apply created and opened separate editable projects in Final Cut Pro 12.4 for plain narration, narration with Noise Gate and Limiter, and one-second-gap output. Original projects and source media were preserved. See [milestone evidence and limits](docs/voiceover-project.md).
 
-The general-project update adds linked camera clips, full-project copies, a guarded direct-render path, overlapping source validation, and viewport-based preview drawing. Native Analyze → Apply passes for camera projects with connected music and preceding dialogue. Fresh manual reanalysis measured about 64–69% lower elapsed time against the recorded audio baseline; first-analysis timing and unsupported project layouts remain documented in [the verification notes](docs/general-project-performance.md).
+Earlier general-project builds added linked camera clips, full-project copies, a guarded direct-render path, overlapping source validation, and viewport-based preview drawing. Their native Analyze → Apply passes and 64–69% lower fresh-reanalysis timing against the recorded audio baseline are historical results, with a different editable-effects output route. See [those verification notes](docs/general-project-performance.md).
 
 The manual review update adds **Update Cuts** from retained audio and **Go to Cut** without another Share. Nine native setting updates took 82–124 ms in the helper (94 ms median); fresh audio analysis remains separate and Apply verifies current audio. See [timings and verification limits](docs/general-project-performance.md#manual-review-without-repeated-share).
 
-Build 37 batches source decoding, overlaps imported-result source validation with XML capture, and uses an existing advertised Share shortcut when available. Build 39 waits for observed native menu readiness while retaining guarded once-only activation. The [workflow throughput report](docs/workflow-throughput.md) records the one-second-per-minute target, native measurements, and exact processed-audio checks. The five-minute target remains unmet, and the stateful delay test shows that editable effect preservation does not guarantee identical sound at cut joins.
+Builds 37–39 improved source decoding, validation overlap, and guarded native menu readiness. Their five-minute runs still took about 19–23 seconds of helper Analyze plus verified Apply time. That target remains unmet; no build 40 end-to-end speed claim is established. The [workflow throughput report](docs/workflow-throughput.md) separates these historical timings from the new sound-preserving output evidence.
 
 ## How it works
+
+The build 40 flow below is implemented in this checkout; final installed-app verification remains pending as noted above.
 
 1. Select one normal-speed clip with audio in the primary storyline and add **Silent Snip Audio**.
 2. Open **Controls**, adjust silence detection, and click **Analyze Audio**.
 3. Controls returns to the front when analysis finishes. Review the proposed cuts and choose which to include. Changing detection settings or output mode marks the old results as out of date. Click **Update Cuts** manually to recalculate from the last analyzed audio on supported direct clips. **Analyze Audio** remains visible for refreshing volume or effect changes. Apply verifies fresh processed audio before using a locally updated preview.
-4. Click **Apply Cuts** to create and open a cleaned copy of the full project in the original event. Its retained segments and audio effects stay editable.
+4. Click **Apply Cuts** to capture the current full native mix, check the reviewed cuts, and create a cleaned copy in the original event. It retains the original video edits and uses the continuous processed PCM with only the selected ranges removed. Original camera audio is explicitly disabled so it cannot play twice.
 
 The original project and source media stay unchanged. Silent Snip also saves the original project's recovery XML before importing the result.
 
-The cleaned segments keep your sound-processing effects. Silent Snip's passthrough detector stays on the original recording; its analysis settings are saved with the result.
+Open the original project to change live sound-processing effects and analyze again. The cleaned copy contains the captured sound, including effect tails, rather than editable effect instances. Silent Snip's passthrough detector stays on the original recording; its analysis settings are saved with the result. Current exact-sample evidence covers native **24-bit stereo 48 kHz WAV exports**, not universal bit identity with Final Cut's live floating-point engine or every plugin.
 
 Final Cut's native Share panels remain visible during automation; no window covers them. Keep Final Cut in front while Silent Snip operates it. Detection settings are available in both Controls and the Audio Inspector so Final Cut can persist them.
 
@@ -35,11 +41,12 @@ reconnection, and source-integrity checks, including limits for older saved resu
 - **Two output modes:** remove selected pauses or replace them with one-second gaps.
 - **Review before applying:** per-cut selection and a timeline preview.
 - **Audio processing:** measure source audio for unprocessed clips or a verified Final Cut render for processed clips.
+- **Sound-preserving output:** retain the full audible native project mix, with original video and recovery XML. Unverifiable roles, camera channel muting, sample mappings, or delivery stop the operation.
 - **Manual analysis:** tweak values freely, then click Analyze Audio or Update Cuts. Old cuts stay inactive until the new analysis finishes; eligible requests can reuse matching verified measurements internally.
 
 Detection uses loudness, so quiet breaths can qualify as silence. It does not recognize speech or breaths.
 
-Targets must be normal-speed direct asset clips with enabled audio in the primary storyline. Linked video and audio are cut together. Retimed or nested targets, split A/V edits, component trims, unsupported connections, and cuts crossing fades remain outside scope. See [compatibility details](docs/workflow.md#2-select-the-audio-clip) and [analysis behavior](docs/analysis-speed.md).
+Targets must be normal-speed direct asset clips with enabled audio in the primary storyline. Linked video and audio are cut together. Retimed or nested targets, split A/V edits, component trims, unsupported connections, and cuts crossing fades remain outside scope. Pacing gaps must also place retained PCM on exact audio samples; unsupported frame-rate/sample-rate combinations stop rather than shift or resample the sound. See [compatibility details](docs/workflow.md#2-select-the-audio-clip) and [analysis behavior](docs/analysis-speed.md).
 
 ## Requirements
 
@@ -47,7 +54,7 @@ Targets must be normal-speed direct asset clips with enabled audio in the primar
 - **macOS 14 or later** — the deployment target; Xcode and Final Cut may require a newer version.
 - **Final Cut Pro in English** — automation currently matches English interface labels.
 
-Recorded builds used Xcode 27.0 / Swift 6.4. Current development checks use Final Cut Pro 12.4 on macOS 27.0.1; historical reports used Final Cut Pro 12.3. Other combinations have not been verified here.
+Recorded builds used Xcode 27.0 / Swift 6.4. Current development checks use Final Cut Pro 12.4 on macOS 27.2; historical reports used earlier macOS releases and Final Cut Pro 12.3. Other combinations have not been verified here.
 
 A prebuilt app needs no Xcode, repository, or Terminal. Building from source requires full Xcode with first-launch setup completed. There are no external Swift packages or separate plug-in SDKs. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
 
@@ -91,6 +98,8 @@ Silent Snip checks its recorded disposable audio at launch and every 10 minutes 
 
 Choose **Clear Cache…** from the scissors menu to discard reusable analysis audio. **Recovery XML, saved results, settings, Final Cut libraries, original media, and manual Share exports are preserved.** Unknown or older unregistered files are kept. Recovery and result history can therefore continue to grow until you remove it yourself. See [storage and cleanup details](docs/storage-cleanup.md).
 
+Build 40's retained **Processed Audio** is result media, not disposable analysis cache. Keep it while using a cleaned project: Final Cut references those PCM files in place. Clearing the cache must preserve them.
+
 ## Uninstall
 
 Quit Final Cut and Silent Snip, then move the copied **Silent Snip.app** to Trash. Settings and saved results are kept. Remove its Final Cut Share destination and macOS control-access entry as described in [complete removal](docs/setup.md#uninstall).
@@ -126,6 +135,8 @@ Audio decoding requires access to macOS media services. Xcode builds may also ne
 Follow [integration-test setup](docs/setup.md#integration-test-library) and [AGENTS.md](AGENTS.md) before testing.
 
 ## Verified in this repository copy
+
+Build 40 development checks ran 552 Swift tests (three opt-in skips, no failures), plus 92 passing Python tests. After the final metadata-description removal, all 14 focused durable-audio tests passed. Native writer fixtures separately passed strict project/source verification and exact retained PCM checks, including the final durable-media identity path. Final packaged/installed button-flow checks remain pending; the older milestones below describe their recorded builds.
 
 The October 28 voice-over build passed 436 Swift tests (one existing skip, no failures), 60 audio render/persistence cases, 35 Controls checks, and 53 build-script tests. Fresh native Analyze → Apply runs passed for plain removal, processed removal, and processed gaps in the required integration library. A separate existing-result verification reused the same project UUID without importing again. See [the milestone report](docs/voiceover-project.md) for evidence and remaining limits; quiet Share feasibility remains documented separately in [the prototype report](docs/quiet-share-feasibility.md).
 

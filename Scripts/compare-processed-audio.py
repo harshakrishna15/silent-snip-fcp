@@ -17,6 +17,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import uuid
 
 
 BLOCK_FRAMES = 16_384
@@ -42,6 +43,88 @@ def sample_frame(time, rate, label):
     if frame.denominator != 1:
         raise ComparisonError(f"{label} is not on an exact audio sample boundary")
     return frame.numerator
+
+
+def encoded_wave_evidence(path):
+    """Hash exact encoded bytes, PCM payload, and format without PCM conversion."""
+    encoded, pcm, fmt = hashlib.sha256(), hashlib.sha256(), hashlib.sha256()
+    counts = {b"data": 0, b"fmt ": 0}
+    size = Path(path).stat().st_size
+    with Path(path).open("rb") as stream:
+        def read(count):
+            data = stream.read(count)
+            if len(data) != count:
+                raise ComparisonError("Native WAV provenance contains an incomplete RIFF chunk")
+            encoded.update(data)
+            return data
+        header = read(12)
+        if header[:4] != b"RIFF" or header[8:] != b"WAVE" or struct.unpack_from("<I", header, 4)[0] + 8 != size:
+            raise ComparisonError("Native WAV provenance requires a complete RIFF WAVE container")
+        while stream.tell() < size:
+            tag, count = struct.unpack("<4sI", read(8))
+            if count + count % 2 > size - stream.tell():
+                raise ComparisonError("Native WAV provenance chunk exceeds the file")
+            if tag in counts:
+                counts[tag] += 1
+            remaining = count
+            while remaining:
+                data = read(min(1024 * 1024, remaining))
+                if tag == b"data":
+                    pcm.update(data)
+                elif tag == b"fmt ":
+                    fmt.update(data)
+                remaining -= len(data)
+            if count % 2:
+                read(1)
+    if counts != {b"data": 1, b"fmt ": 1}:
+        raise ComparisonError("Native WAV provenance requires one audio payload and one format chunk")
+    return {"sha256": encoded.hexdigest(), "pcmDataSHA256": pcm.hexdigest(), "formatDataSHA256": fmt.hexdigest()}
+
+
+def bound_project_tail(report, original, duration, origin, metadata):
+    """Only a byte-bound full native mix can describe a fractional project end.
+
+    New cuts are still exact PCM frames. Final Cut's observed WAV end is
+    floor(T*rate); preserve that existing tail phase, never round cut bounds.
+    """
+    audio = report.get("losslessAudio")
+    if not isinstance(audio, dict) or audio.get("scope") != "projectMix":
+        raise ComparisonError("A fractional project tail requires bound projectMix audio provenance")
+    count = audio.get("frameCount")
+    logical_frames = duration * metadata["sampleRate"]
+    if (type(count) is not int or type(audio.get("sampleRate")) is not int or type(audio.get("channelCount")) is not int or
+            count <= 0 or count != logical_frames.numerator // logical_frames.denominator or
+            audio.get("sampleRate") != metadata["sampleRate"] or audio.get("channelCount") != metadata["channels"]):
+        raise ComparisonError("Native project tail metadata must match exactly floor(T*sampleRate)")
+    bounds = audio.get("timelineRange")
+    if (not isinstance(bounds, dict) or rational(bounds.get("start"), "losslessAudio.timelineRange.start") != origin or
+            rational(bounds.get("end"), "losslessAudio.timelineRange.end") != origin + duration):
+        raise ComparisonError("Native audio provenance does not cover the complete original project")
+    expected = audio.get("sha256")
+    if not isinstance(expected, str) or len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+        raise ComparisonError("Native audio provenance must contain its encoded-file SHA256")
+    proof_keys = ("nativeSourceSHA256", "pcmDataSHA256", "formatDataSHA256", "mediaIdentity")
+    has_proof = any(audio.get(key) is not None for key in proof_keys)
+    if has_proof:
+        for key in proof_keys[:3]:
+            value = audio.get(key)
+            if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+                raise ComparisonError("Native identity provenance requires complete encoded/PCM/format hashes")
+        try:
+            uuid.UUID(audio["mediaIdentity"])
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            raise ComparisonError("Native identity provenance requires a valid media UUID") from error
+    path = Path(original)
+    before = path.stat()
+    evidence = encoded_wave_evidence(path)
+    after = path.stat()
+    stamp = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+    accepted_hashes = {expected, audio["nativeSourceSHA256"]} if has_proof else {expected}
+    if stamp(before) != stamp(after) or evidence["sha256"] not in accepted_hashes:
+        raise ComparisonError("Original native WAV bytes do not match the project-tail provenance")
+    if has_proof and any(evidence[key] != audio[key] for key in ("pcmDataSHA256", "formatDataSHA256")):
+        raise ComparisonError("Original native WAV PCM/format bytes do not match the retained identity provenance")
+    return count, stamp(after), evidence["sha256"]
 
 
 def probe(path):
@@ -168,8 +251,12 @@ def compare(original, cleaned, edit_report, repeated_original=None):
     if repeated_original and probe(repeated_original) != metadata:
         raise ComparisonError("Repeated original sample rate/channel count/layout or PCM format differ")
     rate, channels = metadata["sampleRate"], metadata["channels"]
-    original_frames = sample_frame(duration, rate, "original duration")
-    result_frames = sample_frame(result_duration, rate, "result duration")
+    native_tail_stamp = None
+    native_tail_encoded_hash = None
+    if (duration * rate).denominator == 1:
+        original_frames = sample_frame(duration, rate, "original duration")
+    else:
+        original_frames, native_tail_stamp, native_tail_encoded_hash = bound_project_tail(report, original, duration, origin, metadata)
     cuts, previous, removed = [], Fraction(0), Fraction(0)
     ranges = report.get("selectedRanges")
     if not isinstance(ranges, list):
@@ -185,6 +272,15 @@ def compare(original, cleaned, edit_report, repeated_original=None):
         previous, removed = end, removed + end - start
     if duration - removed != result_duration:
         raise ComparisonError("Result duration does not equal original duration minus selected ranges")
+    exact_removed_frames = sample_frame(removed, rate, "removed duration")
+    result_frames = original_frames - exact_removed_frames
+    if result_frames < 0:
+        raise ComparisonError("Selected ranges exceed the verified native PCM frame count")
+    if native_tail_stamp is None:
+        if sample_frame(result_duration, rate, "result duration") != result_frames:
+            raise ComparisonError("The result PCM duration does not match the selected ranges")
+    elif result_duration * rate - result_frames != duration * rate - original_frames:
+        raise ComparisonError("The edited project changed its native fractional tail phase")
     boundaries, removed_frames = [], 0
     for start, end in cuts:
         position = start - removed_frames
@@ -256,6 +352,10 @@ def compare(original, cleaned, edit_report, repeated_original=None):
                 repeat_mismatch["framesFromOriginalBoundary"] = repeat_mismatch["originalFrame"] - nearest
         identical = mismatch is None and expected_hash.digest() == output.sha256.digest()
         deterministic = repeated is not None and repeat_mismatch is None and source.sha256.digest() == repeated.sha256.digest()
+        if native_tail_stamp is not None:
+            current = Path(original).stat()
+            if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns) != native_tail_stamp:
+                raise ComparisonError("Original native WAV changed during the tail-bound comparison")
         return {"valid": True, "passes": identical and (not repeated or deterministic),
                 "pcmIdentical": identical, "originalDeterminismVerified": deterministic,
                 "format": dict(metadata, comparisonPCM="Float32 little-endian, interleaved; no requested resampling"),
@@ -263,6 +363,13 @@ def compare(original, cleaned, edit_report, repeated_original=None):
                 "actualCleanedFrames": output.frames, "originalPCM_SHA256": source.sha256.hexdigest(),
                 "expectedCleanedPCM_SHA256": expected_hash.hexdigest(), "cleanedPCM_SHA256": output.sha256.hexdigest(),
                 "firstDifference": mismatch, "cutBoundaries": boundaries,
+                "nativeFractionalTail": None if native_tail_stamp is None else {
+                    "originalFrameCount": original_frames, "resultFrameCount": result_frames,
+                    "fractionalLogicalSamples": str(duration * rate - original_frames),
+                    "originalFileSHA256": native_tail_encoded_hash,
+                    "durableFileSHA256": report["losslessAudio"]["sha256"],
+                    "pcmDataSHA256": report["losslessAudio"].get("pcmDataSHA256"),
+                    "rule": "Bound native projectMix WAV ends at floor(T*rate); all cut boundaries remain exact samples."},
                 "originalRepeat": None if not repeated else {"pcmIdentical": deterministic,
                     "frames": repeated.frames, "pcmSHA256": repeated.sha256.hexdigest(), "firstDifference": repeat_mismatch},
                 "scope": "Supplied native exports only; output is compared after removing the exact project-zero cut ranges."}

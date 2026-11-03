@@ -20,7 +20,8 @@ import Foundation
         return directory
     }
 
-    static func configureShare(_ dialog: AXUIElement, session: FinalCutAXSession, timing: AnalysisTiming? = nil) async throws {
+    static func configureShare(_ dialog: AXUIElement, session: FinalCutAXSession, timing: AnalysisTiming? = nil,
+                               mixScope: FinalCutAudioMixScope = .dialogue) async throws {
         let timing = timing ?? AnalysisTiming(request: UUID())
         try await timing.measure("share.render.settingsTab") { try await selectTab("Settings", in: dialog, session: session) }
         try await timing.measure("share.render.fileFormat") {
@@ -31,16 +32,48 @@ import Foundation
         }
         try await timing.measure("share.render.rolesTab") { try await selectTab("Roles", in: dialog, session: session) }
         try await timing.measure("share.render.rolesVerification") {
-            if try !panel(in: dialog).verifiesDialogueWAV {
-                try await configureDialogueFile(in: dialog, session: session, timing: timing)
-            }
-            try await session.waitUntil(timeout: 5, context: "isolated Dialogue WAV output") {
-                (try? panel(in: dialog).verifiesDialogueWAV) == true
+            switch mixScope {
+            case .dialogue:
+                if try !panel(in: dialog).verifiesDialogueWAV {
+                    try await configureDialogueFile(in: dialog, session: session, timing: timing)
+                }
+                try await session.waitUntil(timeout: 5, context: "isolated Dialogue WAV output") {
+                    (try? panel(in: dialog).verifiesDialogueWAV) == true
+                }
+            case .fullProjectMix(let roles):
+                // Full-project rendering must never fall through to the
+                // Dialogue-only configuration, which removes other outputs.
+                if try !panel(in: dialog).verifiesFullProjectMixWAV(expectedRoles: roles) {
+                    try await configureFullProjectMix(in: dialog, session: session, timing: timing, expectedRoles: roles)
+                }
             }
         }
     }
 
     private typealias Panel = FinalCutSharePanel<AXUIElement>
+
+    private static func configureFullProjectMix(in dialog: AXUIElement, session: FinalCutAXSession,
+                                                timing: AnalysisTiming, expectedRoles: Set<String>) async throws {
+        guard !expectedRoles.isEmpty, let preset = try panel(in: dialog).rolePreset else {
+            throw ExportError.unverifiedFullProjectMixOutput
+        }
+        try await session.restoreOwnShareActivation(panel: dialog)
+        try session.press(preset.element)
+        var choice: Panel.Control?
+        try await session.waitUntil(timeout: 3, context: "full-project WAV role preset") {
+            choice = (try? panel(in: preset.element))?.menuItem("WAV")
+            return choice != nil
+        }
+        guard let choice else { throw ExportError.unverifiedFullProjectMixOutput }
+        try session.press(choice.element)
+        timing.recordCounters(["share.render.fullMixPresetResets": 1])
+        // Native 12.4 changes the popup first and asynchronously restores the
+        // all-role track. Wait for that actual track, file count and stereo
+        // layout, including custom role groups; never accept stale Dialogue.
+        try await session.waitUntil(timeout: 5, context: "one stereo WAV containing every project role") {
+            (try? panel(in: dialog).verifiesFullProjectMixWAV(expectedRoles: expectedRoles)) == true
+        }
+    }
 
     private static func configureDialogueFile(in dialog: AXUIElement, session: FinalCutAXSession, timing: AnalysisTiming) async throws {
         guard let preset = try panel(in: dialog).rolePreset else { throw ExportError.unverifiedDialogueOutput }
@@ -160,12 +193,13 @@ import Foundation
 
     public enum ExportError: LocalizedError {
         case invalidWorkspace
-        case unverifiedControl(String), unverifiedDialogueOutput
+        case unverifiedControl(String), unverifiedDialogueOutput, unverifiedFullProjectMixOutput
         public var errorDescription: String? {
             switch self {
             case .invalidWorkspace: return "Silent Snip could not create a private temporary export directory."
             case .unverifiedControl(let name): return "Silent Snip could not verify Final Cut's \(name) export control."
             case .unverifiedDialogueOutput: return "Silent Snip could not verify one WAV output containing All Dialogue. No audio mix was assumed."
+            case .unverifiedFullProjectMixOutput: return "Silent Snip could not verify one stereo WAV containing every project audio role over the full project range. No audio mix was assumed."
             }
         }
     }

@@ -79,11 +79,22 @@ final class DirectAudioRenderTests: XCTestCase {
         XCTAssertTrue(try DirectAudioRender.isEligible(projectData: fixture(extra: "<gap offset=\"7205s\" start=\"0s\" duration=\"1s\"/>", duration: 6), selection: selection))
         XCTAssertTrue(try DirectAudioRender.isEligible(projectData: fixture(extra: "<asset-clip ref=\"a\" offset=\"7205s\" start=\"3600s\" duration=\"1s\" audioRole=\"dialogue\"/>", duration: 6), selection: selection))
     }
-    func testConnectedMusicIsExcludedFromDialogueButUnknownOrMixedRolesAreNot() throws {
+    func testExplicitCustomAndMusicRolesAreExcludedFromDialogueButUnknownOrMixedRolesAreNot() throws {
         let music = "<asset-clip ref=\"a\" lane=\"-1\" offset=\"3602s\" start=\"3600s\" duration=\"5s\" audioRole=\"music\"/>"
         XCTAssertTrue(try DirectAudioRender.isEligible(projectData: fixture(music), selection: selection))
+        for role in ["Room Tone.Clean", "Ambience", "Custom Voice.Overdub"] {
+            XCTAssertTrue(try DirectAudioRender.isEligible(projectData:
+                fixture(music.replacingOccurrences(of: "audioRole=\"music\"", with: "audioRole=\"\(role)\"")), selection: selection))
+        }
         XCTAssertFalse(try DirectAudioRender.isEligible(projectData: fixture(music.replacingOccurrences(of: "audioRole=\"music\"", with: "audioRole=\"dialogue\"")), selection: selection))
         XCTAssertFalse(try DirectAudioRender.isEligible(projectData: fixture(music.replacingOccurrences(of: " audioRole=\"music\"", with: "")), selection: selection))
+        for role in ["", " ", "Room Tone.", ".Clean", "dialogue.Voice"] {
+            XCTAssertFalse(try DirectAudioRender.isEligible(projectData:
+                fixture(music.replacingOccurrences(of: "audioRole=\"music\"", with: "audioRole=\"\(role)\"")), selection: selection))
+        }
+        let mixed = "<asset-clip ref=\"a\" lane=\"-1\" offset=\"3602s\" start=\"3600s\" duration=\"5s\" audioRole=\"Room Tone\"><audio-channel-source srcCh=\"1\" role=\"Room Tone.Clean\"/><audio-channel-source srcCh=\"2\" role=\"dialogue.Voice\"/></asset-clip>"
+        XCTAssertFalse(try DirectAudioRender.isEligible(projectData: fixture(mixed), selection: selection),
+            "A custom clip's active Dialogue component still contaminates a Dialogue-only target render")
     }
     func testRangeScopeRejectsOverlappingAudioConnectionsAndMixedRoles() throws {
         for data in [fixture(extra: "<asset-clip ref=\"a\" offset=\"7200s\" start=\"3600s\" duration=\"1s\" audioRole=\"dialogue\"/>", duration: 6),

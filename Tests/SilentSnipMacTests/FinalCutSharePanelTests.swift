@@ -93,8 +93,16 @@ final class FinalCutSharePanelTests: XCTestCase {
         let cleaned = layout([["All Dialogue"]])
         XCTAssertTrue(cleaned.verifiesDialogueWAV)
         XCTAssertNil(cleaned.unwantedAudioFile)
+        let custom = layout([["All Dialogue"], ["All Room Tone"]])
+        XCTAssertFalse(custom.verifiesDialogueWAV)
+        XCTAssertEqual(custom.unwantedAudioFile?.element, 31,
+            "Remove the complete custom-role export file while preserving the one pure Dialogue file")
         for bad in [layout([["All Dialogue", "All Music"]]), layout([["All Dialogue", "Ambience"]]),
                     layout([["All Dialogue"], ["All Dialogue"]]), layout([["All Dialogue"], ["Unknown"]]),
+                    layout([["All Dialogue", "All Room Tone"]]),
+                    layout([["All Dialogue"], ["Room Tone.Clean"]]),
+                    layout([["All Dialogue"], ["All Dialogue.Voice"]]),
+                    layout([["All Dialogue"], ["All"]]),
                     layout([["All Dialogue"]], preset: "Custom")] {
             XCTAssertFalse(bad.verifiesDialogueWAV)
             XCTAssertNil(bad.unwantedAudioFile)
@@ -103,6 +111,50 @@ final class FinalCutSharePanelTests: XCTestCase {
             .enumerated().map { control($0.offset, kAXStaticTextRole, title: $0.element) }
         unknownMix.append(control(100, kAXPopUpButtonRole, value: "WAV", description: "Roles formats and presets"))
         XCTAssertFalse(Panel(controls: unknownMix).verifiesDialogueWAV)
+    }
+
+    func testFullProjectMixRequiresEveryRoleInOneStereoWAV() {
+        let expected: Set<String> = ["dialogue.Voice", "music.Bed"]
+        XCTAssertTrue(fullMix(roles: ["All Dialogue", "All Music"]).verifiesFullProjectMixWAV(expectedRoles: expected))
+        XCTAssertFalse(fullMix(roles: ["All Dialogue"]).verifiesFullProjectMixWAV(expectedRoles: expected),
+            "The WAV popup updates before the full native role track has settled")
+        XCTAssertFalse(fullMix(roles: ["All Dialogue", "All Music", "All Effects"]).verifiesFullProjectMixWAV(expectedRoles: expected))
+        XCTAssertFalse(fullMix(roles: ["All Dialogue", "All Music"]).verifiesFullProjectMixWAV(expectedRoles: []))
+    }
+
+    func testFullProjectMixRetainsCustomGroupsAndSubrolesWithoutNormalizingDistinctGroupsTogether() {
+        let expected: Set<String> = ["dialogue.One", "dialogue.Two", "Custom Voice.Overdub"]
+        XCTAssertTrue(fullMix(roles: ["All Dialogue", "All Custom Voice"]).verifiesFullProjectMixWAV(expectedRoles: expected))
+        XCTAssertFalse(fullMix(roles: ["All Dialogue"]).verifiesFullProjectMixWAV(expectedRoles: expected),
+            "Custom roles must not disappear from a full mix")
+        XCTAssertFalse(fullMix(roles: ["All AB"]).verifiesFullProjectMixWAV(expectedRoles: ["A B.One", "AB.Two"]),
+            "Whitespace normalization must not merge distinct custom role groups")
+    }
+
+    func testFullProjectMixRejectsMissingOrAmbiguousStereoAndStaleSeparateFiles() {
+        let expected: Set<String> = ["dialogue", "music"]
+        XCTAssertFalse(fullMix(roles: ["All Dialogue", "All Music"], layout: nil).verifiesFullProjectMixWAV(expectedRoles: expected))
+        XCTAssertFalse(fullMix(roles: ["All Dialogue", "All Music"], layout: "Mono").verifiesFullProjectMixWAV(expectedRoles: expected))
+        XCTAssertFalse(fullMix(roles: ["All Dialogue", "All Music"], preset: "Audio Only as Separate Files").verifiesFullProjectMixWAV(expectedRoles: expected))
+        let valid = fullMix(roles: ["All Dialogue", "All Music"])
+        for extra in [control(100, kAXStaticTextRole, value: "Stereo (L R)", description: "audio channel layout"),
+                      control(101, kAXStaticTextRole, title: ".wav"),
+                      control(102, kAXStaticTextRole, title: "Audio Track - 2"),
+                      control(103, kAXStaticTextRole, title: "2 files"),
+                      control(104, kAXPopUpButtonRole, value: "WAV", description: "Roles formats and presets")] {
+            XCTAssertFalse(Panel(controls: valid.controls + [extra]).verifiesFullProjectMixWAV(expectedRoles: expected))
+        }
+        XCTAssertFalse(fullMix(roles: ["All Dialogue", "All Music", "All Music"]).verifiesFullProjectMixWAV(expectedRoles: expected))
+    }
+
+    private func fullMix(roles: [String], layout: String? = "Stereo (L R)", preset: String = "WAV") -> Panel {
+        let labels = [".wav", "1 file", "audio track-1"] + roles + ["Roles as:"]
+        var controls = labels.enumerated().map { control($0.offset, kAXStaticTextRole, title: $0.element) }
+        controls.append(control(90, kAXPopUpButtonRole, value: preset, description: "Roles formats and presets"))
+        if let layout {
+            controls.append(control(91, kAXStaticTextRole, value: layout, description: "audio channel layout"))
+        }
+        return Panel(controls: controls)
     }
 
     func testBoundsAndDeadlineRejectIncompleteSnapshots() {

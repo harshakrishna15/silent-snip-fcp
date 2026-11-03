@@ -100,7 +100,8 @@ struct AnalysisCacheKey: Equatable {
             analysis: refreshed.analysis, requireDialogue: false)
         return AnalyzedAudioProject(document: document, target: target,
             dialogueContext: refreshed.dialogueContext, audio: refreshed.audio,
-            settings: settings, analysis: refreshed.analysis, review: review)
+            settings: settings, analysis: refreshed.analysis, review: review,
+            cutFrameDuration: refreshed.cutFrameDuration)
     }
     func store(key: AnalysisCacheKey?, analysis: AnalyzedAudioProject, directory: URL) async throws {
         await clear()?.value

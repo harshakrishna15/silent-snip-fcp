@@ -70,7 +70,13 @@ The script writes generated WAV files, FCPXML bundles, and expected-results JSON
 
 With the integration library open, import `build/Fixtures/Silent Snip Audio Only Basic.fcpxmld` into that library. Keep source files in place; disable copied, optimized, and proxy media. Use a fresh disposable test project for each run. The sanitized files under `Tests/SilentSnipCoreTests/Fixtures` use placeholder media URLs for offline regression tests; use the generated `build/Fixtures` files for live imports.
 
-Follow [the workflow](workflow.md) to add Silent Snip Audio, open Controls, Analyze, review, and Apply. Check the resulting project's editable segments, source references, effects/settings, and total duration, as well as whether preview and recovery work. Merely seeing the effect or passing analysis is not evidence that automatic cuts work. Preserve exported evidence separately from build caches.
+Follow [the workflow](workflow.md) to add Silent Snip Audio, open Controls, Analyze, review, and Apply. Check the cleaned timeline's retained intervals, processed-media references, audio routing, and total duration, plus preview and recovery. Verify unchanged original media and editable effects in the original project. Exported PCM comparisons are separate evidence of sound preservation; merely seeing the effect or passing analysis is not evidence that automatic cuts work. Preserve source media, durable processed audio, and exported evidence separately from build caches.
+
+## Keep processed project media
+
+Cleaned projects reference `~/Library/Application Support/Silent Snip/Processed Audio/<request UUID>/Processed-Audio.wav`. This continuous Final Cut render preserves the processed sound in kept intervals. It is project media, so keep it when archiving or moving a cleaned project and relink Final Cut if its location changes. The unchanged original project retains the original sources and editable effects.
+
+Disposable cache cleanup and uninstall data removal preserve the **Processed Audio** directory. Deleting that directory manually can make cleaned projects lose their audio. Archive or relink the files and confirm no remaining project depends on their old location before removing them.
 
 ## Uninstall
 
@@ -78,11 +84,11 @@ Follow [the workflow](workflow.md) to add Silent Snip Audio, open Controls, Anal
 2. Remove the **Silent Snip** Share destination in **Final Cut Pro → Settings → Destinations**.
 3. Quit Final Cut, choose **Quit Silent Snip** from its menu bar icon, then move the copied **Silent Snip.app** to Trash. Remove its control-access and Automation entries in System Settings if listed. Previously installed setup apps and old app copies must be removed separately.
 
-Settings, results, and recovery XML are kept by default. New data uses `~/Library/Application Support/Silent Snip`; the extension keeps its settings in its `local.silentsnip.app.audio` sandbox. To erase all new data manually, review those locations and the matching preferences, caches, saved-state, and application-script folders for `local.silentsnip.app`, `local.silentsnip.app.audio`, and developer helper IDs under `local.silentsnip.helper`.
+Settings, results, recovery XML, and durable processed media are kept by default. New data uses `~/Library/Application Support/Silent Snip`; the extension keeps its settings in its `local.silentsnip.app.audio` sandbox. Keep **Processed Audio** while any cleaned project references it. To remove other app data manually, review the remaining app-support contents and matching preferences, caches, saved-state, and application-script folders for `local.silentsnip.app`, `local.silentsnip.app.audio`, and developer helper IDs under `local.silentsnip.helper`.
 
 Earlier versions may have left data under former app names and identities. Installing this release does not migrate or erase those files. Back up old results and recovery XML before removing legacy data manually. macOS can deny access to protected container metadata; removing an app does not establish that all its data was removed.
 
-For repository builds, `Scripts/uninstall-local.sh --dry-run` previews unregistration and removal, and `Scripts/uninstall-local.sh` performs it. `--remove-data` additionally erases this account's settings, results, recovery XML, and known component data; missing preferences are already clean, but real access failures remain errors. The script does not remove app copies outside the checkout. Source code, build caches, media, `Cutdown Integration.fcpbundle`, and exported integration evidence are kept.
+For repository builds, `Scripts/uninstall-local.sh --dry-run` previews unregistration and removal, and `Scripts/uninstall-local.sh` performs it. `--remove-data` additionally erases this account's settings, result reports, recovery XML, and known component data while preserving **Processed Audio**; missing preferences are already clean, but real access failures remain errors. A linked app-support directory is kept with its contents when removing that link would break processed-media references. The script does not remove app copies outside the checkout. Source code, build caches, original and durable processed media, `Cutdown Integration.fcpbundle`, and exported integration evidence are kept.
 
 ## Troubleshooting
 

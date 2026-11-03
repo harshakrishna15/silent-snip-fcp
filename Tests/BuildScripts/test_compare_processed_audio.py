@@ -1,5 +1,7 @@
 """Native-audio comparison contracts using tiny, lossless synthetic WAVs."""
 from fractions import Fraction
+import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -9,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 import wave
 
 
@@ -126,6 +129,99 @@ class ProcessedAudioComparisonTests(unittest.TestCase):
         self.report["selectedRanges"][0]["start"] = rational(Fraction(61, 2 * self.rate))
         with self.assertRaisesRegex(MODULE.ComparisonError, "sample boundary"):
             self.compare()
+
+    def fractional_project_tail(self, fraction=Fraction(3, 5)):
+        duration = (Fraction(len(self.frames)) + fraction) / self.rate
+        self.report["originalProjectDuration"] = rational(duration)
+        self.report["resultProjectDuration"] = rational(duration - Fraction(30, self.rate))
+        self.report["losslessAudio"] = {"scope": "projectMix", "frameCount": len(self.frames),
+            "sampleRate": self.rate, "channelCount": 2,
+            "sha256": hashlib.sha256(self.original.read_bytes()).hexdigest(),
+            "timelineRange": {"start": rational(0), "end": rational(duration)}}
+
+    def test_byte_bound_native_project_tail_keeps_every_floor_frame_without_rounding_cuts(self):
+        for fraction in (Fraction(1, 5), Fraction(3, 5)):
+            with self.subTest(fraction=fraction):
+                self.fractional_project_tail(fraction)
+                result = self.compare(repeated_original=self.original)
+                self.assertTrue(result["passes"])
+                self.assertEqual(result["originalFrames"], 120)
+                self.assertEqual(result["actualCleanedFrames"], 90)
+                self.assertEqual(result["nativeFractionalTail"]["fractionalLogicalSamples"], str(fraction))
+                self.assertEqual(result["cutBoundaries"][-1]["originalCutEndFrame"], 90)
+
+    def test_fractional_tail_never_hides_changed_or_duplicated_last_kept_sample(self):
+        self.fractional_project_tail()
+        changed = list(self.kept)
+        changed[-1] = (changed[-1][0] + 1, changed[-1][1])
+        self.cleaned = self.wav("changed-tail.wav", changed)
+        result = self.compare()
+        self.assertFalse(result["passes"])
+        self.assertEqual(result["firstDifference"]["resultFrame"], 89)
+        self.cleaned = self.wav("duplicated-tail.wav", self.kept + [self.kept[-1]])
+        result = self.compare()
+        self.assertFalse(result["passes"])
+        self.assertEqual(result["firstDifference"]["kind"], "extraCleanedFrame")
+
+    def test_fractional_tail_requires_matching_full_mix_file_provenance_and_exact_count(self):
+        self.fractional_project_tail()
+        valid = copy.deepcopy(self.report)
+        for key, value in [("scope", "selectedTarget"), ("frameCount", 119), ("frameCount", 121),
+                           ("frameCount", True), ("sampleRate", 44_100), ("channelCount", 1),
+                           ("sha256", "0" * 64),
+                           ("timelineRange", {"start": rational(0), "end": rational(1)})]:
+            with self.subTest(key=key, value=value):
+                self.report = copy.deepcopy(valid)
+                self.report["losslessAudio"][key] = value
+                with self.assertRaises(MODULE.ComparisonError):
+                    self.compare()
+        self.report = copy.deepcopy(valid)
+        del self.report["losslessAudio"]
+        with self.assertRaisesRegex(MODULE.ComparisonError, "projectMix"):
+            self.compare()
+
+    def test_bound_fractional_tail_does_not_permit_fractional_cut_edges(self):
+        self.fractional_project_tail()
+        self.report["selectedRanges"][0]["start"] = rational(Fraction(61, 2 * self.rate))
+        with self.assertRaisesRegex(MODULE.ComparisonError, "sample boundary"):
+            self.compare()
+
+    def identity_provenance(self):
+        self.fractional_project_tail()
+        native = self.original.read_bytes()
+        identity = uuid.uuid4()
+        payload = identity.bytes
+        durable_bytes = bytearray(native + b"JUNK" + struct.pack("<I", len(payload)) + payload)
+        struct.pack_into("<I", durable_bytes, 4, len(durable_bytes) - 8)
+        durable = self.root / "durable-identity.wav"
+        durable.write_bytes(durable_bytes)
+        evidence = MODULE.encoded_wave_evidence(self.original)
+        self.report["losslessAudio"].update(sha256=hashlib.sha256(durable_bytes).hexdigest(),
+            nativeSourceSHA256=evidence["sha256"], pcmDataSHA256=evidence["pcmDataSHA256"],
+            formatDataSHA256=evidence["formatDataSHA256"], mediaIdentity=str(identity))
+        return durable
+
+    def test_fractional_tail_accepts_byte_bound_native_or_durable_identity_with_exact_payloads(self):
+        durable = self.identity_provenance()
+        original_hash = hashlib.sha256(self.original.read_bytes()).hexdigest()
+        native_result = self.compare(repeated_original=self.original)
+        self.assertTrue(native_result["passes"])
+        self.assertEqual(native_result["nativeFractionalTail"]["originalFileSHA256"], original_hash)
+        self.assertNotEqual(native_result["nativeFractionalTail"]["durableFileSHA256"], original_hash)
+        self.original = durable
+        self.assertTrue(self.compare(repeated_original=durable)["passes"])
+
+    def test_native_source_hash_alone_never_authorizes_changed_or_incomplete_identity_proof(self):
+        self.identity_provenance()
+        valid = copy.deepcopy(self.report)
+        for field, value in [("nativeSourceSHA256", "0" * 64), ("pcmDataSHA256", "0" * 64),
+                             ("formatDataSHA256", "0" * 64), ("pcmDataSHA256", None),
+                             ("mediaIdentity", "invalid")]:
+            with self.subTest(field=field):
+                self.report = copy.deepcopy(valid)
+                self.report["losslessAudio"][field] = value
+                with self.assertRaises(MODULE.ComparisonError):
+                    self.compare()
 
     def test_rejects_rate_and_channel_changes(self):
         self.cleaned = self.wav("rate.wav", self.kept, rate=44_100)

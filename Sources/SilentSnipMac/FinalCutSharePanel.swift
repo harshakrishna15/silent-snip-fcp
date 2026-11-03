@@ -75,6 +75,39 @@ struct FinalCutSharePanel<Element> {
         return files[0].roles == ["alldialogue"] && files[0].isWAVStereo
     }
 
+    func verifiesFullProjectMixWAV(expectedRoles: Set<String>) -> Bool {
+        // Observed Final Cut 12.4 WAV layout. The preset popup updates before
+        // its track list, so the exact role set and stereo evidence are required
+        // in the same fresh snapshot; a popup value alone is insufficient.
+        guard !expectedRoles.isEmpty else { return false }
+        var roots: Set<String> = []
+        for role in expectedRoles {
+            let parts = role.components(separatedBy: ".")
+            guard parts.allSatisfy({ !$0.isEmpty }), let root = parts.first else { return false }
+            roots.insert(root.lowercased())
+        }
+        let expected = Set(roots.map { "all" + Self.normalized($0) })
+        // Whitespace normalization must not merge two distinct custom groups.
+        guard expected.count == roots.count else { return false }
+        let labels = controls.filter { $0.role == kAXStaticTextRole }.map { Self.normalized($0.text) }
+        let summaries = labels.filter {
+            let number = $0.hasSuffix("files") ? String($0.dropLast(5))
+                : ($0.hasSuffix("file") ? String($0.dropLast(4)) : "")
+            return !number.isEmpty && number.allSatisfy(\.isNumber)
+        }
+        guard summaries == ["1file"], labels.filter({ $0 == ".wav" }).count == 1,
+              labels.filter({ $0.hasPrefix("audiotrack-") }) == ["audiotrack-1"],
+              let preset = rolePreset, Self.normalized(preset.value ?? "") == "wav" else { return false }
+        let track = controls.indices.filter { controls[$0].role == kAXStaticTextRole && Self.normalized(controls[$0].text) == "audiotrack-1" }
+        let end = controls.indices.filter { controls[$0].role == kAXStaticTextRole && Self.normalized(controls[$0].text) == "rolesas:" }
+        let layouts = controls.filter { $0.role == kAXStaticTextRole && $0.description == "audio channel layout" }
+        guard track.count == 1, end.count == 1, track[0] < end[0],
+              layouts.count == 1, Self.normalized(layouts[0].value ?? "") == "stereo(lr)" else { return false }
+        let actual = controls[(track[0] + 1)..<end[0]].filter { $0.role == kAXStaticTextRole }
+            .map { Self.normalized($0.text) }.filter { !$0.isEmpty }
+        return actual.count == expected.count && Set(actual) == expected
+    }
+
     var rolePreset: Control? {
         unique(controls.filter { $0.role == kAXPopUpButtonRole && $0.description == "Roles formats and presets" })
     }
@@ -114,13 +147,14 @@ struct FinalCutSharePanel<Element> {
 
     var separateAudioFileCount: Int? { separateAudioFiles?.count }
 
-    /// Identify only an entire Music/Effects output in the observed native
-    /// separate-files layout, with exactly one unambiguous Dialogue file.
+    /// Identify only an entire non-Dialogue output in the observed native
+    /// separate-files layout. A reset preset exposes custom top-level groups as
+    /// All <role> too; unqualified subrole labels remain unverified.
     var unwantedAudioFile: Control? {
         guard let files = separateAudioFiles,
               files.filter({ $0.roles == ["alldialogue"] && $0.isWAVStereo }).count == 1,
               files.allSatisfy({ $0.isWAVStereo && !$0.roles.isEmpty &&
-                  $0.roles.allSatisfy { ["alldialogue", "allmusic", "alleffects"].contains($0) } }),
+                  $0.roles.allSatisfy { $0.hasPrefix("all") && $0.count > 3 && !$0.contains(".") } }),
               !files.contains(where: { $0.roles.contains("alldialogue") && $0.roles != ["alldialogue"] }) else { return nil }
         return files.first { !$0.roles.contains("alldialogue") }?.remove
     }

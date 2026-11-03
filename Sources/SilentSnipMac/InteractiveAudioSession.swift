@@ -351,7 +351,7 @@ import Foundation
             }
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
-                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply creates a new cleaned project copy in this event, preserving editable audio effects. The original project stays unchanged. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "),
+                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply creates a cleaned project copy with the retained processed sound preserved. The original project keeps its editable effects. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "),
                 canUpdateCuts: route == .source || renderedInOriginal)
         } catch {
             // A cancellation must not prevent bounded cleanup of a verified,
@@ -443,16 +443,17 @@ import Foundation
         }
         let capture = context.capture
         let session = capture.session
-        let parent = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Silent Snip/Results", isDirectory: true)
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Silent Snip", isDirectory: true)
+        let parent = support.appendingPathComponent("Results", isDirectory: true)
             .appendingPathComponent(request.id.uuidString, isDirectory: true)
         var prepared: PreparedXMLProject?
         var importAttempted = false
-        var applyReceipt: ShareDestinationReceipt?
+        var fullMixReceipt: ShareDestinationReceipt?
         let timing = AnalysisTiming(request: request.id)
         var outcome = "failed"
         defer {
-            if let applyReceipt { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: applyReceipt) }
+            if let fullMixReceipt { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: fullMixReceipt) }
             timing.save(to: context.directory.appendingPathComponent("Apply-Timing.json"),
                 outcome: Task.isCancelled ? "cancelled" : outcome)
         }
@@ -464,65 +465,95 @@ import Foundation
             try validateReviewSelection(capture)
             try await session.suspendReviewWindow()
             try await session.activate()
-            progress("Checking the selected clip and its effects…", 0)
-            let finalURL: URL
             let baselineData = try Data(contentsOf: capture.xmlURL)
             let applyRoute = try ClipAudioAnalysisRoute.resolve(projectData: baselineData, selection: capture.selection)
-            let needsRender = result.usesAudioSnapshot && applyRoute == .finalCutRender
-            var renderScope: DirectAudioRender.Scope?
             timing.begin("projectAndAudioVerification")
-            if needsRender {
-                try await context.mediaSnapshot.validate()
-                guard let scope = try DirectAudioRender.scope(projectData: baselineData, selection: capture.selection) else {
-                    throw ReviewError.staleProject
-                }
-                renderScope = scope
-                progress("Verifying current audio against the reviewed cuts…", 0.05)
-                let receipt = try await session.shareRenderedAudio(timing: timing,
-                    renderSelection: scope == .selectedRange ? session.reviewOwnership.active : nil)
-                applyReceipt = receipt
-                try ShareDestinationManager.shared.validateReceipt(receipt)
-                guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
-                finalURL = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
-                    ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
-            } else {
-                finalURL = try await session.exportProjectXML(to: context.directory.appendingPathComponent("Before-XML-Apply.fcpxmld"), timing: timing)
-            }
+            progress("Rendering the current project sound before cutting…", 0.05)
+            try await context.mediaSnapshot.validate()
+            let readGuard = try MediaContentSnapshot.prepareRead(context.mediaSnapshot.sourceURLs)
+            let roles = try FinalCutAudioMixScope.expectedRoles(projectData: baselineData)
+            // A continuous native render preserves opaque/stateful effects and
+            // connected Music/Effects history. Detection remains Dialogue-only;
+            // the complete mix is never substituted for a mixed target's review.
+            let receipt = try await session.shareRenderedAudio(timing: timing,
+                mixScope: .fullProjectMix(expectedRoles: roles))
+            fullMixReceipt = receipt
+            try ShareDestinationManager.shared.validateReceipt(receipt)
+            guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
+            let finalURL = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
+                ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
             let finalData = try Data(contentsOf: finalURL)
             let final = try TimelineParser.parse(data: finalData, exclusions: exclusions)
             try XMLProjectApply.verifyBaseline(final, analyzed: capture.document)
-            guard try await Self.mediaSnapshot(final) == context.mediaSnapshot else { throw AudioProjectProcessingError.changedProject }
+            guard try FinalCutAudioMixScope.expectedRoles(projectData: finalData) == roles,
+                  try await Self.mediaSnapshot(final) == context.mediaSnapshot else {
+                throw AudioProjectProcessingError.changedProject
+            }
+            try readGuard.validate()
+            let target = try final.selectedTarget(capture.selection)
             try AudioControllerSettings.validateForApply(projectData: finalData,
-                target: final.selectedTarget(capture.selection), requested: result.analyzed.settings)
-            if let receipt = applyReceipt, let scope = renderScope {
-                guard try DirectAudioRender.scope(projectData: finalData, selection: capture.selection) == scope else {
-                    throw ReviewError.staleProject
-                }
-                let target = try final.selectedTarget(capture.selection)
-                let audio = receipt.mediaURLs[0]
-                let bound = try scope == .projectSlice
-                    ? DialogueRenderContext.capturedProjectSlice(document: final, target: target, audioURL: audio)
-                    : DialogueRenderContext.capturedIsolated(document: final, target: target, audioURL: audio)
+                target: target, requested: result.analyzed.settings)
+            let fullMix = receipt.mediaURLs[0]
+            let renderGuard = try MediaContentSnapshot.prepareRead([fullMix, finalURL])
+            if applyRoute == .finalCutRender {
                 timing.begin("freshAudioMeasurement")
-                let fresh = try await ProjectAudioAnalysis.analyze(projectXML: finalURL, selection: capture.selection,
-                    dialogueAudio: audio, renderContext: bound, settings: request.settings)
+                progress("Checking current audio against the reviewed cuts…", 0.2)
+                let audible = final.clips.filter { $0.enabled && $0.hasAudio }
+                let fresh: AnalyzedAudioProject
+                if audible.count == 1, audible[0].id == target.id,
+                   try DirectAudioRender.isEligible(projectData: finalData, selection: capture.selection) {
+                    // With exactly one audible source, the full mix is also the
+                    // selected Dialogue render. Its file zero is project zero.
+                    let bound = try DialogueRenderContext.capturedProjectSlice(document: final,
+                        target: target, audioURL: fullMix)
+                    fresh = try await ProjectAudioAnalysis.analyze(projectData: finalData,
+                        selection: capture.selection, dialogueAudio: fullMix, renderContext: bound,
+                        settings: request.settings, jobID: request.id, capturedMedia: nil)
+                } else {
+                    fresh = try await freshTargetForApply(projectData: finalData, document: final,
+                        capture: capture, directory: context.directory, request: request,
+                        timing: timing, progress: progress)
+                }
                 let evidence: [String: Any] = ["reviewedCandidates": result.analyzed.review.cuts.map(\.id),
                     "freshCandidates": fresh.review.cuts.map(\.id), "selectedCuts": result.analyzed.review.selectedCuts.map(\.id),
                     "reviewedAudioSHA256": result.analyzed.dialogueContext.audioSHA256,
-                    "freshAudioSHA256": fresh.dialogueContext.audioSHA256]
+                    "freshAudioSHA256": fresh.dialogueContext.audioSHA256,
+                    "outputAudio": "continuous full-project native mix"]
                 try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
                     .write(to: context.directory.appendingPathComponent("Apply-Audio-Verification.json"), options: .atomic)
                 try ReviewedCutValidation.verify(reviewed: result.analyzed, fresh: fresh)
-                try await context.mediaSnapshot.validate()
-                try validateReviewSelection(capture)
             }
+            try await context.mediaSnapshot.validate()
+            try readGuard.validate()
+            try validateReviewSelection(capture)
             try Task.checkCancellation()
+            timing.begin("retainProcessedAudio")
+            progress("Keeping the original processed sound for the cleaned copy…", 0.3)
+            try ShareDestinationManager.shared.validateReceipt(receipt)
+            try renderGuard.validate()
+            let renderMedia = try await MediaContentSnapshot.capture([fullMix])
+            let canonicalRender = try MediaContentSnapshot.canonical(fullMix)
+            guard let renderHash = renderMedia.hashes[canonicalRender] else { throw ProjectAnalysisError.invalidRenderArtifact }
+            let durable = try await LosslessRenderedAudio.retain(from: fullMix,
+                expectedSHA256: renderHash,
+                in: support.appendingPathComponent("Processed Audio", isDirectory: true)
+                    .appendingPathComponent(request.id.uuidString, isDirectory: true),
+                timelineRange: final.projectRange, scope: .projectMix)
+            try ShareDestinationManager.shared.validateReceipt(receipt)
+            try renderGuard.validate()
+            let outputMedia = try await MediaContentSnapshot.capture(context.mediaSnapshot.sourceURLs + [durable.url])
+            guard try outputMedia.restricting(to: context.mediaSnapshot.sourceURLs) == context.mediaSnapshot,
+                  outputMedia.hashes[try MediaContentSnapshot.canonical(durable.url)] == durable.sha256 else {
+                throw AudioProjectProcessingError.changedProject
+            }
+            try readGuard.validate()
             timing.begin("projectCreationAndImport")
-            progress("Creating a new editable project copy…", 0.4)
+            progress("Creating the cleaned project with identical retained sound…", 0.4)
             let outputName = Self.outputName(clip: capture.target, request: request.id)
             let artifact = try XMLProjectApply.prepare(projectData: finalData, selection: capture.selection,
                 cuts: removals, settings: result.analyzed.settings, mode: request.outputMode,
-                outputName: outputName, directory: parent, selectedClipOnly: false, useOriginalEvent: true, omitController: true)
+                outputName: outputName, directory: parent, selectedClipOnly: false, useOriginalEvent: true,
+                omitController: true, losslessAudio: durable)
             prepared = artifact
             try session.assertCurrentProject()
             progress("Sending ‘\(outputName)’ to Final Cut Pro…", 0.8)
@@ -530,12 +561,43 @@ import Foundation
                 .write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             let verification = try ImportedResultVerification(expected: artifact.output.xmlData, outputURL: artifact.outputURL,
                 originalProjectName: capture.projectName, request: request, replacementTarget: artifact.output.report.replacementTarget,
-                sourceMedia: context.mediaSnapshot)
+                sourceMedia: outputMedia)
             try await artifact.send { url in
-                try await context.mediaSnapshot.validate()
+                timing.begin("finalProjectVerification")
+                // Hashing and durable retention yield while Final Cut remains
+                // editable. The final exchange must therefore follow the full
+                // content check and prove the same timeline/effects/settings
+                // immediately before this single import attempt.
+                let importReadGuard = try MediaContentSnapshot.prepareRead(outputMedia.sourceURLs +
+                    [artifact.outputURL, artifact.recoveryURL])
+                try await outputMedia.validate()
+                progress("Checking the current project before import…", 0.75)
+                try await session.activate()
+                try self.validateReviewSelection(capture)
+                let importCheck = try await session.exportProjectXML(to: context.directory
+                    .appendingPathComponent("Before-Import-\(UUID().uuidString).fcpxmld"), timing: timing)
+                let importData = try Data(contentsOf: importCheck)
+                let current = try TimelineParser.parse(data: importData, exclusions: exclusions)
+                try XMLProjectApply.verifyBaseline(current, analyzed: final)
+                try AudioControllerSettings.validateForApply(projectData: importData,
+                    target: current.selectedTarget(capture.selection), requested: result.analyzed.settings)
+                try self.validateReviewSelection(capture)
+                try importReadGuard.validate()
+                try readGuard.validate()
+                try renderGuard.validate()
+                try ShareDestinationManager.shared.validateReceipt(receipt)
                 try verification.savePending()
+                // The phase guard covers both the full scan and XML exchange.
+                // No second full media scan is needed after these synchronous
+                // checks, and an uncertain delivery is never retried.
+                try importReadGuard.validate()
+                try readGuard.validate()
+                try renderGuard.validate()
+                try session.assertCurrentProject()
+                try Task.checkCancellation()
                 importAttempted = true
                 self.verifications.remember(request.id, at: verification.outputURL)
+                timing.begin("importAndVerification")
                 try await XMLProjectApply.importIntoFinalCut(url)
             }
             try await retryVerification(request.id, progress: progress)
@@ -550,6 +612,91 @@ import Foundation
             }
             throw error
         }
+    }
+
+    /// Freshly verify a processed target independently of the full project mix.
+    /// The latter can contain Music or overlapping Dialogue and must not change
+    /// which cuts the user reviewed. Every temporary render is request-owned.
+    private func freshTargetForApply(projectData: Data, document: TimelineDocument,
+                                     capture: CapturedFinalCutProject, directory: URL,
+                                     request: AnalyzeRequest, timing: AnalysisTiming,
+                                     progress: @escaping AnalysisReviewCoordinator.Progress) async throws -> AnalyzedAudioProject {
+        let target = try document.selectedTarget(capture.selection)
+        var owned: ShareDestinationReceipt?
+        defer { if let owned { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: owned) } }
+        let receipt: ShareDestinationReceipt
+        let scope = try DirectAudioRender.scope(projectData: projectData, selection: capture.selection)
+        if let scope {
+            receipt = try await capture.session.shareRenderedAudio(timing: timing,
+                renderSelection: scope == .selectedRange ? capture.session.reviewOwnership.active : nil)
+            owned = receipt
+            try ShareDestinationManager.shared.validateReceipt(receipt)
+            let xml = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
+                ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
+            try ProjectRoundTripVerification.verify(expected: projectData, actual: Data(contentsOf: xml),
+                reportURL: directory.appendingPathComponent("Apply-Target-Render-Verification.json"))
+        } else {
+            let isolated = try IsolatedAudioProject.make(projectData: projectData, selection: capture.selection)
+            let url = directory.appendingPathComponent("Apply-Isolated-\(UUID().uuidString).fcpxml")
+            try isolated.data.write(to: url, options: .withoutOverwriting)
+            progress("Checking the selected clip independently of the other audio…", nil)
+            var isolatedSession: FinalCutAXSession?
+            var delivered: Data?
+            do {
+                // Import/open can fail after Final Cut has accepted the file.
+                // Keep its exact generated name even before a verified session
+                // exists; unknown delivery never authorizes project deletion.
+                try await XMLProjectApply.importIntoFinalCut(url)
+                let opened = try await capture.session.openImportedProject(named: isolated.name, importedXML: url)
+                isolatedSession = opened
+                receipt = try await opened.shareRenderedAudio(timing: timing)
+                owned = receipt
+                try ShareDestinationManager.shared.validateReceipt(receipt)
+                let xml = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
+                    ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
+                let data = try Data(contentsOf: xml)
+                try ProjectRoundTripVerification.verify(expected: isolated.data, actual: data,
+                    reportURL: directory.appendingPathComponent("Apply-Target-Render-Verification.json"),
+                    allowHostAssignedIdentity: true)
+                try isolated.destination.verifyDestination(data)
+                delivered = data
+                _ = try await opened.returnToPreviousProject(named: capture.projectName)
+            } catch {
+                if let isolatedSession {
+                    _ = try? await Task { @MainActor in
+                        try await isolatedSession.returnToPreviousProject(named: capture.projectName)
+                    }.value
+                }
+                try? Data("Apply interrupted; temporary project ‘\(isolated.name)’ may remain in its original event. Ownership/content verification or cleanup did not complete; no unverified project was deleted. \(error.localizedDescription)\n".utf8)
+                    .write(to: directory.appendingPathComponent("Apply-Cleanup-Status.txt"), options: .atomic)
+                throw error
+            }
+            if let delivered {
+                do {
+                    let original = try FinalCutAXSession()
+                    guard original.projectName == capture.projectName else { throw FinalCutCaptureError.changedProject }
+                    try await original.removeAnalysisProject(isolated, verifiedData: delivered)
+                } catch {
+                    try? Data("Verified temporary Apply project ‘\(isolated.name)’ remains in its original event: \(error.localizedDescription)\n".utf8)
+                        .write(to: directory.appendingPathComponent("Apply-Cleanup-Status.txt"), options: .atomic)
+                }
+            }
+            let original = try FinalCutAXSession()
+            guard original.projectName == capture.projectName else { throw FinalCutCaptureError.changedProject }
+            let after = try await original.exportProjectXML(
+                to: directory.appendingPathComponent("Apply-After-Isolation-\(UUID().uuidString).fcpxmld"), timing: timing)
+            let current = try TimelineParser.parse(url: after,
+                exclusions: .init(controllerEffectUIDs: [AudioControllerSettings.effectUID]))
+            try XMLProjectApply.verifyBaseline(current, analyzed: document)
+        }
+        guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
+        let audio = receipt.mediaURLs[0]
+        let bound = try scope == .projectSlice
+            ? DialogueRenderContext.capturedProjectSlice(document: document, target: target, audioURL: audio)
+            : DialogueRenderContext.capturedIsolated(document: document, target: target, audioURL: audio)
+        return try await ProjectAudioAnalysis.analyze(projectData: projectData, selection: capture.selection,
+            dialogueAudio: audio, renderContext: bound, settings: request.settings,
+            jobID: request.id, capturedMedia: nil)
     }
 
     public func loadVerification(_ outputURL: URL, view: UUID) throws -> AnalyzeRequest {
@@ -604,7 +751,7 @@ import Foundation
             let settingsNotice = report.controllerSettingsPreserved == nil
                 ? "Analysis settings are saved with the result; the detector stays on the original recording."
                 : "Silent Snip settings match."
-            let message = "Verified ‘\(result.projectName)’: timeline and audio effects match. \(settingsNotice) \(result.sourceMediaNotice) \(disposition)"
+            let message = "Verified ‘\(result.projectName)’: timeline and processed audio references match. \(settingsNotice) \(result.sourceMediaNotice) \(disposition)"
             try Data((message + "\n").utf8).write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             result.markComplete()
             verifications.remove(id)

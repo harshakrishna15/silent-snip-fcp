@@ -1,5 +1,8 @@
 import SilentSnipCore
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 /// The exporter supplies the project, range, role, and verified controller metadata.
 /// The URL and content hash bind that metadata to one completed local audio file;
@@ -109,6 +112,9 @@ public struct AnalyzedAudioProject: Sendable {
     public let target: TimelineClip
     public let dialogueContext: DialogueRenderContext
     public let audio: DialogueAudio
+    /// Captured analysis grid survives cache reuse and local settings updates.
+    /// Nil is retained only for older internal fixture/API construction.
+    public let cutFrameDuration: RationalTime?
     public private(set) var settings: AnalysisSettings
     public private(set) var analysis: SilenceAnalysisResult
     public var review: ReviewPlan
@@ -117,7 +123,7 @@ public struct AnalyzedAudioProject: Sendable {
 
     func retainingAudio(at url: URL) -> Self {
         Self(document: document, target: target, dialogueContext: dialogueContext.retainingAudio(at: url),
-            audio: audio, settings: settings, analysis: analysis, review: review)
+            audio: audio, settings: settings, analysis: analysis, review: review, cutFrameDuration: cutFrameDuration)
     }
 
     /// Reuse the same analyzed render when Inspector settings change. Apply still
@@ -127,7 +133,8 @@ public struct AnalyzedAudioProject: Sendable {
             throw ProjectAnalysisError.changedWindowDuration
         }
         let updated = try SilenceDetector.analyze(windows: audio.windows, target: target.timelineRange,
-            frameDuration: document.frameDuration, settings: settings)
+            frameDuration: cutFrameDuration ?? ProjectAudioAnalysis.cutGrid(videoFrameDuration: document.frameDuration,
+                sampleRate: audio.sampleRate), settings: settings)
         let resetChoices = try review.recalculate(updated, document: document)
         self.settings = settings
         self.analysis = updated
@@ -135,11 +142,13 @@ public struct AnalyzedAudioProject: Sendable {
     }
 
     init(document: TimelineDocument, target: TimelineClip, dialogueContext: DialogueRenderContext,
-         audio: DialogueAudio, settings: AnalysisSettings, analysis: SilenceAnalysisResult, review: ReviewPlan) {
+         audio: DialogueAudio, settings: AnalysisSettings, analysis: SilenceAnalysisResult, review: ReviewPlan,
+         cutFrameDuration: RationalTime? = nil) {
         self.document = document
         self.target = target
         self.dialogueContext = dialogueContext
         self.audio = audio
+        self.cutFrameDuration = cutFrameDuration
         self.settings = settings
         self.analysis = analysis
         self.review = review
@@ -229,9 +238,28 @@ public enum ProjectAudioAnalysis {
             guard abs(decoded.duration.seconds - target.timelineRange.duration.seconds) <= 1.1 / decoded.sampleRate else {
                 throw ProjectAnalysisError.incompleteRender
             }
-            let windows = try decoded.windows.map { window in
-                AudioLevelWindow(range: TimeRange(start: try window.range.start.adding(target.timelineRange.start),
-                    end: try window.range.end.adding(target.timelineRange.start)), channelRMS: window.channelRMS)
+            let logicalDuration = try target.timelineRange.checkedDuration()
+            let nativeTail = try logicalDuration.subtracting(decoded.duration)
+            let normalizeLastClock: Bool
+            if nativeTail > .zero {
+                // A native floor-ended WAV can leave less than one logical
+                // sample at the video-project end. Match SourceAudioReader's
+                // final measurement clock without adding or changing PCM/RMS.
+                guard decoded.sampleRate >= 1, decoded.sampleRate <= 768_000,
+                      decoded.sampleRate.rounded() == decoded.sampleRate,
+                      nativeTail < RationalTime(1, Int64(decoded.sampleRate)),
+                      decoded.windows.last?.range.end == decoded.duration else {
+                    throw ProjectAnalysisError.incompleteRender
+                }
+                normalizeLastClock = true
+            } else {
+                normalizeLastClock = false
+            }
+            let windows = try decoded.windows.enumerated().map { index, window in
+                let end = normalizeLastClock && index == decoded.windows.count - 1
+                    ? logicalDuration : window.range.end
+                return AudioLevelWindow(range: TimeRange(start: try window.range.start.adding(target.timelineRange.start),
+                    end: try end.adding(target.timelineRange.start)), channelRMS: window.channelRMS)
             }
             audio = DialogueAudio(windows: windows, duration: decoded.duration,
                 sampleRate: decoded.sampleRate, channelCount: decoded.channelCount)
@@ -255,11 +283,41 @@ public enum ProjectAudioAnalysis {
         if let capturedMedia { try await capturedMedia.validate() }
         else { try await renderContext.validateArtifact(at: dialogueAudio) }
         await detecting()
+        let grid = try analysisCutGrid(projectData: projectData, frameDuration: document.frameDuration,
+            decodedSampleRate: audio.sampleRate, sourceAudio: renderContext.sourceRange != nil)
         let analysis = try SilenceDetector.analyze(windows: audio.windows, target: target.timelineRange,
-            frameDuration: document.frameDuration, settings: settings)
+            frameDuration: grid, settings: settings)
         let review = try ReviewPlan(jobID: jobID, document: document, target: target, analysis: analysis, requireDialogue: renderContext.sourceRange == nil && renderContext.isolatedTargetID == nil)
         return AnalyzedAudioProject(document: document, target: target, dialogueContext: renderContext,
-            audio: audio, settings: settings, analysis: analysis, review: review)
+            audio: audio, settings: settings, analysis: analysis, review: review, cutFrameDuration: grid)
+    }
+
+    static func analysisCutGrid(projectData: Data, frameDuration: RationalTime,
+                                decodedSampleRate: Double, sourceAudio: Bool) throws -> RationalTime {
+        var rate = decodedSampleRate
+        if sourceAudio {
+            // Source decoding may have a different rate from the project's
+            // future native mix. Prefer its declared output clock for cuts.
+            let xml = try XMLDocument(data: projectData, options: [.nodeLoadExternalEntitiesNever])
+            let sequences = try xml.nodes(forXPath: "//project/sequence").compactMap { $0 as? XMLElement }
+            guard sequences.count == 1 else { throw ProjectAnalysisError.staleRender }
+            if let declared = sequences[0].attribute(forName: "audioRate")?.stringValue {
+                let rates: [String: Double] = ["32k": 32_000, "44.1k": 44_100, "48k": 48_000,
+                    "88.2k": 88_200, "96k": 96_000, "176.4k": 176_400, "192k": 192_000]
+                guard let projectRate = rates[declared] else { throw SourceAudioError.invalidAudio }
+                rate = projectRate
+            }
+        }
+        // A verified native render is authoritative even when its WAV export
+        // rate differs from the sequence setting. Never resample it here.
+        return try cutGrid(videoFrameDuration: frameDuration, sampleRate: rate)
+    }
+
+    static func cutGrid(videoFrameDuration: RationalTime, sampleRate: Double) throws -> RationalTime {
+        guard sampleRate.isFinite, sampleRate >= 1, sampleRate <= 768_000,
+              sampleRate.rounded() == sampleRate else { throw SourceAudioError.invalidAudio }
+        return try AudioVideoCutGrid.frameDuration(videoFrameDuration: videoFrameDuration,
+            sampleRate: Int64(sampleRate))
     }
 }
 

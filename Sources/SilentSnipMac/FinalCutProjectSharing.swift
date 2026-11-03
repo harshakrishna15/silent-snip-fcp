@@ -43,7 +43,13 @@ extension FinalCutAXSession {
     }
 
     func shareRenderedAudio(timing: AnalysisTiming? = nil,
-                            renderSelection: FinalCutSelectionSnapshot? = nil) async throws -> ShareDestinationReceipt {
+                            renderSelection: FinalCutSelectionSnapshot? = nil,
+                            mixScope: FinalCutAudioMixScope = .dialogue) async throws -> ShareDestinationReceipt {
+        // Full-project mix evidence cannot authorize a selected-range export.
+        // Reject before activation, range preparation, or any Share dispatch.
+        guard mixScope.permitsSelectionRange(renderSelection != nil) else {
+            throw FinalCutDialogueExport.ExportError.unverifiedFullProjectMixOutput
+        }
         let timing = timing ?? AnalysisTiming(request: UUID())
         // Hashing can yield after capture focused the timeline. A delayed AU
         // field commit or our own URL delivery may then raise Controls again.
@@ -71,7 +77,8 @@ extension FinalCutAXSession {
             let delivered = try await timing.measure("share.render.exchange") {
                 try await ShareDestinationManager.shared.captureMedia(projectName: projectName) {
                     try await timing.measure("share.render.setup") {
-                        try await self.beginShare(renderAudio: true, timing: timing, renderSelection: renderSelection)
+                        try await self.beginShare(renderAudio: true, timing: timing, renderSelection: renderSelection,
+                            mixScope: mixScope)
                     }
                 }
             }
@@ -103,7 +110,8 @@ extension FinalCutAXSession {
     }
 
     private func beginShare(renderAudio: Bool, timing: AnalysisTiming,
-                            renderSelection: FinalCutSelectionSnapshot? = nil) async throws {
+                            renderSelection: FinalCutSelectionSnapshot? = nil,
+                            mixScope: FinalCutAudioMixScope = .dialogue) async throws {
 #if DEBUG
         let previousPrototypeMenu = quietPrototypeMenu
         if renderAudio, let lease = QuietSharePrototype.pluginLease {
@@ -166,10 +174,22 @@ extension FinalCutAXSession {
             ownsPanel = true
             guard let panel = currentSheet() else { throw FinalCutCaptureError.unavailable("Share panel disappeared.") }
             try await restoreOwnShareActivation(panel: panel)
-            if renderAudio { try await FinalCutDialogueExport.configureShare(panel, session: self, timing: timing) }
+            if renderAudio { try await FinalCutDialogueExport.configureShare(panel, session: self, timing: timing, mixScope: mixScope) }
             if let renderSelection,
                try renderedClipRange() != FinalCutRenderedClipRange(selection: renderSelection) {
                 throw FinalCutCaptureError.invalidSelection("The selected clip export range changed before rendering.")
+            }
+            if case .fullProjectMix = mixScope {
+                // Recheck immediately before dispatch. Failed AX reads must not
+                // become an empty range and silently accept a partial mix.
+                try refreshTimeline()
+                guard string(timeline, kAXRoleAttribute) == kAXLayoutAreaRole,
+                      string(timeline, kAXDescriptionAttribute) == "Project Timeline",
+                      let items = attribute(timeline, kAXChildrenAttribute) as? [AXUIElement],
+                      items.count <= 10_000,
+                      !items.contains(where: { string($0, kAXDescriptionAttribute) == "Range Selection" }) else {
+                    throw FinalCutDialogueExport.ExportError.unverifiedFullProjectMixOutput
+                }
             }
 #if DEBUG
             quietPrototypeStage?("beforeConfirmation")
