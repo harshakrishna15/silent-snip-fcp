@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare native cleaned audio with the original processed audio minus exact cuts.
+"""Compare native cleaned audio with exact retained samples and optional zero gaps.
 
 Developer evidence only. Accepts uncompressed WAV with integer PCM up to 24 bits
 or Float32 PCM, whose samples can be represented exactly by the Float32 decoder.
@@ -43,6 +43,63 @@ def sample_frame(time, rate, label):
     if frame.denominator != 1:
         raise ComparisonError(f"{label} is not on an exact audio sample boundary")
     return frame.numerator
+
+
+def replacement_gap_frames(report, cuts, origin, duration, result_duration, rate, inserted):
+    """Bind the app's uniform replacement gaps to its retained-range evidence.
+
+    insertedGapDuration is a total, not a per-cut duration. The core writer can
+    also produce nonuniform gaps, so the total alone cannot establish where
+    silence belongs. Require the target's complete retained-range complement
+    and its exact original-to-result mapping before accepting the uniform plan.
+    Adjacent cuts have no retained samples between them; their contiguous zero
+    spans are equivalent only when the mapped cumulative duration also agrees.
+    """
+    if inserted < 0:
+        raise ComparisonError("Inserted gap duration cannot be negative")
+    if inserted == 0:
+        return 0
+    if not cuts:
+        raise ComparisonError("Replacement gaps require selected cut ranges")
+    gap_duration = inserted / len(cuts)
+    frames = sample_frame(gap_duration, rate, "Each replacement gap duration")
+    segments = report.get("retainedSegments")
+    if not isinstance(segments, list) or not segments:
+        raise ComparisonError("Replacement gaps require complete retainedSegments mapping evidence")
+    times = [(Fraction(start, rate), Fraction(end, rate)) for start, end in cuts]
+    original_ranges = []
+    previous = Fraction(0)
+    for i, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            raise ComparisonError(f"retainedSegments[{i}] must contain original/result ranges")
+        original, result = segment.get("originalProjectRange"), segment.get("resultProjectRange")
+        if not isinstance(original, dict) or not isinstance(result, dict):
+            raise ComparisonError(f"retainedSegments[{i}] must contain original/result ranges")
+        start = rational(original.get("start"), f"retainedSegments[{i}].original.start") - origin
+        end = rational(original.get("end"), f"retainedSegments[{i}].original.end") - origin
+        result_start = rational(result.get("start"), f"retainedSegments[{i}].result.start")
+        result_end = rational(result.get("end"), f"retainedSegments[{i}].result.end")
+        if start < previous or start < 0 or end <= start or end > duration:
+            raise ComparisonError("Gap retained ranges must be ordered, nonoverlapping, and inside the original project")
+        prior = [(a, b) for a, b in times if b <= start]
+        expected_start = start - sum((b - a for a, b in prior), Fraction(0)) + len(prior) * gap_duration
+        if (result_start != expected_start or result_end - result_start != end - start or
+                result_start < 0 or result_end > result_duration):
+            raise ComparisonError("Replacement gap durations do not match the retained original-to-result mapping")
+        original_ranges.append((start, end))
+        previous = end
+    cursor = min(original_ranges[0][0], times[0][0])
+    target_end = max(original_ranges[-1][1], times[-1][1])
+    expected_keeps = []
+    for start, end in times:
+        if cursor < start:
+            expected_keeps.append((cursor, start))
+        cursor = end
+    if cursor < target_end:
+        expected_keeps.append((cursor, target_end))
+    if original_ranges != expected_keeps:
+        raise ComparisonError("Replacement gaps require the complete retained target-range complement")
+    return frames
 
 
 def encoded_wave_evidence(path):
@@ -228,8 +285,7 @@ def compare(original, cleaned, edit_report, repeated_original=None):
     report = json.loads(Path(edit_report).read_text())
     if not isinstance(report, dict):
         raise ComparisonError("Edit report must be a JSON object")
-    if rational(report.get("insertedGapDuration"), "insertedGapDuration") != 0:
-        raise ComparisonError("Only Remove Silence results are supported; inserted gaps are rejected")
+    inserted = rational(report.get("insertedGapDuration"), "insertedGapDuration")
     duration = rational(report.get("originalProjectDuration"), "originalProjectDuration")
     result_duration = rational(report.get("resultProjectDuration"), "resultProjectDuration")
     if duration <= 0 or result_duration < 0:
@@ -270,23 +326,29 @@ def compare(original, cleaned, edit_report, repeated_original=None):
             raise ComparisonError("Cut ranges must be ordered, nonoverlapping, and inside the original project")
         cuts.append((sample_frame(start, rate, f"cut {i}.start"), sample_frame(end, rate, f"cut {i}.end")))
         previous, removed = end, removed + end - start
-    if duration - removed != result_duration:
-        raise ComparisonError("Result duration does not equal original duration minus selected ranges")
+    if duration - removed + inserted != result_duration:
+        raise ComparisonError("Result duration does not equal original duration minus selected ranges plus inserted gaps")
+    gap_frames = replacement_gap_frames(report, cuts, origin, duration, result_duration, rate, inserted)
     exact_removed_frames = sample_frame(removed, rate, "removed duration")
-    result_frames = original_frames - exact_removed_frames
-    if result_frames < 0:
+    if original_frames - exact_removed_frames < 0:
         raise ComparisonError("Selected ranges exceed the verified native PCM frame count")
+    inserted_frames = sample_frame(inserted, rate, "inserted gap duration")
+    result_frames = original_frames - exact_removed_frames + inserted_frames
     if native_tail_stamp is None:
         if sample_frame(result_duration, rate, "result duration") != result_frames:
             raise ComparisonError("The result PCM duration does not match the selected ranges")
     elif result_duration * rate - result_frames != duration * rate - original_frames:
         raise ComparisonError("The edited project changed its native fractional tail phase")
-    boundaries, removed_frames = [], 0
+    boundaries, removed_frames, prior_gap_frames = [], 0, 0
     for start, end in cuts:
-        position = start - removed_frames
+        position = start - removed_frames + prior_gap_frames
         boundaries.append({"resultFrame": position, "resultSeconds": position / rate,
                            "originalCutStartFrame": start, "originalCutEndFrame": end})
+        if gap_frames:
+            boundaries[-1].update(gapStartFrame=position, gapEndFrame=position + gap_frames,
+                                  gapFrames=gap_frames, gapEndSeconds=(position + gap_frames) / rate)
         removed_frames += end - start
+        prior_gap_frames += gap_frames
     source, output, repeated = None, None, None
     try:
         source = Decoder(original, channels)
@@ -306,7 +368,7 @@ def compare(original, cleaned, edit_report, repeated_original=None):
                     repeat_mismatch = first_difference(data, again, channels, position, position)
             return data
 
-        for keep_end, skip_end in cuts + [(original_frames, original_frames)]:
+        for cut_index, (keep_end, skip_end) in enumerate(cuts + [(original_frames, original_frames)]):
             while source_position < keep_end:
                 count = min(BLOCK_FRAMES, keep_end - source_position)
                 expected = read_original(count)
@@ -323,6 +385,22 @@ def compare(original, cleaned, edit_report, repeated_original=None):
                 if len(read_original(count)) != count * channels * 4:
                     raise ComparisonError("Original render ends inside a selected cut")
                 source_position += count
+            remaining_gap = gap_frames if cut_index < len(cuts) else 0
+            while remaining_gap:
+                count = min(BLOCK_FRAMES, remaining_gap)
+                expected = bytes(count * channels * 4)
+                actual = output.read(count)
+                expected_hash.update(expected)
+                if mismatch is None:
+                    mismatch = first_difference(expected, actual, channels, output_position, source_position)
+                    if mismatch:
+                        mismatch.pop("originalFrame")
+                        mismatch.update(region="insertedGap", gapIndex=cut_index,
+                                        framesFromGapStart=mismatch["resultFrame"] - boundaries[cut_index]["gapStartFrame"])
+                        if mismatch["kind"] == "sampleMismatch":
+                            mismatch["kind"] = "nonzeroInsertedGapSample"
+                output_position += count
+                remaining_gap -= count
         if read_original(1):
             raise ComparisonError("Original render is longer than the original project duration")
         if repeated:
@@ -340,9 +418,12 @@ def compare(original, cleaned, edit_report, repeated_original=None):
             if "originalFrame" in mismatch:
                 mismatch["originalSeconds"] = mismatch["originalFrame"] / rate
             if boundaries:
-                nearest = min(boundaries, key=lambda b: abs(b["resultFrame"] - mismatch["resultFrame"]))
+                nearest = min(boundaries, key=lambda b: min(abs(b["resultFrame"] - mismatch["resultFrame"]),
+                              abs(b.get("gapEndFrame", b["resultFrame"]) - mismatch["resultFrame"])))
                 mismatch["nearestCutBoundary"] = nearest
-                mismatch["framesFromBoundary"] = mismatch["resultFrame"] - nearest["resultFrame"]
+                boundary_frame = min((nearest["resultFrame"], nearest.get("gapEndFrame", nearest["resultFrame"])),
+                                     key=lambda frame: abs(frame - mismatch["resultFrame"]))
+                mismatch["framesFromBoundary"] = mismatch["resultFrame"] - boundary_frame
         if repeat_mismatch:
             repeat_mismatch["originalSeconds"] = repeat_mismatch["originalFrame"] / rate
             if cuts:
@@ -363,6 +444,10 @@ def compare(original, cleaned, edit_report, repeated_original=None):
                 "actualCleanedFrames": output.frames, "originalPCM_SHA256": source.sha256.hexdigest(),
                 "expectedCleanedPCM_SHA256": expected_hash.hexdigest(), "cleanedPCM_SHA256": output.sha256.hexdigest(),
                 "firstDifference": mismatch, "cutBoundaries": boundaries,
+                "outputMode": "replaceWithSilenceGaps" if gap_frames else "removeSilence",
+                "insertedGapFrames": inserted_frames,
+                "replacementGapFrames": gap_frames,
+                "gapPlanEvidence": None if not gap_frames else "Uniform per-cut duration from total/count; exact retained target-range complement and result mappings verified.",
                 "nativeFractionalTail": None if native_tail_stamp is None else {
                     "originalFrameCount": original_frames, "resultFrameCount": result_frames,
                     "fractionalLogicalSamples": str(duration * rate - original_frames),
@@ -372,7 +457,7 @@ def compare(original, cleaned, edit_report, repeated_original=None):
                     "rule": "Bound native projectMix WAV ends at floor(T*rate); all cut boundaries remain exact samples."},
                 "originalRepeat": None if not repeated else {"pcmIdentical": deterministic,
                     "frames": repeated.frames, "pcmSHA256": repeated.sha256.hexdigest(), "firstDifference": repeat_mismatch},
-                "scope": "Supplied native exports only; output is compared after removing the exact project-zero cut ranges."}
+                "scope": "Supplied native exports only; every retained sample and each declared replacement gap (exact positive-zero PCM) are compared without tolerance or timing shift."}
     finally:
         for decoder in (source, output, repeated):
             if decoder:
