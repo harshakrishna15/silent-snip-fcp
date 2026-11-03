@@ -25,6 +25,24 @@ The advertised-shortcut counter was zero in these native runs: this command set 
 
 Validation: 484 Swift tests, one opt-in benchmark skipped in the full suite, no failures; 81 Python tests passed. The separate one-hour decoder benchmark also passed and remains a component-only result. Build, installed app, and ZIP helper executable hashes match; signature/packaging checks passed. Native evidence is retained under `build/Throughput`: `Performance-Summary.json`, each `Baseline36-*` / `Updated37-*` directory, `PCM/*Comparison.json`, `Reader37-60m.json`, `Package37.json`, and `Native-Checks.json`. All generated-source and template hashes stayed unchanged. The 32 automated Share jobs retained zero rendered WAVs after cleanup; native PCM comparison exports remain preserved as integration evidence.
 
+## Build 39: observed menu readiness
+
+Build 39 is installed. It replaces fixed submenu sleeps with bounded checks that the exact submenu is visible and the intended command is unique. A scrolling menu can expose a different visible child; the intended item still needs its own hit test before any coordinate input. Completed actions return immediately. A merely selected item retains the existing 200 ms grace before one activation, and uncertain dispatch never retries. Missing or empty aggregate selection metadata falls back to exactly one selected child; conflicting nonempty selection metadata stops. Import quiescence and semantic verification remain required.
+
+Additional native runs used the same generated five-minute Gate → Limiter source and original disposable project in the required library:
+
+| Build | Analyze | Verified Apply | Total helper processing | Target |
+| --- | ---: | ---: | ---: | ---: |
+| 37 before menu changes | 10.44 s | 10.68 s | 21.11 s | 5 s |
+| 38 intermediate candidate | 11.41 s | 9.13 s | 20.54 s | 5 s |
+| 39 final menu compatibility corrections | 13.83 s | 9.12 s | 22.95 s | 5 s |
+
+All three created the same 60 cuts and 191.5-second editable result with verified source contents and preserved native processing effects. Recorded Share panel opening stages were shorter with the menu changes, but native rendering varied from 6.03 to 9.42 seconds. **No end-to-end speedup or five-second completion is established.** These totals retain the helper-only measurement boundary described above. Native UI review and the opened cleaned timeline were separately observed; observer scheduling was not used as an exact UI stopwatch. Evidence is under `build/Throughput/MenuLatency`, including each request's XML, timing, verification receipts, and imported result.
+
+An additional generated one-minute Gate → Limiter → AUDelay → Silent Snip chain completed Analyze → explicit Update Cuts → Apply in build 39. The native delay editor showed a one-second delay, 50 percent feedback, and 50 percent wet mix. At a -35 dBFS detection threshold, Apply freshly rendered and verified three cuts, preserving the delay effect in the cleaned result. This establishes the tested chain's functional compatibility; its stateful processed-sample comparison remains separate from XML verification.
+
+Final build checks: 492 Swift tests with one opt-in benchmark skipped and no failures; 81 Python tests; 35 Controls harness groups; 60 exact mono/stereo Audio Unit passthrough cases. Built, installed, and ZIP helper executable hashes match; deep signature checks passed. The processed-PCM comparisons in the build 37 table remain fixture-specific evidence, not a universal plugin certification.
+
 ## What changed
 
 - Source decoding reads bounded blocks rather than issuing a file read for every 10 ms measurement window. The existing window boundaries, per-channel RMS calculation, detector, and sample-range checks remain in use.

@@ -10,7 +10,7 @@ The general-project update adds linked camera clips, full-project copies, a guar
 
 The manual review update adds **Update Cuts** from retained audio and **Go to Cut** without another Share. Nine native setting updates took 82–124 ms in the helper (94 ms median); fresh audio analysis remains separate and Apply verifies current audio. See [timings and verification limits](docs/general-project-performance.md#manual-review-without-repeated-share).
 
-Build 37 batches source decoding, overlaps imported-result source validation with XML capture, and uses an existing advertised Share shortcut when available. The [workflow throughput report](docs/workflow-throughput.md) records the one-second-per-minute target, native measurements, and exact processed-audio checks.
+Build 37 batches source decoding, overlaps imported-result source validation with XML capture, and uses an existing advertised Share shortcut when available. Build 39 waits for observed native menu readiness while retaining guarded once-only activation. The [workflow throughput report](docs/workflow-throughput.md) records the one-second-per-minute target, native measurements, and exact processed-audio checks.
 
 ## How it works
 

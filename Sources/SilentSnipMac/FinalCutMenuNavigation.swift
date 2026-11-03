@@ -82,13 +82,44 @@ extension FinalCutAXSession {
                 return
             }
             try press(item)
-            try await Task.sleep(for: .milliseconds(100))
-            guard let menu = children(item).first(where: { string($0, kAXRoleAttribute) == kAXMenuRole }) else {
-                throw FinalCutCaptureError.unavailable("A Final Cut submenu did not open.")
+            // Closed menus remain in AXChildren. Prove that the exact submenu
+            // is on screen and contains one intended next command. That command
+            // may be outside a scrolling menu's viewport; any visible child
+            // proves the menu is open. Coordinate input still checks its target.
+            let nextTitle = path[index + 1]
+            var openedMenu: AXUIElement?
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            while openedMenu == nil {
+                try Task.checkCancellation()
+                try assertInputFocus()
+                let menus = children(item).filter { string($0, kAXRoleAttribute) == kAXMenuRole }
+                if menus.count == 1 {
+                    if FinalCutMenuObservation.submenuIsReady(children: children(menus[0]),
+                        intended: { string($0, kAXTitleAttribute) == nextTitle },
+                        onScreen: { menuItemIsOnScreen($0, menu: menus[0], owner: item) }) {
+                        openedMenu = menus[0]
+                        break
+                    }
+                }
+                guard ProcessInfo.processInfo.systemUptime < deadline else {
+                    throw FinalCutCaptureError.unavailable("The Final Cut submenu for \(nextTitle) did not open.")
+                }
+                try await Task.sleep(for: .milliseconds(20))
             }
+            guard let menu = openedMenu else { throw FinalCutCaptureError.unavailable("A Final Cut submenu disappeared.") }
             menuOwner = item
             container = menu
         }
+    }
+
+    private func menuItemIsOnScreen(_ item: AXUIElement, menu: AXUIElement, owner: AXUIElement) -> Bool {
+        guard children(owner).contains(where: { CFEqual($0, menu) }),
+              children(menu).contains(where: { CFEqual($0, item) }),
+              let point = controlCenter(item) else { return false }
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(root, Float(point.x), Float(point.y), &hit) == .success,
+              let hit else { return false }
+        return CFEqual(hit, item) || children(item).contains { CFEqual($0, hit) }
     }
 
     private func activatePickedMenuItem(_ item: AXUIElement, menu: AXUIElement, owner: AXUIElement, action: String,
@@ -108,34 +139,35 @@ extension FinalCutAXSession {
                 if projectOpened() { return }
                 try assertCurrentProject()
                 if predicate() { return }
-                try await Task.sleep(for: .milliseconds(150))
+                try await Task.sleep(for: .milliseconds(20))
             }
             throw FinalCutCaptureError.unavailable("The selected menu command did not finish.")
         }
         func menuIsOpen() -> Bool {
             // Final Cut keeps closed menus in AXChildren. Hit-testing distinguishes
             // an on-screen item from that retained accessibility representation.
-            guard children(owner).contains(where: { CFEqual($0, menu) }),
-                  let point = self.controlCenter(item) else { return false }
-            var hit: AXUIElement?
-            guard AXUIElementCopyElementAtPosition(self.root, Float(point.x), Float(point.y), &hit) == .success,
-                  let hit else { return false }
-            return CFEqual(hit, item) || self.children(item).contains { CFEqual($0, hit) }
+            menuItemIsOnScreen(item, menu: menu, owner: owner)
         }
         func itemIsSelected() -> Bool {
-            (attribute(item, kAXSelectedAttribute) as? NSNumber)?.boolValue == true
-                || (attribute(menu, kAXSelectedChildrenAttribute) as? [AXUIElement] ?? []).contains { CFEqual($0, item) }
+            FinalCutMenuObservation.isExactlySelected(
+                reported: attribute(menu, kAXSelectedChildrenAttribute) as? [AXUIElement],
+                selectedChildren: {
+                    children(menu).filter { (attribute($0, kAXSelectedAttribute) as? NSNumber)?.boolValue == true }
+                }, intended: { CFEqual($0, item) })
         }
         // An AX action can select a menu item without executing it. Wait for
-        // proof of that exact selection before clicking once. If the menu
-        // has already closed, do not send another event to the resulting UI.
-        try await Task.sleep(for: .milliseconds(200))
-        if projectOpened() { return }
-        if currentSheet() != nil { return }
+        // observed completion immediately. A merely selected item still needs
+        // the existing grace period: clicking it sooner could race a delayed
+        // AXPress. No other input is sent after the menu closes or a sheet opens.
+        let actionStarted = ProcessInfo.processInfo.systemUptime
         try await waitForMenu(timeout: 2) {
-            !menuIsOpen() || itemIsSelected()
+            FinalCutMenuActivationReadiness.isReady(
+                completed: self.currentSheet() != nil || !menuIsOpen(),
+                exactlySelected: itemIsSelected(),
+                elapsed: ProcessInfo.processInfo.systemUptime - actionStarted)
         }
         if projectOpened() { return }
+        if currentSheet() != nil { return }
         guard menuIsOpen() else { return }
         let enabled = (attribute(item, kAXEnabledAttribute) as? NSNumber)?.boolValue != false
         guard string(item, kAXRoleAttribute) == kAXMenuItemRole,
@@ -157,6 +189,30 @@ extension FinalCutAXSession {
         }
     }
 
+}
+
+enum FinalCutMenuActivationReadiness {
+    /// Observed completion never needs a delay. Selection alone cannot prove
+    /// that a successful AX action has finished dispatching its command.
+    static func isReady(completed: Bool, exactlySelected: Bool, elapsed: TimeInterval) -> Bool {
+        completed || (exactlySelected && elapsed >= 0.2)
+    }
+}
+
+enum FinalCutMenuObservation {
+    static func submenuIsReady<Item>(children: [Item], intended: (Item) -> Bool,
+                                    onScreen: (Item) -> Bool) -> Bool {
+        children.filter(intended).count == 1 && children.contains(where: onScreen)
+    }
+
+    /// An empty aggregate selection is also returned by some valid menu hosts.
+    /// Fall back to the child flags only then (or when it is absent), never when
+    /// a nonempty aggregate selection identifies another item or multiple items.
+    static func isExactlySelected<Item>(reported: [Item]?, selectedChildren: () -> [Item],
+                                        intended: (Item) -> Bool) -> Bool {
+        let selected = reported.flatMap { $0.isEmpty ? nil : $0 } ?? selectedChildren()
+        return selected.count == 1 && intended(selected[0])
+    }
 }
 
 #if DEBUG
