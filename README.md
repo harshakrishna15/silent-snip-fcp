@@ -6,7 +6,9 @@ Silent Snip combines a passthrough audio effect with a background macOS helper. 
 
 The build 40 changes prioritize identical retained sound: Apply captures the complete native project mix, including connected Music, Effects, and custom roles, and cuts that continuous lossless PCM instead of restarting live effects at each join. Original video edits stay in the cleaned project. The untouched original project retains its editable audio effects; the cleaned copy uses rendered sound and does not retain a live processing chain on its audio.
 
-> **Build 40 status:** the compiled production writer has passed native PCM and strict imported-project/source verification for generated full-mix, camera/music, custom-role, and fractional-frame-rate fixtures. The final metadata identity path also preserved the intended new PCM file URL and exact retained samples. Final packaged/installed build 40 Analyze → review → Apply verification is pending. These writer tests do not establish the complete button-to-finish flow or the five-second target for five-minute clips. See [current evidence and limits](docs/workflow-throughput.md#build-40-preserve-the-continuous-native-mix).
+> **Installed build 43, Audio Unit 29:** built, installed, and ZIP executable hashes match; deep signature checks passed. The sound-preserving architecture introduced in build 40 has passed native writer PCM, project/source, and durable-media identity checks for generated full-mix, camera/music, custom-role, and fractional-frame-rate fixtures.
+>
+> **Complete build 43 flow and timing remain pending.** Build 42's custom-role and five-minute results passed strict verification after an explicit read-only Retry Verification, with all retained samples matching the current captured native mixes. Their initial attempts completed the native XML capture but stopped on a durable-media metadata timestamp change during that capture. Build 43 permits one narrowly proved, completed read-only recapture; it never retries uncertain capture or import. The five-second target for five-minute clips remains unmet. See [current evidence and limits](docs/workflow-throughput.md#build-43-installed-integration-status).
 
 > **Voice-over milestone verified:** Analyze → Apply created and opened separate editable projects in Final Cut Pro 12.4 for plain narration, narration with Noise Gate and Limiter, and one-second-gap output. Original projects and source media were preserved. See [milestone evidence and limits](docs/voiceover-project.md).
 
@@ -14,11 +16,11 @@ Earlier general-project builds added linked camera clips, full-project copies, a
 
 The manual review update adds **Update Cuts** from retained audio and **Go to Cut** without another Share. Nine native setting updates took 82–124 ms in the helper (94 ms median); fresh audio analysis remains separate and Apply verifies current audio. See [timings and verification limits](docs/general-project-performance.md#manual-review-without-repeated-share).
 
-Builds 37–39 improved source decoding, validation overlap, and guarded native menu readiness. Their five-minute runs still took about 19–23 seconds of helper Analyze plus verified Apply time. That target remains unmet; no build 40 end-to-end speed claim is established. The [workflow throughput report](docs/workflow-throughput.md) separates these historical timings from the new sound-preserving output evidence.
+Builds 37–39 improved source decoding, validation overlap, and guarded native menu readiness. Their five-minute runs still took about 19–23 seconds of helper Analyze plus verified Apply time. That target remains unmet; no build 43 end-to-end speed claim is established. The [workflow throughput report](docs/workflow-throughput.md) separates these historical timings from the new sound-preserving output evidence.
 
 ## How it works
 
-The build 40 flow below is implemented in this checkout; final installed-app verification remains pending as noted above.
+The flow introduced in build 40 is present in installed build 43; complete installed-app verification without a manual verification retry remains pending as noted above.
 
 1. Select one normal-speed clip with audio in the primary storyline and add **Silent Snip Audio**.
 2. Open **Controls**, adjust silence detection, and click **Analyze Audio**.
@@ -136,7 +138,7 @@ Follow [integration-test setup](docs/setup.md#integration-test-library) and [AGE
 
 ## Verified in this repository copy
 
-Build 40 development checks ran 552 Swift tests (three opt-in skips, no failures), plus 92 passing Python tests. After the final metadata-description removal, all 14 focused durable-audio tests passed. Native writer fixtures separately passed strict project/source verification and exact retained PCM checks, including the final durable-media identity path. Final packaged/installed button-flow checks remain pending; the older milestones below describe their recorded builds.
+The latest full Swift suite ran 565 tests (497 Mac and 68 Core; three opt-in skips, no failures), plus 103 passing Python tests. The regression checks cover both observed Share footer layouts, strict media history, the bounded completed-XML metadata recapture, and exact PCM gap comparison. Build 43/Audio Unit 29 packaging, installed/ZIP hashes, and deep signatures passed. Build 42's custom-role and five-minute results passed strict project/source verification after an explicit read-only verification retry and matched all 2,795,200 and 9,192,000 retained PCM frames against their respective current captured mixes. Those are not successful initial Apply attempts. Build 43's complete installed flow and timing remain pending. Native writer fixture proofs are separate; the older milestones below describe their recorded builds.
 
 The October 28 voice-over build passed 436 Swift tests (one existing skip, no failures), 60 audio render/persistence cases, 35 Controls checks, and 53 build-script tests. Fresh native Analyze → Apply runs passed for plain removal, processed removal, and processed gaps in the required integration library. A separate existing-result verification reused the same project UUID without importing again. See [the milestone report](docs/voiceover-project.md) for evidence and remaining limits; quiet Share feasibility remains documented separately in [the prototype report](docs/quiet-share-feasibility.md).
 
