@@ -140,11 +140,36 @@ final class FinalCutSharePanelTests: XCTestCase {
         for extra in [control(100, kAXStaticTextRole, value: "Stereo (L R)", description: "audio channel layout"),
                       control(101, kAXStaticTextRole, title: ".wav"),
                       control(102, kAXStaticTextRole, title: "Audio Track - 2"),
-                      control(103, kAXStaticTextRole, title: "2 files"),
                       control(104, kAXPopUpButtonRole, value: "WAV", description: "Roles formats and presets")] {
-            XCTAssertFalse(Panel(controls: valid.controls + [extra]).verifiesFullProjectMixWAV(expectedRoles: expected))
+            XCTAssertFalse(Panel(controls: valid.controls + [extra]).verifiesFullProjectMixWAV(expectedRoles: expected),
+                "Duplicate WAV/track/layout/preset controls after Roles as: must remain forbidden")
+        }
+        let boundary = valid.controls.firstIndex { $0.title == "Roles as:" }!
+        for extra in [control(101, kAXStaticTextRole, title: ".wav"),
+                      control(102, kAXStaticTextRole, title: "Audio Track - 2"),
+                      control(103, kAXStaticTextRole, title: "2 files")] {
+            var controls = valid.controls
+            controls.insert(extra, at: boundary)
+            XCTAssertFalse(Panel(controls: controls).verifiesFullProjectMixWAV(expectedRoles: expected),
+                "Additional audio outputs above Roles as: remain forbidden")
         }
         XCTAssertFalse(fullMix(roles: ["All Dialogue", "All Music", "All Music"]).verifiesFullProjectMixWAV(expectedRoles: expected))
+    }
+
+    func testFullProjectMixSeparatesAudioOutputCountFromWAVAndXMLDeliveryFooter() {
+        let roles: Set<String> = ["dialogue"]
+        let valid = fullMix(roles: ["All Dialogue"])
+        let footer = [control(105, kAXStaticTextRole, title: "48kHz"),
+                      control(106, kAXStaticTextRole, title: "00:01:00.000"),
+                      control(107, kAXStaticTextRole, title: "2 files"),
+                      control(108, kAXStaticTextRole, title: "17.3 MB"),
+                      control(109, kAXStaticTextRole, title: "Silent Snip")]
+        XCTAssertTrue(Panel(controls: valid.controls + footer).verifiesFullProjectMixWAV(expectedRoles: roles),
+            "The native footer includes the project XML attachment alongside the one WAV")
+        var wrongHeader = valid.controls
+        let count = wrongHeader.firstIndex { $0.title == "1 file" }!
+        wrongHeader[count] = control(110, kAXStaticTextRole, title: "2 files")
+        XCTAssertFalse(Panel(controls: wrongHeader + footer).verifiesFullProjectMixWAV(expectedRoles: roles))
     }
 
     private func fullMix(roles: [String], layout: String? = "Stereo (L R)", preset: String = "WAV") -> Panel {

@@ -54,24 +54,69 @@ import Foundation
 
     private static func configureFullProjectMix(in dialog: AXUIElement, session: FinalCutAXSession,
                                                 timing: AnalysisTiming, expectedRoles: Set<String>) async throws {
-        guard !expectedRoles.isEmpty, let preset = try panel(in: dialog).rolePreset else {
-            throw ExportError.unverifiedFullProjectMixOutput
-        }
-        try await session.restoreOwnShareActivation(panel: dialog)
-        try session.press(preset.element)
-        var choice: Panel.Control?
-        try await session.waitUntil(timeout: 3, context: "full-project WAV role preset") {
-            choice = (try? panel(in: preset.element))?.menuItem("WAV")
-            return choice != nil
-        }
-        guard let choice else { throw ExportError.unverifiedFullProjectMixOutput }
-        try session.press(choice.element)
-        timing.recordCounters(["share.render.fullMixPresetResets": 1])
-        // Native 12.4 changes the popup first and asynchronously restores the
-        // all-role track. Wait for that actual track, file count and stereo
-        // layout, including custom role groups; never accept stale Dialogue.
-        try await session.waitUntil(timeout: 5, context: "one stereo WAV containing every project role") {
-            (try? panel(in: dialog).verifiesFullProjectMixWAV(expectedRoles: expectedRoles)) == true
+        var phase = "rolePreset"
+        var observed: Panel?
+        var captureError: String?
+        do {
+            let initial = try panel(in: dialog)
+            observed = initial
+            guard !expectedRoles.isEmpty, let preset = initial.rolePreset else {
+                throw ExportError.unverifiedFullProjectMixOutput
+            }
+            try await session.restoreOwnShareActivation(panel: dialog)
+            try session.press(preset.element)
+            phase = "WAVMenuChoice"
+            var choice: Panel.Control?
+            try await session.waitUntil(timeout: 3, context: "full-project WAV role preset") {
+                choice = (try? panel(in: preset.element))?.menuItem("WAV")
+                return choice != nil
+            }
+            guard let choice else { throw ExportError.unverifiedFullProjectMixOutput }
+            try session.press(choice.element)
+            timing.recordCounters(["share.render.fullMixPresetResets": 1])
+            phase = "completeStereoRoleLayout"
+            // Native 12.4 changes the popup first and asynchronously restores
+            // the all-role track. A popup value alone never proves that layout.
+            try await session.waitUntil(timeout: 5, context: "one stereo WAV containing every project role") {
+                do {
+                    let current = try panel(in: dialog)
+                    observed = current
+                    return current.verifiesFullProjectMixWAV(expectedRoles: expectedRoles)
+                } catch {
+                    captureError = error.localizedDescription
+                    return false
+                }
+            }
+        } catch {
+            if error is CancellationError || Task.isCancelled { throw error }
+            if let current = try? panel(in: dialog) { observed = current }
+            // Keep the complete bounded observation in the existing request's
+            // diagnostic folder, rather than dumping host controls into the UI.
+            func field(_ value: String?) -> Any {
+                guard let value else { return NSNull() }
+                return String(value.prefix(512))
+            }
+            let controls: [[String: Any]] = (observed?.controls ?? []).prefix(500).map {
+                ["role": field($0.role), "title": field($0.title), "value": field($0.value),
+                 "description": field($0.description)]
+            }
+            let details: [String: Any] = ["phase": phase,
+                "expectedRoles": expectedRoles.sorted().prefix(500).map { String($0.prefix(512)) },
+                "expectedRoleCount": expectedRoles.count, "observedControlCount": observed?.controls.count ?? 0,
+                "controls": controls, "error": String(error.localizedDescription.prefix(2048)),
+                "captureError": field(captureError)]
+            let diagnostic: URL?
+            do {
+                let directory = try makeJobDirectory(jobID: timing.report(outcome: "failed").request)
+                let url = directory.appendingPathComponent("Full-Mix-Share-Diagnostic-\(UUID().uuidString).json")
+                try JSONSerialization.data(withJSONObject: details, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: url, options: .withoutOverwriting)
+                diagnostic = url
+            } catch { diagnostic = nil }
+            if let diagnostic {
+                throw FinalCutCaptureError.unavailable("\(error.localizedDescription) Share diagnostic: \(diagnostic.path)")
+            }
+            throw error
         }
     }
 

@@ -89,17 +89,22 @@ struct FinalCutSharePanel<Element> {
         let expected = Set(roots.map { "all" + Self.normalized($0) })
         // Whitespace normalization must not merge two distinct custom groups.
         guard expected.count == roots.count else { return false }
-        let labels = controls.filter { $0.role == kAXStaticTextRole }.map { Self.normalized($0.text) }
+        let end = controls.indices.filter { controls[$0].role == kAXStaticTextRole && Self.normalized(controls[$0].text) == "rolesas:" }
+        guard end.count == 1 else { return false }
+        // The footer counts delivery attachments (WAV plus FCPXML), not audio
+        // outputs. Scope only that summary count above Roles as:, while keeping
+        // duplicate WAV/track detection strict throughout the whole panel.
+        let labels = controls[..<end[0]].filter { $0.role == kAXStaticTextRole }.map { Self.normalized($0.text) }
+        let allLabels = controls.filter { $0.role == kAXStaticTextRole }.map { Self.normalized($0.text) }
         let summaries = labels.filter {
             let number = $0.hasSuffix("files") ? String($0.dropLast(5))
                 : ($0.hasSuffix("file") ? String($0.dropLast(4)) : "")
             return !number.isEmpty && number.allSatisfy(\.isNumber)
         }
-        guard summaries == ["1file"], labels.filter({ $0 == ".wav" }).count == 1,
-              labels.filter({ $0.hasPrefix("audiotrack-") }) == ["audiotrack-1"],
+        guard summaries == ["1file"], allLabels.filter({ $0 == ".wav" }).count == 1,
+              allLabels.filter({ $0.hasPrefix("audiotrack-") }) == ["audiotrack-1"],
               let preset = rolePreset, Self.normalized(preset.value ?? "") == "wav" else { return false }
         let track = controls.indices.filter { controls[$0].role == kAXStaticTextRole && Self.normalized(controls[$0].text) == "audiotrack-1" }
-        let end = controls.indices.filter { controls[$0].role == kAXStaticTextRole && Self.normalized(controls[$0].text) == "rolesas:" }
         let layouts = controls.filter { $0.role == kAXStaticTextRole && $0.description == "audio channel layout" }
         guard track.count == 1, end.count == 1, track[0] < end[0],
               layouts.count == 1, Self.normalized(layouts[0].value ?? "") == "stereo(lr)" else { return false }
