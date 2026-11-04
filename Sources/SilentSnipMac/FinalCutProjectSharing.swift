@@ -149,7 +149,13 @@ extension FinalCutAXSession {
 #endif
                     return used
                 }, menu: {
-                    try await self.pressMenu(path: ["File", "Share", "Silent Snip…"])
+                    let observed = try await FinalCutShareInvocation.performMenu(menu: { markFinalAttempt in
+                        try await self.pressMenu(path: ["File", "Share", "Silent Snip…"],
+                            onFinalDispatchAttempt: markFinalAttempt)
+                    }, observeCompletion: {
+                        try await self.observePendingShareConfirmation()
+                    })
+                    if observed { timing.recordCounters([prefix + ".panelObservedAfterFinalMenuAttempt": 1]) }
                 })
                 timing.recordCounters([prefix + ".advertisedShortcut": usedShortcut ? 1 : 0])
                 try await waitUntil(timeout: 10, context: "Silent Snip Share confirmation") {
@@ -218,6 +224,33 @@ extension FinalCutAXSession {
         }
     }
 
+    /// A final AXPick can complete while its compatibility activation is still
+    /// checking the menu. Observe that same command's pending confirmation only;
+    /// never issue another menu action, shortcut, activation, or confirmation.
+    private func observePendingShareConfirmation() async throws -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + 1.5
+        repeat {
+            try Task.checkCancellation()
+            try assertCurrentProject()
+            let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let ownForeground = foreground == application.processIdentifier
+                || foreground == NSRunningApplication.current.processIdentifier
+            guard ownForeground else { return false }
+            if let panel = currentSheet() {
+                let observation = FinalCutShareConfirmationObservation(projectName: currentProjectTitle(),
+                    panelTitle: string(panel, kAXTitleAttribute),
+                    hasNext: find(in: panel, role: kAXButtonRole, title: "Next…", maxNodes: 250) != nil,
+                    hasCancel: find(in: panel, role: kAXButtonRole, title: "Cancel", maxNodes: 250) != nil,
+                    foregroundIsHostOrHelper: ownForeground)
+                if observation.matches(expectedProject: projectName) { return true }
+                // An unrelated dialog is never evidence of Share completion.
+                guard observation.projectName == projectName, observation.panelTitle == "Silent Snip" else { return false }
+            }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return false }
+            try await Task.sleep(for: .milliseconds(40))
+        } while true
+    }
+
     /// A late XML Open Document can activate our own helper during the next
     /// Share panel. Return only that activation, without raising the project
     /// over its sheet or reclaiming focus from another application.
@@ -264,5 +297,39 @@ enum FinalCutShareInvocation {
         if try shortcut() { return true }
         try await menu()
         return false
+    }
+
+    /// Observation may resolve an uncertain FINAL menu dispatch, never a failure
+    /// opening File/Share or validating input. The menu closure runs exactly
+    /// once; no input is repeated when the original command opens its panel.
+    @MainActor static func performMenu(menu: (_ markFinalAttempt: @escaping () -> Void) async throws -> Void,
+                                       observeCompletion: () async throws -> Bool) async throws -> Bool {
+        var finalAttempted = false
+        do {
+            try await menu { finalAttempted = true }
+            return false
+        } catch {
+            let original = error
+            if error is CancellationError { throw error }
+            try Task.checkCancellation()
+            guard finalAttempted else { throw original }
+            let completed = try await observeCompletion()
+            try Task.checkCancellation()
+            guard completed else { throw original }
+            return true
+        }
+    }
+}
+
+struct FinalCutShareConfirmationObservation {
+    let projectName: String?
+    let panelTitle: String?
+    let hasNext: Bool
+    let hasCancel: Bool
+    let foregroundIsHostOrHelper: Bool
+
+    func matches(expectedProject: String) -> Bool {
+        foregroundIsHostOrHelper && !expectedProject.isEmpty && projectName == expectedProject
+            && panelTitle == "Silent Snip" && hasNext && hasCancel
     }
 }

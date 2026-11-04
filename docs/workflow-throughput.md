@@ -1,8 +1,8 @@
 # Workflow throughput and audio preservation
 
-November 4, 2026. The current target is approximately **three seconds of total processing for five minutes of raw clip audio** (100× real time). The three-second target is **not achieved**. The installed build 43 sound-preserving flow completed a five-minute fixture in **34.38 seconds of helper Analyze plus verified Apply time**, without a manual verification retry. This excludes human review, startup, frontend latency, and optional navigation; complete UI stopwatch timing is not established. Recorded build 37–39 five-minute helper flows took about **19–23 seconds** with the earlier editable-effects output route and remain separate historical measurements.
+November 4, 2026. The current target is approximately **three seconds of total processing for five minutes of raw clip audio** (100× real time). The three-second target is **not achieved**. Installed build 45 completed a five-minute fixture in **29.72 seconds of helper Analyze plus verified Apply time**, without a manual verification retry. This excludes human review, startup, frontend latency, and optional navigation; complete UI stopwatch timing is not established. The prior build 43 sound-preserving run took 34.38 seconds. Recorded build 37–39 five-minute helper flows took about **19–23 seconds** with the earlier editable-effects output route and remain separate historical measurements. Individual host runs vary; these samples do not establish a general improvement percentage.
 
-The architecture introduced in build 40 changes Apply to retain the continuous native full-project mix, prioritizing identical retained sound after a stateful delay test exposed a real join difference. Its **compiled production writer** has passed native PCM and strict imported-project/source checks for the fixtures below. **Build 43 with Audio Unit 29 is installed**, with matching built/installed/ZIP executable hashes and deep signature checks. Its five-minute Gate → Limiter fixture completed the native **Analyze → review → Apply** button flow without a manual verification retry, with strict project/source verification and exact retained PCM against its current captured mix. Build 42's custom-role and five-minute results passed only after separate manual read-only retries. These fixture results do not establish complete UI throughput, universal plugin fidelity, or equality to higher-precision live-engine audio.
+The architecture introduced in build 40 changes Apply to retain the continuous native full-project mix, prioritizing identical retained sound after a stateful delay test exposed a real join difference. Its **compiled production writer** has passed native PCM and strict imported-project/source checks for the fixtures below. **Build 45 with unchanged Audio Unit 29 is installed**, with matching built/installed/ZIP executable hashes and deep signature checks. Its five-minute Gate → Limiter fixture completed the native **Analyze → review → Apply** button flow without a manual verification retry, with strict project/source verification and exact retained PCM against its current captured mix. Build 42's custom-role and five-minute results passed only after separate manual read-only retries. These fixture results do not establish complete UI throughput, universal plugin fidelity, or equality to higher-precision live-engine audio.
 
 ## Historical build 37 measurements
 
@@ -91,7 +91,7 @@ Audio cuts use a common video-frame/audio-sample grid. Continuous PCM spans cros
 
 **Verification boundary:** writer fidelity, media identity, packaging, and install checks are separate from a successful complete installed button flow. Current build 43 integration status is recorded below. No three-second claim or improvement percentage is warranted. The continuous full-mix render and durable-media verification add host/file work, so the historical build 37–39 numbers cannot be relabeled as the new route's timing.
 
-The latest full offline Swift suite ran **565 tests: 497 Mac and 68 Core, three opt-in skips, zero failures**; **103 Python tests** passed. It includes the observed Share footer variants, narrowly typed durable-PCM history checks, one completed-XML metadata recapture, and exact PCM replacement-gap comparison. These checks are separate from the installed build 43 native button-flow and PCM runs below.
+Build 43's full offline Swift suite ran **565 tests: 497 Mac and 68 Core, three opt-in skips, zero failures**; **103 Python tests** passed. It includes the observed Share footer variants, narrowly typed durable-PCM history checks, one completed-XML metadata recapture, and exact PCM replacement-gap comparison. These checks are separate from the installed build 43 native button-flow and PCM runs below.
 
 Evidence is retained under `build/Throughput/StatefulQuality`: `PCM/Native-Camera-v2-Strict-v1.json`, `PCM/Native-Custom-Strict-v1.json`, `PCM/Native-Fractional1796-Strict-v1.json`, `PCM/Native-Fractional1797-Strict-v1.json`, `PCM/Production-FullMix-Minimal-{Comparison,Strict}.json`, `PCM/Production-Fractional1797-Minimal-{Comparison,Strict}.json`, the earlier `PCM/Production-*-Comparison.json` reports and native exports, pre-writer `Source-Media-Snapshot.json` files, writer manifests/reports, `PCM/Metadata-Identity-Comparison.json`, and `MediaIdentityExperiment/Metadata-35E16AC7/Native-Observed.json`. Failed older fixtures and their native exports are preserved as diagnostic evidence.
 
@@ -136,7 +136,37 @@ The additional one-minute request `17D78B26-1E66-4EF7-B2F6-0AB75156A548` passed 
 
 The separate native gap-result export matched **all 3,323,200 output stereo frames exactly**: 2,795,200 retained mix frames plus **528,000 positive-zero gap frames** (11 × 48,000). The comparator checked each declared gap and every retained sample without a timing shift or tolerance. This native 24-bit stereo 48 kHz fixture establishes the tested mixed-role delay chain's gap behavior, not every plugin, role configuration, or higher-precision path. Evidence is `Installed43-CustomRoles-Gaps`, with its result, temporary timing, native export, throughput, source audit, and `Native-PCM-vs-Captured-Mix.json`. The helper's generic Integration status had already been replaced by the later manual Share notification, so it is labeled `Integration-After-NativeExport.json`; the result's verification receipt/status supply Apply completion proof. **Pending:** additional effect-chain coverage, complete UI timing, and the original throughput target.
 
-## Earlier performance changes retained in build 43
+## Build 44 routing and build 45 delayed Share observation
+
+Build 44 persists one bounded routing hint across helper launches. The next explicit Analyze consumes it before use, hashes the current sources, and requests fresh rendered audio and project XML together. The delivered XML must independently prove the selected scope and source set. Missing, stale, or invalid hints use the ordinary capture path; this stores no PCM, effect settings, or authorization to reuse an opaque effect's measurements. The existing Final Cut Controls flow remains unchanged.
+
+Two native five-minute Gate → Limiter analyses ran in the required integration library, with the same 60 reviewed cuts reducing 300 seconds to 191.5 seconds:
+
+| Build 44 Analyze route | Request | Helper Analyze time |
+| --- | --- | ---: |
+| Initial ordinary capture | `254F7BAC` | 12.4462881 s |
+| Combined fresh audio/XML after a full Final Cut and helper restart | `627C77DD` | 9.6281626 s |
+
+The second run exercised the persisted hint after restart and removed the separate initial XML exchange. These two observations do not establish a general speedup or the three-second complete-flow target. Its Apply took **15.1533 seconds and failed after import**, losing keyboard focus before verification XML capture. The actual **Silent Snip** Share panel, with **Next** and **Cancel**, had opened. An explicit **Retry Verification** subsequently passed; a separate native result export matched **all 9,192,000 retained stereo PCM frames exactly** against that request's captured continuous mix. This establishes recovery and retained sound for that result, not a successful initial Apply or a complete-flow timing result. Evidence is under `build/Throughput/Routing44`: `Initial-GL-5m`, `Relaunched-GL-5m-FailedApply`, and `Package44.json`.
+
+Build 45 observes the exact expected Share confirmation when the final menu action was attempted but focus was lost as the panel arrived. The dispatch marker is set immediately before the final AX action, after its input checks. Observation requires the same pinned project, host/helper foreground, and the exact Silent Snip panel with Next and Cancel. Earlier menu failures, unrelated apps/dialogs, and cancellation still stop. It does not repeat menu inputs or import. Menu failure messages now identify the last input boundary.
+
+Installed build 45 completed a new **Analyze → review → Apply** run, request `4218CAFA-F910-4E76-8E30-6BB086F1F4E0`, without a manual verification retry:
+
+| Build 45 five-minute Gate → Limiter fixture | Helper seconds |
+| --- | ---: |
+| Fresh Analyze using combined audio/XML | 8.7695311 |
+| Verified Apply, including cleanup | 20.9539510 |
+| **Total helper processing** | **29.7234821** |
+| Current complete-flow target | 3 |
+
+It retained the same 60 cuts and 191.5-second result. Strict imported project/source verification passed, and the raw source's hash, device, inode, size, modification time, and change time stayed unchanged. A separate native result export matched **all 9,192,000 retained stereo PCM frames exactly** against that request's captured continuous mix, including every join, at native 24-bit/48 kHz precision. This does not establish identity to higher-precision live audio, cross-render determinism, or universal effect compatibility. Native review and the opened cleaned timeline were observed; the saved UI observation times include observer/tool delays and are upper bounds, not precise frontend timing. No three-second completion is established.
+
+This successful run did not exercise the exceptional panel-observation counter; its no-repeat and rejection boundaries have automated regressions. An earlier build 45 ordinary analysis took 12.2514667 seconds; a local ad hoc rebuild initially required refreshing the existing macOS control grant. The permission-blocked attempts stopped before export or editing and are not performance samples. Normal use still stays in Final Cut Controls.
+
+The full build 45 Swift suite passed **580 tests (512 Mac and 68 Core), three opt-in skips, zero failures**. All **104 Python tests** passed. Built, installed, and ZIP helper hashes match (`3112aa01…acb211`), as do their unchanged Audio Unit hashes; deep signatures passed. Evidence is under `build/Throughput/Routing44`: `Installed45-GL-5m/{Result,Temporary,Workflow-Throughput.json,Evidence-Audit.json,UI-Observed-Upper-Bounds.json,Native Export,Native-PCM-vs-Captured-Mix.json}`, `Build45-Initial`, `Package45.json`, and `Swift45.log`.
+
+## Earlier performance changes retained in build 45
 
 - Source decoding reads bounded blocks rather than issuing a file read for every 10 ms measurement window. The existing window boundaries, per-channel RMS calculation, detector, and sample-range checks remain in use.
 - Imported-result verification overlaps a full source-content validation with its XML capture. A file identity/change-time guard spans both operations and the remaining read-only verification, removing a redundant full scan. Settings recovery still requires its own final full-content validation.

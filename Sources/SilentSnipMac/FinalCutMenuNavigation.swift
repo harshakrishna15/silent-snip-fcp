@@ -45,19 +45,22 @@ extension FinalCutAXSession {
         return true
     }
 
-    func pressMenu(path: [String], allowDisabled: Bool = false, openingProject: String? = nil) async throws {
+    func pressMenu(path: [String], allowDisabled: Bool = false, openingProject: String? = nil,
+                   onFinalDispatchAttempt: (() -> Void)? = nil) async throws {
 #if DEBUG
         if quietPrototypeMenu {
             if let lease = QuietSharePrototype.pluginLease, !FinalCutGuardedMenuReturn.supportsCoveredPath(path) {
                 lease.reveal(reason: "Visible compatibility step: " + path.joined(separator: " → "))
             } else {
-                try await pressMenuUnderPrototypeCover(path: path, allowDisabled: allowDisabled)
+                try await pressMenuUnderPrototypeCover(path: path, allowDisabled: allowDisabled,
+                    onFinalDispatchAttempt: onFinalDispatchAttempt)
                 return
             }
         }
 #endif
         let previousStage = operationStage
-        operationStage = "\(previousStage), menu \(path.joined(separator: " → "))"
+        let menuStage = "\(previousStage), menu \(path.joined(separator: " → "))"
+        operationStage = menuStage + ", before first input"
         defer { operationStage = previousStage }
         try assertInputFocus()
         guard !path.isEmpty, let bar = Self.elementAttribute(root, kAXMenuBarAttribute) else {
@@ -74,14 +77,22 @@ extension FinalCutAXSession {
                     try key(code: 53) // Dismiss only the menu just opened by this method.
                     return
                 }
-                let action = try press(item)
+                operationStage = menuStage + ", before final command"
+                let action = try press(item, willDispatch: {
+                    self.operationStage = menuStage + ", final command attempted"
+                    onFinalDispatchAttempt?()
+                })
                 if let menuOwner {
                     try await activatePickedMenuItem(item, menu: container, owner: menuOwner, action: action,
                                                     openingProject: openingProject)
                 }
                 return
             }
-            try press(item)
+            operationStage = menuStage + ", before opening \(title)"
+            try press(item, willDispatch: {
+                self.operationStage = menuStage + ", opening \(title) attempted"
+            })
+            operationStage = menuStage + ", waiting for \(title) submenu"
             // Closed menus remain in AXChildren. Prove that the exact submenu
             // is on screen and contains one intended next command. That command
             // may be outside a scrolling menu's viewport; any visible child
@@ -219,7 +230,8 @@ enum FinalCutMenuObservation {
 extension FinalCutAXSession {
     /// Feasibility-only dispatch. There is deliberately no coordinate fallback.
     /// A dispatch or timeout is never followed by a different invocation path.
-    private func pressMenuUnderPrototypeCover(path: [String], allowDisabled: Bool) async throws {
+    private func pressMenuUnderPrototypeCover(path: [String], allowDisabled: Bool,
+                                             onFinalDispatchAttempt: (() -> Void)?) async throws {
         try assertInputFocus()
         guard !path.isEmpty, let bar = Self.elementAttribute(root, kAXMenuBarAttribute) else {
             throw FinalCutCaptureError.unavailable("The prototype cannot identify the menu bar.")
@@ -266,7 +278,7 @@ extension FinalCutAXSession {
                 if allowDisabled { throw FinalCutCaptureError.unavailable("The prototype will not dispatch a disabled menu command.") }
                 throw FinalCutCaptureError.unavailable("The prototype menu command is disabled: \(title)")
             }
-            let action = try press(item)
+            let action = try press(item, willDispatch: index == path.count - 1 ? onFinalDispatchAttempt : nil)
             if index != path.count - 1 {
                 var submenu: AXUIElement?
                 try await waitUntil(timeout: 2, context: "prototype submenu \(title)") {

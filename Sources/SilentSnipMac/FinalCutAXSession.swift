@@ -298,7 +298,7 @@ import Foundation
         up.post(tap: .cghidEventTap)
     }
 
-    @discardableResult func press(_ element: AXUIElement) throws -> String {
+    @discardableResult func press(_ element: AXUIElement, willDispatch: (() -> Void)? = nil) throws -> String {
         try assertInputFocus()
         let role = string(element, kAXRoleAttribute) ?? "unknown role"
         let name = [string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute),
@@ -316,6 +316,9 @@ import Foundation
         guard let action = FinalCutControlAction.preferred(from: supported) else {
             throw FinalCutCaptureError.unavailable("\(operationStage): \(control) supports neither Press nor Pick (AX error \(AXError.actionUnsupported.rawValue)).")
         }
+        // Mark an attempted command only after every input precondition passes.
+        // An AX error can be reported after the host accepted this exact action.
+        willDispatch?()
         let result = AXUIElementPerformAction(element, action as CFString)
         guard result == .success else {
             throw FinalCutCaptureError.unavailable("\(operationStage): \(action) failed for \(control) (AX error \(result.rawValue)).")
