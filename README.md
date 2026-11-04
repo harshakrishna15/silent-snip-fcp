@@ -4,6 +4,8 @@ Remove quiet pauses from clips with audio in Final Cut Pro, with control over wh
 
 Silent Snip combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes the selected clip and creates a cleaned copy of the full project.
 
+This branch also contains an isolated [Workflow Extension prototype](docs/workflow-extension-prototype.md) that opens inside Final Cut and saves per-project detection settings. Audio analysis and timeline cuts are outside its first milestone; the existing build-47 workflow remains available.
+
 The build 40 changes prioritize identical retained sound: Apply captures the complete native project mix, including connected Music, Effects, and custom roles, and cuts that continuous lossless PCM instead of restarting live effects at each join. Original video edits stay in the cleaned project. The untouched original project retains its editable audio effects; the cleaned copy uses rendered sound and does not retain a live processing chain on its audio.
 
 > **Installed build 47, Audio Unit 29:** built, installed, and ZIP executable hashes match; deep signature checks passed. The sound-preserving architecture introduced in build 40 has passed native writer PCM, project/source, and durable-media identity checks for generated full-mix, camera/music, custom-role, and fractional-frame-rate fixtures.

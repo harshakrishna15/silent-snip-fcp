@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>local.silentsnip.workflowprototype.extension</string>
+	<key>CFBundleExecutable</key>
+	<string>SilentSnipWorkflowExtension</string>
+	<key>CFBundleDisplayName</key>
+	<string>Silent Snip Workflow Prototype</string>
+	<key>CFBundleName</key>
+	<string>Silent Snip Workflow Prototype</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>5</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSViewClipsToBounds</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Show the open Final Cut project and playhead in Silent Snip.</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.FinalCut.WorkflowExtension</string>
+		<key>ProExtensionPrincipalViewControllerClass</key>
+		<string>SSWorkflowViewController</string>
+		<key>ProExtensionAttributes</key>
+		<dict>
+			<key>ContentViewMinimumWidth</key>
+			<integer>460</integer>
+			<key>ContentViewMinimumHeight</key>
+			<integer>300</integer>
+		</dict>
+	</dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+</dict>
+</plist>
