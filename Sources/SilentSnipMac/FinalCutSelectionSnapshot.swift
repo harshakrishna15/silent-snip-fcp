@@ -2,7 +2,7 @@ import SilentSnipCore
 import ApplicationServices
 import Foundation
 
-struct FinalCutSelectionSnapshot: Equatable {
+struct FinalCutSelectionSnapshot: Equatable, Codable, Sendable {
     let projectName: String
     let clipName: String
     let leadingTimecode: String

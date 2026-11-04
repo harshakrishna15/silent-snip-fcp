@@ -1,6 +1,6 @@
 # Workflow throughput and audio preservation
 
-November 4, 2026. The target remains approximately **one second of processing per minute of raw clip audio**. The five-minute/five-second target is **not achieved**. The installed build 43 sound-preserving flow completed a five-minute fixture in **34.38 seconds of helper Analyze plus verified Apply time**, without a manual verification retry. This excludes human review, startup, frontend latency, and optional navigation; complete UI stopwatch timing is not established. Recorded build 37–39 five-minute helper flows took about **19–23 seconds** with the earlier editable-effects output route and remain separate historical measurements.
+November 4, 2026. The current target is approximately **three seconds of total processing for five minutes of raw clip audio** (100× real time). The three-second target is **not achieved**. The installed build 43 sound-preserving flow completed a five-minute fixture in **34.38 seconds of helper Analyze plus verified Apply time**, without a manual verification retry. This excludes human review, startup, frontend latency, and optional navigation; complete UI stopwatch timing is not established. Recorded build 37–39 five-minute helper flows took about **19–23 seconds** with the earlier editable-effects output route and remain separate historical measurements.
 
 The architecture introduced in build 40 changes Apply to retain the continuous native full-project mix, prioritizing identical retained sound after a stateful delay test exposed a real join difference. Its **compiled production writer** has passed native PCM and strict imported-project/source checks for the fixtures below. **Build 43 with Audio Unit 29 is installed**, with matching built/installed/ZIP executable hashes and deep signature checks. Its five-minute Gate → Limiter fixture completed the native **Analyze → review → Apply** button flow without a manual verification retry, with strict project/source verification and exact retained PCM against its current captured mix. Build 42's custom-role and five-minute results passed only after separate manual read-only retries. These fixture results do not establish complete UI throughput, universal plugin fidelity, or equality to higher-precision live-engine audio.
 
@@ -8,7 +8,9 @@ The architecture introduced in build 40 changes Apply to retain the continuous n
 
 Apple M1, 16 GiB RAM; macOS 27.2 (26B123), Final Cut Pro 12.4. All tests used disposable projects in the required workspace library, referencing generated sources in place. Fixtures are looped generated narration, 48 kHz mono lossless ALAC, with native default Noise Gate/Limiter and stereo project output. These are normal-session fresh analyses, not a diverse real-world recording or a cold-boot benchmark. `GL` means Gate → Limiter → Silent Snip; `LG` means Limiter → Gate → Silent Snip.
 
-| Build / order | Raw duration | Analyze | Verified Apply | Total helper processing | Target |
+The recorded historical reports used an earlier one-second-per-minute budget. Their target columns below retain that historical budget; current reports use three seconds per five minutes.
+
+| Build / order | Raw duration | Analyze | Verified Apply | Total helper processing | Historical target |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 36 / GL baseline | 1 min | 10.07 s | 7.47 s | 17.54 s | 1 s |
 | 37 / GL | 1 min | 8.84 s | 8.61 s | 17.45 s | 1 s |
@@ -33,13 +35,13 @@ Build 39's installed native tests replaced fixed submenu sleeps with bounded che
 
 Additional native runs used the same generated five-minute Gate → Limiter source and original disposable project in the required library:
 
-| Build | Analyze | Verified Apply | Total helper processing | Target |
+| Build | Analyze | Verified Apply | Total helper processing | Historical target |
 | --- | ---: | ---: | ---: | ---: |
 | 37 before menu changes | 10.44 s | 10.68 s | 21.11 s | 5 s |
 | 38 intermediate candidate | 11.41 s | 9.13 s | 20.54 s | 5 s |
 | 39 final menu compatibility corrections | 13.83 s | 9.12 s | 22.95 s | 5 s |
 
-All three created the same 60 cuts and 191.5-second editable result with verified source contents and preserved native processing effects. Recorded Share panel opening stages were shorter with the menu changes, but native rendering varied from 6.03 to 9.42 seconds. **No end-to-end speedup or five-second completion is established.** These totals retain the helper-only measurement boundary described above. Native UI review and the opened cleaned timeline were separately observed; observer scheduling was not used as an exact UI stopwatch. Evidence is under `build/Throughput/MenuLatency`, including each request's XML, timing, verification receipts, and imported result.
+All three created the same 60 cuts and 191.5-second editable result with verified source contents and preserved native processing effects. Recorded Share panel opening stages were shorter with the menu changes, but native rendering varied from 6.03 to 9.42 seconds. **No end-to-end speedup or completion within either the historical five-second budget or current three-second budget is established.** These totals retain the helper-only measurement boundary described above. Native UI review and the opened cleaned timeline were separately observed; observer scheduling was not used as an exact UI stopwatch. Evidence is under `build/Throughput/MenuLatency`, including each request's XML, timing, verification receipts, and imported result.
 
 An additional generated one-minute Gate → Limiter → AUDelay → Silent Snip chain completed Analyze → explicit Update Cuts → Apply in build 39. The native delay editor showed a one-second delay, 50 percent feedback, and 50 percent wet mix. At a -35 dBFS detection threshold, Apply freshly rendered and verified three cuts, preserving the delay effect in the cleaned result. This establishes the tested chain's functional compatibility; its stateful processed-sample comparison remains separate from XML verification.
 
@@ -57,7 +59,7 @@ Two independent disposable output experiments used the exact same retained sourc
 | One full processed compound source, cut through outer references | Fail | Same join; actual -0.0173296928 |
 | Original native lossless processed WAV referenced in place, with no additional processing | Pass | None across all retained samples and joins |
 
-All comparison inputs were native 24-bit stereo 48 kHz WAVs. The processed-WAV experiment preserved the sound of this tested native export, while the untouched original project retained its live editable effects. The captured default AUDelay XML contained its exact effect identity but no serialized parameters/archive; native PCM, not an inferred settings archive, supplied the sound evidence. These experiments motivated the build 40 output change below. The experiment alone did not validate the app's production button flow, universal plugin compatibility, or the five-second target.
+All comparison inputs were native 24-bit stereo 48 kHz WAVs. The processed-WAV experiment preserved the sound of this tested native export, while the untouched original project retained its live editable effects. The captured default AUDelay XML contained its exact effect identity but no serialized parameters/archive; native PCM, not an inferred settings archive, supplied the sound evidence. These experiments motivated the build 40 output change below. The experiment alone did not validate the app's production button flow, universal plugin compatibility, or the throughput target.
 
 Evidence remains under `build/Throughput/StatefulQuality`: `PCM/Split39-Deterministic-Comparison.json`, `PCM/Compound39-Comparison.json`, `PCM/Baked39-Comparison.json`, original/repeat/result native exports, and the independent experiment XML/manifests. Every fixture references generated sources in place; no existing user project or external library was used.
 
@@ -87,7 +89,7 @@ Two important native behaviors were tested rather than inferred from DTD-valid X
 
 Audio cuts use a common video-frame/audio-sample grid. Continuous PCM spans cross visual primary boundaries without extra splits. At fractional frame rates, the physical native final sample count can be just below the logical project end: both tested 29.97 fps exports used the floor, including the case with a 0.6-sample remainder. Only that proved physical final tail is accepted; no sample is manufactured. A pacing gap that would place retained sound between audio samples stops explicitly rather than changing the requested gap or resampling the sound. The tested 48 kHz/29.97 fps one-second gap is aligned; an unaligned 44.1 kHz combination is not silently approximated.
 
-**Verification boundary:** writer fidelity, media identity, packaging, and install checks are separate from a successful complete installed button flow. Current build 43 integration status is recorded below. No five-second claim or improvement percentage is warranted. The continuous full-mix render and durable-media verification add host/file work, so the historical build 37–39 numbers cannot be relabeled as the new route's timing.
+**Verification boundary:** writer fidelity, media identity, packaging, and install checks are separate from a successful complete installed button flow. Current build 43 integration status is recorded below. No three-second claim or improvement percentage is warranted. The continuous full-mix render and durable-media verification add host/file work, so the historical build 37–39 numbers cannot be relabeled as the new route's timing.
 
 The latest full offline Swift suite ran **565 tests: 497 Mac and 68 Core, three opt-in skips, zero failures**; **103 Python tests** passed. It includes the observed Share footer variants, narrowly typed durable-PCM history checks, one completed-XML metadata recapture, and exact PCM replacement-gap comparison. These checks are separate from the installed build 43 native button-flow and PCM runs below.
 
@@ -121,12 +123,12 @@ Its first five-minute attempt, request `F9A1A1EE-000A-4E16-8C8C-B87FAF2FDF7E`, p
 
 A fresh request, `AE0AFEF2-14EE-4E2A-B01E-BF81590A5075`, then completed **Analyze → review → Apply without a manual verification retry**, using the same disposable five-minute Gate → Limiter project in the required integration library. It created the expected **60 cuts, reducing 300 seconds to 191.5 seconds**. Both completed verification XML captures were byte-identical and bound the same imported project and new processed-audio asset. Strict project/source verification passed. The raw source retained every saved stamp and its encoded hash; the durable WAV retained its encoded bytes, device, inode, size, and modification time, with only the expected `ctime` change. This exercised the bounded completed-capture metadata recheck in the installed app.
 
-| Build 43 native fixture | Analyze | Verified Apply | Total helper processing | Target |
+| Build 43 native fixture | Analyze | Verified Apply | Total helper processing | Current target |
 | --- | ---: | ---: | ---: | ---: |
-| Gate → Limiter, 5 min, request `AE0AFEF2` | 12.05 s | 22.34 s | **34.38 s** | 5 s |
-| Gate → Limiter → AUDelay with custom roles, 1 min, gap mode, request `17D78B26` | 10.35 s | 21.95 s | **32.31 s** | 1 s |
+| Gate → Limiter, 5 min, request `AE0AFEF2` | 12.05 s | 22.34 s | **34.38 s** | 3 s |
+| Gate → Limiter → AUDelay with custom roles, 1 min, gap mode, request `17D78B26` | 10.35 s | 21.95 s | **32.31 s** | 0.6 s |
 
-The official throughput reporter accepted this successful Apply and its matching project/source receipts. This is **helper processing time**, including cleanup; it excludes human review, optional updates/navigation, frontend latency, and startup. It is not a complete UI stopwatch measurement. Native rendering and host exchanges still dominate: this does not meet the five-second goal or establish a speedup over the older editable-effects route.
+The official throughput reporter accepted this successful Apply and its matching project/source receipts. The preserved reports used the historical one-second-per-minute budget; the table above compares their unchanged measured times with the current goal. This is **helper processing time**, including cleanup; it excludes human review, optional updates/navigation, frontend latency, and startup. It is not a complete UI stopwatch measurement. Native rendering and host exchanges still dominate: this does not meet the three-second goal or establish a speedup over the older editable-effects route.
 
 A separate native export of that automatically verified result matched **all 9,192,000 retained stereo PCM frames exactly** against the request's captured continuous mix, including every join. Both comparison inputs were native 24-bit stereo 48 kHz WAVs. No repeated original export was supplied for this run, so it does not establish cross-render determinism, arbitrary plugin fidelity, or identity to Final Cut's higher-precision live engine. Evidence is `Installed43-GL-5m-Automatic`: `Result`, `Temporary`, `Workflow-Throughput.json`, `Evidence-Audit.json`, `Share-Events.jsonl`, `Native Export`, and `Native-PCM-vs-Captured-Mix.json`.
 

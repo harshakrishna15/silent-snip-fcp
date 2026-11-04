@@ -13,6 +13,8 @@ import Foundation
     private let preview = TimelineCutPreview()
     private let analysisCache = AnalysisCache()
     private var directRenderHint: DirectAudioRenderHint?
+    private let routingHintStore = DirectAudioRenderHintStore()
+    private var routingHintMaintenance: Task<Void, Never>?
     public var onPreviewReady: ((UUID, ReviewAnalysisResult) -> Void)?
     private var reviewSession: FinalCutAXSession?
     public private(set) var reviewRequestID: UUID?
@@ -91,7 +93,15 @@ import Foundation
     }
 
     /// Cached analysis is optional; existing review/recovery state stays intact.
-    public func clearAnalysisCache() { analysisCache.discardForCleanup() }
+    public func clearAnalysisCache() {
+        analysisCache.discardForCleanup()
+        directRenderHint = nil
+        let previous = routingHintMaintenance, store = routingHintStore
+        routingHintMaintenance = Task {
+            await previous?.value
+            await store.clear()
+        }
+    }
 
     public func discard(_ requestID: UUID) {
         contexts.removeValue(forKey: requestID)
@@ -123,7 +133,11 @@ import Foundation
         defer { timing.save(to: directory.appendingPathComponent("Analysis-Timing.json"),
             outcome: Task.isCancelled ? "cancelled" : outcome) }
         timing.begin("capture")
-        let renderHint = directRenderHint
+        await routingHintMaintenance?.value
+        try Task.checkCancellation()
+        let persistedHint = await timing.measure("capture.routingHintLookup") { await routingHintStore.consume() }
+        try Task.checkCancellation()
+        let renderHint = directRenderHint ?? persistedHint
         directRenderHint = nil // A failed/stale hint must not loop on the next click.
         let capture: CapturedFinalCutProject
         do {
@@ -136,7 +150,6 @@ import Foundation
                 to: directory.appendingPathComponent("Analysis-Failure.txt"), options: .atomic)
             throw error
         }
-        try Task.checkCancellation()
         reviewSession = capture.session
         var renderedReceipt: ShareDestinationReceipt? = capture.renderedAudio
         var cleanup: (IsolatedAudioProject, Data)?
@@ -145,6 +158,9 @@ import Foundation
         var renderedInOriginal = false
         defer { if let receipt = renderedReceipt { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: receipt) } }
         do {
+            // Capture transfers request-owned audio even if cancellation arrives
+            // during Share. Install cleanup before observing that cancellation.
+            try Task.checkCancellation()
             // One immutable input for routing, isolation, analysis, and preflight.
             let projectData = try Data(contentsOf: capture.xmlURL)
             try AudioControllerSettings.validateInteractive(projectData: projectData, target: capture.target,
@@ -348,6 +364,10 @@ import Foundation
                 directRenderHint = DirectAudioRenderHint(selection: selection,
                     sourceURLs: capture.document.clips.filter(\.enabled).compactMap(\.mediaURL),
                     scope: scope)
+                if let directRenderHint {
+                    _ = await timing.measure("capture.routingHintStorage") { await routingHintStore.save(directRenderHint) }
+                    try Task.checkCancellation()
+                }
             }
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,

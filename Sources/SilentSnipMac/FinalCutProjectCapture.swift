@@ -83,12 +83,16 @@ import Foundation
             if !transferred, let rendered { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: rendered) }
         }
         let xml: URL
+        let hintedMedia: MediaContentSnapshot?
         if let hint = directRenderHint, hint.matches(selected) {
             // Hash the hinted sources BEFORE rendering. Fresh delivered XML must
             // reference this exact set; changed scope falls back to isolation.
-            media = try await timing.measure("capture.sourceValidationBeforeRender") {
-                try await MediaContentSnapshot.capture(hint.sourceURLs)
+            hintedMedia = try await timing.measure("capture.sourceValidationBeforeRender") {
+                try await hint.prepareSourceMedia()
             }
+        } else { hintedMedia = nil }
+        if let hint = directRenderHint, let hintedMedia {
+            media = hintedMedia
             progress("Rendering fresh audio and project XML together…")
             let receipt = try await timing.measure("capture.combinedExchange") {
                 try await session.shareRenderedAudio(timing: timing, renderSelection: hint.scope == .selectedRange ? selected : nil)

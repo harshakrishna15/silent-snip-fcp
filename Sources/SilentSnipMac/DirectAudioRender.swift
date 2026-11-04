@@ -1,16 +1,77 @@
 import Foundation
+import Darwin
 import SilentSnipCore
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
 
-/// A process-local routing hint, never an authorization or effects cache. The
+/// An optional routing hint, never an authorization or effects cache. The
 /// next manual Analyze must prove scope again using its new rendered XML.
-struct DirectAudioRenderHint {
+struct DirectAudioRenderHint: Codable, Sendable, Equatable {
     let selection: FinalCutSelectionSnapshot
     let sourceURLs: [URL]
     let scope: DirectAudioRender.Scope
     func matches(_ current: FinalCutSelectionSnapshot) -> Bool { current == selection }
+
+    /// A hint can outlive its sources. Failure before any host dispatch selects
+    /// the ordinary XML capture, never a retry of a render that may have started.
+    func prepareSourceMedia(hash: @Sendable (URL) throws -> String = { try MediaContentSnapshot.contentHash(at: $0) }) async throws -> MediaContentSnapshot? {
+        try Task.checkCancellation()
+        // Recheck the bound here for both process-local and persisted hints.
+        // A source may have grown since storage; large scans must retain the
+        // ordinary capture route that overlaps hashing with Final Cut rendering.
+        guard isValidRoutingHint,
+              sourceByteCount(maximum: DirectAudioRenderHintStore.maximumSourceBytes) != nil else { return nil }
+        do { return try await MediaContentSnapshot.capture(sourceURLs, hash: hash) }
+        catch is CancellationError { throw CancellationError() }
+        catch {
+            try Task.checkCancellation()
+            return nil
+        }
+    }
+
+    /// Do not open a FIFO, device or directory supplied by an optional hint.
+    /// Callers cap bytes to avoid serializing a large camera/network-file scan
+    /// ahead of a render that normally overlaps it.
+    func sourceByteCount(maximum: Int64 = .max) -> Int64? {
+        var total: Int64 = 0
+        for url in Set(sourceURLs) {
+            var info = stat()
+            guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size >= 0 else { return nil }
+            let (sum, overflow) = total.addingReportingOverflow(info.st_size)
+            guard !overflow, sum <= maximum else { return nil }
+            total = sum
+        }
+        return total
+    }
+
+    /// Bound optional cache inputs before reading any source. Canonical local
+    /// paths also prevent a persisted alias from following a different target.
+    var isValidRoutingHint: Bool {
+        func name(_ value: String) -> Bool {
+            !value.isEmpty && value.utf8.count <= 1_024 && !value.contains("\0")
+        }
+        func timecode(_ value: String, permitsDropFrame: Bool) -> Bool {
+            guard value.utf8.count == 11 else { return false }
+            let bytes = Array(value.utf8)
+            return bytes.enumerated().allSatisfy { index, byte in
+                if index == 2 || index == 5 { return byte == 58 }
+                if index == 8 { return byte == 58 || (permitsDropFrame && byte == 59) }
+                return (48...57).contains(byte)
+            }
+        }
+        guard name(selection.projectName), name(selection.clipName),
+              timecode(selection.leadingTimecode, permitsDropFrame: true),
+              timecode(selection.trailingTimecode, permitsDropFrame: true),
+              timecode(selection.durationTimecode, permitsDropFrame: false),
+              !sourceURLs.isEmpty, sourceURLs.count <= 256 else { return false }
+        return sourceURLs.allSatisfy { url in
+            url.isFileURL && (url.host == nil || url.host == "") && url.query == nil && url.fragment == nil
+                && url.user == nil && url.password == nil && url.path.hasPrefix("/")
+                && url.absoluteString.utf8.count <= 4_096 && !url.path.contains("\0")
+                && url.standardizedFileURL == url && url.resolvingSymlinksInPath() == url
+        }
+    }
 
     func accepts(projectData: Data, selection: TimelineSelection, media: MediaContentSnapshot) throws -> Bool {
         let document = try TimelineParser.parse(data: projectData)
@@ -24,7 +85,7 @@ struct DirectAudioRenderHint {
 /// This is a scope proof, independent of effect-cache eligibility: Final Cut
 /// still renders every effect, including opaque third-party Audio Units.
 enum DirectAudioRender {
-    enum Scope: String { case fullProjectTarget, projectSlice, selectedRange }
+    enum Scope: String, Codable, Sendable { case fullProjectTarget, projectSlice, selectedRange }
 
     static func isEligible(projectData: Data, selection: TimelineSelection) throws -> Bool {
         try scope(projectData: projectData, selection: selection) != nil

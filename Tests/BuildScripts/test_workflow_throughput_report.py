@@ -24,10 +24,26 @@ class WorkflowThroughputTests(unittest.TestCase):
         result = module.make_report(*self.values)
         self.assertEqual(result["analyzeAndApplySeconds"], 60)
         self.assertEqual(result["rawAudioSecondsPerProcessingSecond"], 60)
-        self.assertTrue(result["helperProcessingWithinBudget"])
+        self.assertEqual(result["targetSeconds"], 36)
+        self.assertFalse(result["helperProcessingWithinBudget"])
         self.assertFalse(result["processedPCMEqualityEstablished"])
         self.values[-1] = 60
         self.assertFalse(module.make_report(*self.values)["helperProcessingWithinBudget"])
+
+    def test_five_minute_goal_is_three_seconds_for_complete_helper_flow(self):
+        self.values[-1] = 300
+        self.values[0]["totalSeconds"] = 1
+        self.values[1]["totalSeconds"] = 2
+        result = module.make_report(*self.values)
+        self.assertEqual(result["targetSeconds"], 3)
+        self.assertTrue(result["helperProcessingWithinBudget"])
+        self.assertIn("frontend latency and startup", result["scope"])
+        self.assertIn("not a stopwatch", result["scope"])
+        self.values[1]["totalSeconds"] = 2.01
+        self.assertFalse(module.make_report(*self.values)["helperProcessingWithinBudget"])
+        self.values[1]["totalSeconds"] = 4
+        self.assertFalse(module.make_report(*self.values)["helperProcessingWithinBudget"],
+                         "The former five-second allowance must not satisfy the current goal")
 
     def test_rejects_failed_unrelated_or_modified_results(self):
         for index, key, value in [(0, "outcome", "failed"), (1, "outcome", "failed"),

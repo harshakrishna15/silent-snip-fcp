@@ -30,11 +30,15 @@ def make_report(analysis, apply, verification, receipt, edit, output_xml, raw_se
            not math.isfinite(v) or v <= 0 for v in values):
         raise ValueError("Timing values must be finite and positive")
     total = sum(values)
-    budget = raw_seconds / 60
+    # Current goal: approximately three seconds for five minutes of raw audio.
+    # This narrower helper metric can disprove that budget, but cannot establish
+    # complete button-to-finish timing without the excluded frontend work.
+    budget = raw_seconds * 3 / 300
     return {
         "request": request, "rawClipSeconds": raw_seconds,
         "analyzeSeconds": values[0], "applySeconds": values[1],
         "analyzeAndApplySeconds": total, "targetSeconds": budget,
+        "targetDefinition": "3 seconds per 300 seconds of raw clip audio",
         "rawAudioSecondsPerProcessingSecond": raw_seconds / total,
         "helperProcessingWithinBudget": total <= budget,
         "importedProjectAndSourcesVerified": True,

@@ -48,7 +48,7 @@ final class AnalysisPerformanceTests: XCTestCase {
         func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
         let report: [String: Any] = ["fixtureSeconds": duration.seconds,
             "channels": file.processingFormat.channelCount, "sampleRate": rate,
-            "targetWholeWorkflowSeconds": duration.seconds / 60,
+            "targetWholeWorkflowSeconds": duration.seconds / 100,
             "renderDecodeAndMeasureSeconds": renderedTimes, "sourceDecodeAndMeasureSeconds": sourceTimes,
             "hashSeconds": hashTimes, "recalculateSeconds": reuseTimes,
             "medianRenderDecodeAndMeasureSeconds": median(renderedTimes),
