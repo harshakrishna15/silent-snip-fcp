@@ -8,7 +8,6 @@ struct DirectAudioRenderHintStore: Sendable {
     static let fileName = "Analysis Routing Hint.json"
     private static let temporaryName = ".Analysis Routing Hint.tmp"
     static let maximumBytes = 65_536
-    static let maximumSourceBytes: Int64 = 256 * 1_024 * 1_024
     let root: URL
 
     private struct Record: Codable {
@@ -42,7 +41,7 @@ struct DirectAudioRenderHintStore: Sendable {
             guard fstat(file, &after) == 0, sameFileAndContents(before, after),
                   let record = try? JSONDecoder().decode(Record.self, from: data), record.version == 1,
                   record.hint.isValidRoutingHint,
-                  record.hint.sourceByteCount(maximum: Self.maximumSourceBytes) != nil else { return nil }
+                  record.hint.sourceByteCount() != nil else { return nil }
             // Failure to unlink must be an ordinary miss. Otherwise a readable
             // but immutable/read-only record could retry a failed route on
             // every launch, violating the consume-once boundary.
@@ -54,7 +53,7 @@ struct DirectAudioRenderHintStore: Sendable {
 
     @discardableResult func save(_ hint: DirectAudioRenderHint) async -> Bool {
         guard !Task.isCancelled, hint.isValidRoutingHint,
-              hint.sourceByteCount(maximum: Self.maximumSourceBytes) != nil else { return false }
+              hint.sourceByteCount() != nil else { return false }
         // Duplicate raw-source references carry no routing information.
         let bounded = DirectAudioRenderHint(selection: hint.selection,
             sourceURLs: Array(Set(hint.sourceURLs)).sorted { $0.absoluteString < $1.absoluteString }, scope: hint.scope)

@@ -83,21 +83,27 @@ import Foundation
             if !transferred, let rendered { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: rendered) }
         }
         let xml: URL
-        let hintedMedia: MediaContentSnapshot?
+        let hintedRead: MediaContentSnapshot.ReadGuard?
         if let hint = directRenderHint, hint.matches(selected) {
-            // Hash the hinted sources BEFORE rendering. Fresh delivered XML must
-            // reference this exact set; changed scope falls back to isolation.
-            hintedMedia = try await timing.measure("capture.sourceValidationBeforeRender") {
-                try await hint.prepareSourceMedia()
+            // Pin source identities BEFORE any render. Full hashes overlap the
+            // same host exchange and must join before its PCM/XML is accepted.
+            hintedRead = try timing.measure("capture.sourceValidationBeforeRender") {
+                try hint.prepareSourceRead()
             }
-        } else { hintedMedia = nil }
-        if let hint = directRenderHint, let hintedMedia {
-            media = hintedMedia
+        } else { hintedRead = nil }
+        if let hint = directRenderHint, let hintedRead {
             progress("Rendering fresh audio and project XML together…")
-            let receipt = try await timing.measure("capture.combinedExchange") {
-                try await session.shareRenderedAudio(timing: timing, renderSelection: hint.scope == .selectedRange ? selected : nil)
+            let combined = try await timing.measure("capture.combinedExchange") {
+                try await DirectAudioRenderCapture.perform(prepared: hintedRead, render: {
+                    try await session.shareRenderedAudio(timing: timing, renderSelection: hint.scope == .selectedRange ? selected : nil)
+                }, cleanup: { receipt in
+                    try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: receipt)
+                })
             }
+            let receipt = combined.receipt
             rendered = receipt
+            media = combined.media
+            timing.recordCounters(["capture.sourceHashOverlapsRender": 1])
             try ShareDestinationManager.shared.validateReceipt(receipt)
             guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
             let source = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"

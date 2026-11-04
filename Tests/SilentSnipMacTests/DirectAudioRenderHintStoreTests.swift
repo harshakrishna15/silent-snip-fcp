@@ -65,8 +65,8 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         let recovered = try XCTUnwrap(consumed)
         XCTAssertEqual(recovered, originalHint)
         try Data("changed source bytes".utf8).write(to: source)
-        let prepared = try await recovered.prepareSourceMedia()
-        let fresh = try XCTUnwrap(prepared)
+        let prepared = try XCTUnwrap(recovered.prepareSourceRead())
+        let fresh = try await MediaContentSnapshot.capture(prepared: prepared)
         XCTAssertNotEqual(old.hashes, fresh.hashes)
         let selected = TimelineSelection(timelineRange: .init(start: .zero, end: .init(5)))
         XCTAssertTrue(try recovered.accepts(projectData: project(preset: "changed.opaque.state"), selection: selected, media: fresh))
@@ -108,17 +108,17 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
 
     func testMissingUnreadableOrNonRegularOptionalSourcesFallBackBeforeRendering() async throws {
         let candidate = try hint()
-        let unavailable = try await candidate.prepareSourceMedia(hash: { _ in throw Failure.unavailable })
+        let unavailable = try candidate.prepareSourceRead(prepare: { _ in throw Failure.unavailable })
         XCTAssertNil(unavailable)
         try FileManager.default.removeItem(at: source)
-        let missing = try await candidate.prepareSourceMedia()
+        let missing = try candidate.prepareSourceRead()
         XCTAssertNil(missing)
         for url in [root!, root.appendingPathComponent("pipe")] {
             if url != root { XCTAssertEqual(mkfifo(url.path, 0o600), 0) }
             let invalid = try hint(urls: [url])
-            let prepared = try await invalid.prepareSourceMedia(hash: { _ in
+            let prepared = try invalid.prepareSourceRead(prepare: { _ in
                 XCTFail("An optional hint must not open a directory, FIFO or device")
-                return "unreachable"
+                throw Failure.unavailable
             })
             let saved = await DirectAudioRenderHintStore(root: root).save(invalid)
             XCTAssertNil(prepared)
@@ -126,17 +126,12 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         }
     }
 
-    func testPreflightPreservesCancellationAndRejectsSourceMutation() async throws {
+    func testPreflightPreservesCancellation() throws {
         let candidate = try hint()
         do {
-            _ = try await candidate.prepareSourceMedia(hash: { _ in throw CancellationError() })
+            _ = try candidate.prepareSourceRead(prepare: { _ in throw CancellationError() })
             XCTFail("Cancellation must not become an ordinary XML fallback")
         } catch is CancellationError { }
-        let mutated = try await candidate.prepareSourceMedia(hash: { url in
-            try Data("mutated while hashing".utf8).write(to: url)
-            return try MediaContentSnapshot.contentHash(at: url)
-        })
-        XCTAssertNil(mutated)
     }
 
     func testCorruptUnknownSchemaAndOversizedRecordsAreOptionalCacheMisses() async throws {
@@ -160,26 +155,25 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: source), Data("original source".utf8))
     }
 
-    func testLargeSourceRetainsOrdinaryXMLAndOverlappedHashingRoute() async throws {
+    @MainActor func testLargeSourceCanUseHintWithFreshFullHashesOverlappingRender() async throws {
         let store = DirectAudioRenderHintStore(root: root), candidate = try hint()
         let saved = await store.save(candidate)
         XCTAssertTrue(saved)
         let handle = try FileHandle(forWritingTo: source)
-        try handle.truncate(atOffset: UInt64(DirectAudioRenderHintStore.maximumSourceBytes + 1))
+        let largeSize: Int64 = 256 * 1_024 * 1_024 + 1
+        try handle.truncate(atOffset: UInt64(largeSize))
         try handle.close()
         let consumed = await store.consume()
         let savedLarge = await store.save(candidate)
-        // The process-local hint bypasses store.consume(), and may also refer
-        // to media that grew after capture. Its actual preflight must enforce
-        // the same cap before invoking the content reader.
-        let preparedLarge = try await candidate.prepareSourceMedia(hash: { _ in
-            XCTFail("A large process-local or grown source must not be hashed before native rendering")
-            return "unreachable"
-        })
-        XCTAssertNil(consumed, "A source that grew after storage must not serialize a large hash before native rendering")
-        XCTAssertFalse(savedLarge)
-        XCTAssertNil(preparedLarge)
-        XCTAssertEqual(candidate.sourceByteCount(), DirectAudioRenderHintStore.maximumSourceBytes + 1)
+        XCTAssertNotNil(consumed, "Large originals no longer require a serialized source scan or size exclusion")
+        XCTAssertTrue(savedLarge)
+        let preparedLarge = try XCTUnwrap(candidate.prepareSourceRead())
+        let combined = try await DirectAudioRenderCapture.perform(prepared: preparedLarge,
+            render: { "host receipt" }, cleanup: { _ in XCTFail("Stable source must keep its successful receipt") })
+        XCTAssertEqual(combined.receipt, "host receipt")
+        XCTAssertEqual(combined.media.hashes.count, 1)
+        XCTAssertEqual(combined.media.hashes[source]?.count, 64, "The large sparse original still receives a full SHA-256 read")
+        XCTAssertEqual(candidate.sourceByteCount(), largeSize)
     }
 
     func testAliasesRemoteReferencesAndTooManySourcesCannotSeedCapture() async throws {
@@ -191,9 +185,9 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
                      Array(repeating: source!, count: 257)] {
             let invalid = try hint(urls: urls)
             let saved = await DirectAudioRenderHintStore(root: root).save(invalid)
-            let prepared = try await invalid.prepareSourceMedia(hash: { _ in
+            let prepared = try invalid.prepareSourceRead(prepare: { _ in
                 XCTFail("Invalid optional routing references must not be read")
-                return "unreachable"
+                throw Failure.unavailable
             })
             XCTAssertFalse(saved)
             XCTAssertNil(prepared)

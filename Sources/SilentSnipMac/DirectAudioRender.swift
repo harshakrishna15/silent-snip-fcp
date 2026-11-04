@@ -15,14 +15,19 @@ struct DirectAudioRenderHint: Codable, Sendable, Equatable {
 
     /// A hint can outlive its sources. Failure before any host dispatch selects
     /// the ordinary XML capture, never a retry of a render that may have started.
-    func prepareSourceMedia(hash: @Sendable (URL) throws -> String = { try MediaContentSnapshot.contentHash(at: $0) }) async throws -> MediaContentSnapshot? {
+    func prepareSourceRead(prepare: ([URL]) throws -> MediaContentSnapshot.ReadGuard = MediaContentSnapshot.prepareRead) throws -> MediaContentSnapshot.ReadGuard? {
         try Task.checkCancellation()
-        // Recheck the bound here for both process-local and persisted hints.
-        // A source may have grown since storage; large scans must retain the
-        // ordinary capture route that overlaps hashing with Final Cut rendering.
-        guard isValidRoutingHint,
-              sourceByteCount(maximum: DirectAudioRenderHintStore.maximumSourceBytes) != nil else { return nil }
-        do { return try await MediaContentSnapshot.capture(sourceURLs, hash: hash) }
+        guard isValidRoutingHint, sourceByteCount() != nil else { return nil }
+        // Pin identities and all mutation stamps synchronously. Full content
+        // reads start only as structured child work overlapping the host render.
+        do {
+            let prepared = try prepare(sourceURLs)
+            // A canonical local path must remain canonical while its metadata
+            // is pinned; a concurrently introduced alias is an optional miss.
+            guard prepared.originals == prepared.canonicalURLs else { return nil }
+            try prepared.validate()
+            return prepared
+        }
         catch is CancellationError { throw CancellationError() }
         catch {
             try Task.checkCancellation()
@@ -31,15 +36,15 @@ struct DirectAudioRenderHint: Codable, Sendable, Equatable {
     }
 
     /// Do not open a FIFO, device or directory supplied by an optional hint.
-    /// Callers cap bytes to avoid serializing a large camera/network-file scan
-    /// ahead of a render that normally overlaps it.
-    func sourceByteCount(maximum: Int64 = .max) -> Int64? {
+    /// This checks metadata only; even large camera originals retain a fresh
+    /// full-content scan overlapping the host render, without a size exclusion.
+    func sourceByteCount() -> Int64? {
         var total: Int64 = 0
         for url in Set(sourceURLs) {
             var info = stat()
             guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size >= 0 else { return nil }
             let (sum, overflow) = total.addingReportingOverflow(info.st_size)
-            guard !overflow, sum <= maximum else { return nil }
+            guard !overflow else { return nil }
             total = sum
         }
         return total
@@ -77,6 +82,31 @@ struct DirectAudioRenderHint: Codable, Sendable, Equatable {
         let document = try TimelineParser.parse(data: projectData)
         guard media.covers(document.clips.filter(\.enabled).compactMap(\.mediaURL)) else { return false }
         return try DirectAudioRender.scope(projectData: projectData, selection: selection) == scope
+    }
+}
+
+/// One structured exchange. The pre-render guard covers BOTH the host render
+/// and concurrent full hashes; source reads never survive this operation's
+/// scope. A delivered receipt stays owned here until every source check passes.
+enum DirectAudioRenderCapture {
+    @MainActor static func perform<Receipt>(prepared: MediaContentSnapshot.ReadGuard,
+        captureSources: @Sendable (MediaContentSnapshot.ReadGuard) async throws -> MediaContentSnapshot = {
+            try await MediaContentSnapshot.capture(prepared: $0)
+        }, render: () async throws -> Receipt,
+        cleanup: (Receipt) -> Void) async throws -> (receipt: Receipt, media: MediaContentSnapshot) {
+        try Task.checkCancellation()
+        try prepared.validate()
+        async let pendingMedia = captureSources(prepared)
+        let receipt = try await render()
+        var transferred = false
+        defer { if !transferred { cleanup(receipt) } }
+        let media = try await pendingMedia
+        try Task.checkCancellation()
+        // The hash can finish before Share. Recheck the original guard AFTER
+        // both complete, including ctime, to reject transient/restored changes.
+        try prepared.validate()
+        transferred = true
+        return (receipt, media)
     }
 }
 
