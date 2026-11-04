@@ -56,6 +56,75 @@ final class MediaContentSnapshotTests: XCTestCase {
         catch ProjectAnalysisError.changedRenderArtifact { }
     }
 
+    func testPermutedAliasesRejectEvenWhenAllCanonicalHashesAndStampsAreUnchanged() async throws {
+        let first = directory.appendingPathComponent("first.wav")
+        let second = directory.appendingPathComponent("second.wav")
+        let firstAlias = directory.appendingPathComponent("first-alias.wav")
+        let secondAlias = directory.appendingPathComponent("second-alias.wav")
+        try Data([1, 2, 3]).write(to: first)
+        try Data([4, 5, 6]).write(to: second)
+        try FileManager.default.createSymbolicLink(at: firstAlias, withDestinationURL: first)
+        try FileManager.default.createSymbolicLink(at: secondAlias, withDestinationURL: second)
+        let originals = [firstAlias, secondAlias]
+        let snapshot = try await MediaContentSnapshot.capture(originals)
+        let before = try MediaContentSnapshot.prepareRead(originals)
+
+        try FileManager.default.removeItem(at: firstAlias)
+        try FileManager.default.removeItem(at: secondAlias)
+        try FileManager.default.createSymbolicLink(at: firstAlias, withDestinationURL: second)
+        try FileManager.default.createSymbolicLink(at: secondAlias, withDestinationURL: first)
+        let swapped = try await MediaContentSnapshot.capture(originals)
+        let after = try MediaContentSnapshot.prepareRead(originals)
+        XCTAssertEqual(snapshot.hashes, swapped.hashes, "Unordered content hashes cannot detect an alias permutation")
+        XCTAssertEqual(before.stamps, after.stamps, "Neither canonical source was modified")
+        XCTAssertNotEqual(before.canonicalURLs, after.canonicalURLs)
+        XCTAssertNotEqual(snapshot, swapped, "A snapshot must bind each original reference to its original file")
+
+        do { try await snapshot.validate(); XCTFail("An alias permutation changed which source each clip plays") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+        do { _ = try await snapshot.validatedForImport(renderedAudio: nil); XCTFail("Import must preserve historical reference associations") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+        XCTAssertThrowsError(try snapshot.restricting(to: [firstAlias])) {
+            guard case ProjectAnalysisError.changedRenderArtifact = $0 else { return XCTFail("Unexpected error: \($0)") }
+        }
+        XCTAssertEqual(try Data(contentsOf: first), Data([1, 2, 3]))
+        XCTAssertEqual(try Data(contentsOf: second), Data([4, 5, 6]))
+    }
+
+    func testLegacyAliasesWithoutHistoricalMappingRequireFreshAnalysis() async throws {
+        let source = directory.appendingPathComponent("source.wav")
+        let alias = directory.appendingPathComponent("alias.wav")
+        try Data([1, 2, 3]).write(to: source)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: source)
+        let snapshot = try await MediaContentSnapshot.capture([alias])
+        let legacy = try removingFields(["canonicalURLs"], from: snapshot)
+
+        do { try await legacy.validate(); XCTFail("Fresh hashes cannot prove an unrecorded historical alias association") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+        do { _ = try await legacy.validatedForImport(renderedAudio: nil); XCTFail("Legacy aliases cannot adopt their current targets") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+        XCTAssertThrowsError(try legacy.restricting(to: [alias]))
+        XCTAssertEqual(try Data(contentsOf: source), Data([1, 2, 3]))
+    }
+
+    func testLegacyCanonicalReferencesInferIdentityAndRetainFullContentChecks() async throws {
+        let source = directory.resolvingSymlinksInPath().appendingPathComponent("source.wav")
+        try Data([1, 2, 3]).write(to: source)
+        let snapshot = try await MediaContentSnapshot.capture([source])
+        let legacy = try removingFields(["canonicalURLs", "stamps"], from: snapshot)
+        try await legacy.validate()
+        let imported = try await legacy.validatedForImport(renderedAudio: nil)
+        XCTAssertEqual(imported.hashes, snapshot.hashes)
+        let restricted = try legacy.restricting(to: [source])
+        try await restricted.validate()
+
+        try Data([3, 2, 1]).write(to: source)
+        do { try await legacy.validate(); XCTFail("Legacy canonical receipts must still compare full hashes") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+        do { _ = try await legacy.validatedForImport(renderedAudio: nil); XCTFail("Legacy import must still compare full hashes") }
+        catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
     func testCancelledCaptureDoesNotReadAnotherFile() async throws {
         let reads = Reads()
         let url = directory.appendingPathComponent("not-opened.wav")
@@ -112,6 +181,12 @@ final class MediaContentSnapshotTests: XCTestCase {
         try Data([3, 2, 1]).write(to: source)
         do { try await legacy.validate(); XCTFail("Legacy recovery must still hash source contents") }
         catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
+    private func removingFields(_ fields: [String], from snapshot: MediaContentSnapshot) throws -> MediaContentSnapshot {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any])
+        for field in fields { object.removeValue(forKey: field) }
+        return try JSONDecoder().decode(MediaContentSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
     private final class Reads: @unchecked Sendable {

@@ -7,6 +7,10 @@ import Foundation
 struct MediaContentSnapshot: Sendable, Equatable, Codable {
     let hashes: [URL: String]
     private let originalURLs: [URL]
+    /// Paired with originalURLs, rather than an unordered set. Two source
+    /// aliases may exchange targets while leaving every canonical hash/stamp
+    /// unchanged; their original associations must remain authoritative.
+    private let canonicalURLs: [URL]?
     private let stamps: [URL: FileStamp]?
 
     /// Every historical input protected by this receipt, including original
@@ -30,13 +34,36 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
     func restricting(to urls: [URL]) throws -> Self {
         let originals = Array(Set(urls)).sorted { $0.absoluteString < $1.absoluteString }
         guard Set(originals).isSubset(of: Set(originalURLs)) else { throw ProjectAnalysisError.changedRenderArtifact }
+        let historical = try referenceMapping()
         var selected: [URL: String] = [:]
+        var selectedCanonical: [URL] = []
         for url in originals {
             let canonical = try Self.canonical(url)
-            guard let hash = hashes[canonical] else { throw ProjectAnalysisError.changedRenderArtifact }
+            guard let index = originalURLs.firstIndex(of: url), historical[index] == canonical,
+                  let hash = hashes[canonical] else { throw ProjectAnalysisError.changedRenderArtifact }
             selected[canonical] = hash
+            selectedCanonical.append(canonical)
         }
-        return Self(hashes: selected, originalURLs: originals, stamps: stamps?.filter { selected[$0.key] != nil })
+        return Self(hashes: selected, originalURLs: originals, canonicalURLs: selectedCanonical,
+            stamps: stamps?.filter { selected[$0.key] != nil })
+    }
+
+    /// Legacy receipts did not store an ordered reference mapping. Identity is
+    /// inferable only when every original URL was itself a canonical hash key.
+    /// Historical aliases with no mapping require fresh Analyze; hashing the
+    /// same canonical files again cannot prove which alias originally used each.
+    private func referenceMapping() throws -> [URL] {
+        if let canonicalURLs {
+            guard canonicalURLs.count == originalURLs.count,
+                  Set(canonicalURLs) == Set(hashes.keys) else { throw ProjectAnalysisError.changedRenderArtifact }
+            return canonicalURLs
+        }
+        guard Set(originalURLs) == Set(hashes.keys) else { throw ProjectAnalysisError.changedRenderArtifact }
+        return originalURLs
+    }
+
+    private func validateReferences(_ current: [URL]) throws {
+        guard try referenceMapping() == current else { throw ProjectAnalysisError.changedRenderArtifact }
     }
 
     static func canonical(_ url: URL) throws -> URL {
@@ -126,11 +153,14 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
             hashes[url] = try hash(url)
         }
         try prepared.validate()
-        return Self(hashes: hashes, originalURLs: prepared.originals, stamps: prepared.stamps)
+        return Self(hashes: hashes, originalURLs: prepared.originals,
+            canonicalURLs: prepared.canonicalURLs, stamps: prepared.stamps)
     }
 
     func validate() async throws {
-        let current = try await Self.capture(originalURLs)
+        let prepared = try Self.prepareRead(originalURLs)
+        try validateReferences(prepared.canonicalURLs)
+        let current = try await Self.capture(prepared: prepared)
         // Receipts from earlier releases contain hashes but no mutation stamps.
         // Keep their original full-content verification; every new capture also
         // requires unchanged file identity and change times across the render.
@@ -146,6 +176,7 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
     /// callers must keep the original snapshot in their persistent receipt.
     func validatedForImport(renderedAudio: LosslessRenderedAudio?) async throws -> Self {
         let phaseGuard = try Self.prepareRead(originalURLs)
+        try validateReferences(phaseGuard.canonicalURLs)
         let current = try await Self.capture(prepared: phaseGuard)
         guard current.hashes == hashes, current.originalURLs == originalURLs else {
             throw ProjectAnalysisError.changedRenderArtifact
