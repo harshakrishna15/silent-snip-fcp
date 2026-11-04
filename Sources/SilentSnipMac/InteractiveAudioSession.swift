@@ -489,15 +489,21 @@ import Foundation
             let applyRoute = try ClipAudioAnalysisRoute.resolve(projectData: baselineData, selection: capture.selection)
             timing.begin("projectAndAudioVerification")
             progress("Rendering the current project sound before cutting…", 0.05)
-            try await context.mediaSnapshot.validate()
-            let readGuard = try MediaContentSnapshot.prepareRead(context.mediaSnapshot.sourceURLs)
             let roles = try FinalCutAudioMixScope.expectedRoles(projectData: baselineData)
             // A continuous native render preserves opaque/stateful effects and
             // connected Music/Effects history. Detection remains Dialogue-only;
             // the complete mix is never substituted for a mixed target's review.
-            let receipt = try await session.shareRenderedAudio(timing: timing,
-                mixScope: .fullProjectMix(expectedRoles: roles))
+            let sourceCapture = try await ApplyAudioRenderCapture.perform(sourceMedia: context.mediaSnapshot,
+                render: {
+                    try await session.shareRenderedAudio(timing: timing,
+                        mixScope: .fullProjectMix(expectedRoles: roles))
+                }, cleanup: { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: $0) })
+            let receipt = sourceCapture.receipt
             fullMixReceipt = receipt
+            let readGuard = sourceCapture.readGuard
+            if sourceCapture.overlappedSourceValidation {
+                timing.recordCounters(["apply.sourceHashOverlapsRender": 1])
+            }
             try ShareDestinationManager.shared.validateReceipt(receipt)
             guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
             let finalURL = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
@@ -505,9 +511,15 @@ import Foundation
             let finalData = try Data(contentsOf: finalURL)
             let final = try TimelineParser.parse(data: finalData, exclusions: exclusions)
             try XMLProjectApply.verifyBaseline(final, analyzed: capture.document)
-            guard try FinalCutAudioMixScope.expectedRoles(projectData: finalData) == roles,
-                  try await Self.mediaSnapshot(final) == context.mediaSnapshot else {
+            guard try FinalCutAudioMixScope.expectedRoles(projectData: finalData) == roles else {
                 throw AudioProjectProcessingError.changedProject
+            }
+            try sourceCapture.validateSourceReferences(final.clips.filter(\.enabled).compactMap(\.mediaURL))
+            if !sourceCapture.overlappedSourceValidation {
+                // Legacy evidence keeps the preceding full-content route.
+                // Exact delivered references were checked above; validate()
+                // retains legacy canonical-reference/hash compatibility.
+                try await context.mediaSnapshot.validate()
             }
             try readGuard.validate()
             let target = try final.selectedTarget(capture.selection)
@@ -543,7 +555,9 @@ import Foundation
                     .write(to: context.directory.appendingPathComponent("Apply-Audio-Verification.json"), options: .atomic)
                 try ReviewedCutValidation.verify(reviewed: result.analyzed, fresh: fresh)
             }
-            try await context.mediaSnapshot.validate()
+            if !sourceCapture.overlappedSourceValidation { try await context.mediaSnapshot.validate() }
+            // The original phase guard spans both the joined hash/render and
+            // later target measurement, including any extra native isolation.
             try readGuard.validate()
             try validateReviewSelection(capture)
             try Task.checkCancellation()

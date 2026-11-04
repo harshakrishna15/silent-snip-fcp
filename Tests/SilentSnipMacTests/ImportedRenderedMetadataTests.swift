@@ -335,6 +335,12 @@ final class ImportedRenderedMetadataTests: XCTestCase {
         wave.append(Data(repeating: 0x13, count: bytes)); try wave.write(to: raw)
         let audio = try await LosslessRenderedAudio.retain(from: raw, expectedSHA256: MediaContentSnapshot.contentHash(at: raw),
             in: directory.appendingPathComponent("Durable"), timelineRange: .init(start: .zero, end: .init(1)), scope: .projectMix)
+        // These race fixtures intentionally mutate the generated render. Make
+        // only this copy writable BEFORE its historical snapshot so chmod is
+        // not confused with the later metadata/payload change under test.
+        guard chmod(audio.url.path, 0o600) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
         // Exact whole-second mtime makes restoration in race fixtures precise,
         // rather than relying on Foundation Date's submicrosecond conversion.
         try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: audio.url.path)

@@ -102,7 +102,8 @@ public struct LosslessRenderedAudio: Sendable, Codable, Equatable {
 
     /// Creates a new durable request directory. Once this returns, the file is
     /// result media: keep it after cancellation or uncertain import, and never
-    /// register it with StorageCleanup's disposable audio inventory.
+    /// register it with StorageCleanup's disposable audio inventory. Only this
+    /// new copy is made read-only before import; original/older media is untouched.
     public static func retain(from source: URL, expectedSHA256: String, in directory: URL,
                               timelineRange: TimeRange, scope: Scope = .selectedTarget) async throws -> Self {
         try Task.checkCancellation()
@@ -155,6 +156,16 @@ public struct LosslessRenderedAudio: Sendable, Codable, Equatable {
         let copied = try WAVMediaIdentity.copy(input: input, output: output, layout: layout, identity: identity)
         try Task.checkCancellation()
         try output.synchronize()
+        // Final Cut may attach provenance metadata while its first XML export
+        // reads new media. Protect only our exact newly-created descriptor,
+        // before any source snapshot/import can adopt its final mutation stamp.
+        // This is an optimization: all content guards and the existing metadata
+        // recapture policy remain authoritative if a host still changes it.
+        guard fchmod(destinationFD, 0o444) == 0 else { throw Failure.cannotProtectAudio }
+        var protected = stat()
+        guard fstat(destinationFD, &protected) == 0,
+              protected.st_mode & S_IFMT == S_IFREG, protected.st_uid == geteuid(), protected.st_nlink == 1,
+              protected.st_mode & 0o7777 == 0o444 else { throw Failure.cannotProtectAudio }
         try output.close()
         guard copied.nativeSourceSHA256 == expectedSHA256.lowercased() else { throw Failure.changedAudio }
         let result = try Self(url: destination, sha256: copied.evidence.encodedSHA256,
@@ -250,13 +261,14 @@ public struct LosslessRenderedAudio: Sendable, Codable, Equatable {
     }
 
     public enum Failure: LocalizedError {
-        case invalidLocation, unsupportedFormat, invalidRange, changedAudio
+        case invalidLocation, unsupportedFormat, invalidRange, changedAudio, cannotProtectAudio
         public var errorDescription: String? {
             switch self {
             case .invalidLocation: return "The processed audio needs a new, local durable media folder."
             case .unsupportedFormat: return "Preserving sound requires a complete, uncompressed PCM WAV render from Final Cut."
             case .invalidRange: return "The processed audio and retained ranges must match exactly at audio sample boundaries."
             case .changedAudio: return "The verified processed audio changed before it could be preserved. Analyze again."
+            case .cannotProtectAudio: return "The new processed audio could not be made read-only. No result was imported."
             }
         }
     }

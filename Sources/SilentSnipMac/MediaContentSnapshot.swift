@@ -170,6 +170,40 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
         }
     }
 
+    /// A source phase can overlap its full hashes with native rendering only
+    /// after the historical reference mapping and every mutation stamp match.
+    /// This is preflight evidence, not authorization to accept rendered audio.
+    /// Legacy receipts keep their full-content preflight before host dispatch.
+    func prepareValidationRead() throws -> ReadGuard? {
+        try Task.checkCancellation()
+        let references = try referenceMapping()
+        guard canonicalURLs != nil, let stamps else { return nil }
+        let prepared = try Self.prepareRead(originalURLs)
+        guard prepared.originals == originalURLs, prepared.canonicalURLs == references,
+              prepared.stamps == stamps else { throw ProjectAnalysisError.changedRenderArtifact }
+        try prepared.validate()
+        return prepared
+    }
+
+    /// Complete the full-content half of prepareValidationRead. The same
+    /// historical mapping/stamps remain pinned while hashing; a new snapshot
+    /// must never adopt changed bytes or identities for this source phase.
+    func validatedSnapshot(prepared: ReadGuard,
+                           hash: @Sendable (URL) throws -> String = { try MediaContentSnapshot.contentHash(at: $0) }) async throws -> Self {
+        try Task.checkCancellation()
+        guard canonicalURLs != nil, let stamps,
+              prepared.originals == originalURLs, prepared.stamps == stamps else {
+            throw ProjectAnalysisError.changedRenderArtifact
+        }
+        try validateReferences(prepared.canonicalURLs)
+        let current = try await Self.capture(prepared: prepared, hash: hash)
+        guard current.hashes == hashes, current.originalURLs == originalURLs,
+              current.canonicalURLs == canonicalURLs, current.stamps == stamps else {
+            throw ProjectAnalysisError.changedRenderArtifact
+        }
+        return current
+    }
+
     /// Final Cut can update xattrs on newly imported durable PCM, changing only
     /// ctime. Historical bytes and all identity/size/mtime evidence remain
     /// authoritative. The returned snapshot is CURRENT-PHASE evidence only;

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SilentSnipCore
 import XCTest
@@ -13,6 +14,53 @@ final class LosslessRenderedAudioTests: XCTestCase {
     }
 
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
+
+    func testNewDurableCopyIsReadOnlyAndReadableWhileSourcePermissionsAndIdentityStayUnchanged() async throws {
+        let source = try wave(frames: 480, channels: 2, bits: 24)
+        XCTAssertEqual(chmod(source.path, 0o640), 0)
+        let sourceBefore = try MediaContentSnapshot.FileStamp(source)
+        let sourceMode = try mode(source)
+        let sourceHash = try MediaContentSnapshot.contentHash(at: source)
+        let asset = try await LosslessRenderedAudio.retain(from: source, expectedSHA256: sourceHash,
+            in: destination(), timelineRange: .init(start: .zero, end: .init(1, 100)), scope: .projectMix)
+
+        XCTAssertEqual(try mode(asset.url), 0o444)
+        XCTAssertEqual(try mode(source), sourceMode)
+        XCTAssertEqual(try MediaContentSnapshot.FileStamp(source), sourceBefore)
+        XCTAssertEqual(try MediaContentSnapshot.contentHash(at: source), sourceHash)
+        let reader = try FileHandle(forReadingFrom: asset.url)
+        defer { try? reader.close() }
+        XCTAssertEqual(try reader.read(upToCount: 4), Data("RIFF".utf8))
+        let native = try WAVMediaIdentity.evidence(at: source)
+        XCTAssertEqual(try WAVMediaIdentity.evidence(at: asset.url).pcmDataSHA256, native.pcmDataSHA256)
+        try asset.validate()
+        let snapshot = try await MediaContentSnapshot.capture([asset.url])
+        try await snapshot.validate()
+    }
+
+    func testReadOnlyDurableCopyRejectsOrdinaryWritesAndMetadataWhileContentProofStillValidates() async throws {
+        guard geteuid() != 0 else { throw XCTSkip("Root bypasses ordinary file write permissions") }
+        let source = try wave(frames: 480, channels: 1, bits: 16)
+        let asset = try await LosslessRenderedAudio.retain(from: source,
+            expectedSHA256: MediaContentSnapshot.contentHash(at: source), in: destination(),
+            timelineRange: .init(start: .zero, end: .init(1, 100)), scope: .projectMix)
+        let before = try MediaContentSnapshot.FileStamp(asset.url)
+        do {
+            let unexpected = try FileHandle(forWritingTo: asset.url)
+            try unexpected.close()
+            XCTFail("A completed durable render must reject an ordinary writer")
+        } catch { }
+        let payload = Data("harmless readonly regression".utf8)
+        let result = payload.withUnsafeBytes { bytes in
+            setxattr(asset.url.path, "local.silentsnip.readonly-test", bytes.baseAddress, bytes.count, 0, 0)
+        }
+        let errorNumber = errno
+        XCTAssertEqual(result, -1, "Ordinary metadata writes must not mutate the new durable file")
+        XCTAssertTrue(errorNumber == EACCES || errorNumber == EPERM)
+        XCTAssertEqual(try MediaContentSnapshot.FileStamp(asset.url), before)
+        XCTAssertEqual(try mode(asset.url), 0o444)
+        try asset.validate()
+    }
 
     func testDurableCopyPreservesPCMAndFormatAndMapsNonzeroTargetToFileZero() async throws {
         let source = try wave(frames: 4_800, channels: 2, bits: 24)
@@ -231,6 +279,8 @@ final class LosslessRenderedAudioTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let marker = folder.appendingPathComponent("Processed-Audio.wav")
         try Data("existing result".utf8).write(to: marker)
+        XCTAssertEqual(chmod(marker.path, 0o640), 0)
+        let originalStamp = try MediaContentSnapshot.FileStamp(marker)
         do {
             _ = try await LosslessRenderedAudio.retain(from: source,
                 expectedSHA256: MediaContentSnapshot.contentHash(at: source), in: folder,
@@ -238,6 +288,8 @@ final class LosslessRenderedAudioTests: XCTestCase {
             XCTFail("An earlier result must survive a repeated retention request")
         } catch { }
         XCTAssertEqual(try String(contentsOf: marker), "existing result")
+        XCTAssertEqual(try mode(marker), 0o640, "An existing result must never have its permissions changed")
+        XCTAssertEqual(try MediaContentSnapshot.FileStamp(marker), originalStamp)
     }
 
     func testChangedDurableAudioFailsValidationAndCleanupCannotRegisterIt() async throws {
@@ -251,6 +303,7 @@ final class LosslessRenderedAudioTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: asset.url.path))
         var bytes = try Data(contentsOf: asset.url)
         bytes[bytes.count - 1] ^= 1
+        XCTAssertEqual(chmod(asset.url.path, 0o600), 0, "Deliberate tampering explicitly makes only this fixture writable")
         try bytes.write(to: asset.url)
         XCTAssertThrowsError(try asset.validate())
     }
@@ -272,6 +325,12 @@ final class LosslessRenderedAudioTests: XCTestCase {
 
     private func destination() -> URL {
         root.appendingPathComponent("Processed Audio/\(UUID())", isDirectory: true)
+    }
+
+    private func mode(_ url: URL) throws -> mode_t {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { throw POSIXError(.EIO) }
+        return info.st_mode & 0o7777
     }
 
     private func wave(frames: Int, channels: Int, bits: Int, float: Bool = false,
