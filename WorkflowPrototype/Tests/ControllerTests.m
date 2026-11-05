@@ -7,7 +7,7 @@
 #import <stdlib.h>
 
 // This executable includes the actual controller implementation below. Only
-// its persistence bridge, review transport, and SDK host objects are replaced, through their
+// its persistence bridge, review/window transports, and SDK host objects are replaced through their
 // public interfaces. No NSApplication, NSWindow, events, Final Cut connection,
 // filesystem settings, or SDK bootstrap is created by this harness.
 @interface SSPendingLoad : NSObject
@@ -137,6 +137,36 @@ static void unexpectedReviewBoundary(void) {
 - (BOOL)retryVerification { unexpectedReviewBoundary(); return NO; }
 - (void)cancel { unexpectedReviewBoundary(); }
 - (void)detach { unexpectedReviewBoundary(); }
+- (void)prepareWindowHelper:(void (^)(NSError *))completion { unexpectedReviewBoundary(); }
+@end
+
+// The lease transport is also excluded from this executable. Its real
+// notification observers, timers, and helper activation cannot be reached.
+static void unexpectedWindowBoundary(void) {
+    fprintf(stderr, "FAIL: A controller test reached the real window-client boundary\n");
+    abort();
+}
+@implementation SSWorkflowWindowClient
+- (instancetype)initWithViewID:(NSString *)viewID { return [super init]; }
+- (NSString *)state { unexpectedWindowBoundary(); return nil; }
+- (void)start { unexpectedWindowBoundary(); }
+- (void)stop { unexpectedWindowBoundary(); }
+@end
+
+@interface SSFakeWorkflowWindowClient : SSWorkflowWindowClient
+@property (nonatomic, copy) NSString *testViewID;
+@property (nonatomic) NSUInteger startCount;
+@property (nonatomic) NSUInteger stopCount;
+@property (nonatomic) BOOL active;
+@end
+@implementation SSFakeWorkflowWindowClient
+- (instancetype)initWithViewID:(NSString *)viewID {
+    self = [super initWithViewID:viewID];
+    if (self) _testViewID = [viewID copy];
+    return self;
+}
+- (void)start { if (!self.active) { self.startCount += 1; self.active = YES; } }
+- (void)stop { if (self.active) { self.stopCount += 1; self.active = NO; } }
 @end
 
 @interface SSFakeWorkflowReviewClient : SSWorkflowReviewClient
@@ -252,8 +282,15 @@ static void unexpectedReviewBoundary(void) {
 @property (nonatomic) BOOL delaysPermission;
 @property (nonatomic, strong) NSMutableArray<SSPendingPermission *> *permissions;
 @property (nonatomic, strong) NSMutableArray<SSFakeWorkflowReviewClient *> *reviewClients;
+@property (nonatomic, strong) NSMutableArray<SSFakeWorkflowWindowClient *> *windowClients;
 @end
 @implementation SSTestWorkflowViewController
+- (SSWorkflowWindowClient *)newWindowClient {
+    if (!self.windowClients) self.windowClients = [NSMutableArray new];
+    SSFakeWorkflowWindowClient *client = [[SSFakeWorkflowWindowClient alloc] initWithViewID:self.viewID];
+    [self.windowClients addObject:client];
+    return client;
+}
 - (SSWorkflowReviewClient *)newReviewClientWithUpdate:(void (^)(NSDictionary *))update failure:(void (^)(NSString *))failure {
     if (!self.reviewClients) self.reviewClients = [NSMutableArray new];
     SSFakeWorkflowReviewClient *client = [[SSFakeWorkflowReviewClient alloc] initWithViewID:self.viewID update:update failure:failure];
@@ -598,6 +635,90 @@ static void deniedPermissionKeepsConnectExplicit(void) {
           @"A successful current reconnect reads the timeline and hides Connect");
     completeLoad(controller.settings.loads[0], values(-50, NO), nil);
     check(controller.saveButton.enabled, @"Persistence enables only after permission and the project load succeed");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void windowLeaseTracksVisibleVerifiedHostWithoutProjectWork(void) {
+    SSHost *current = host(nil);
+    hostSingleton = current;
+    SSTestWorkflowViewController *controller = [[SSTestWorkflowViewController alloc] initWithNibName:nil bundle:nil];
+    controller.permissionStatus = noErr;
+    controller.delaysPermission = YES;
+    [controller loadView];
+    check(controller.windowClients.count == 0 && controller.reviewClients.count == 0 && controller.settings.loads.count == 0,
+          @"Loading an unseen controller cannot allocate a window lease or start project work");
+    [controller viewDidAppear];
+    SSFakeWorkflowWindowClient *client = controller.windowClients.lastObject;
+    check(client != nil && controller.windowClients.count == 1 && client.active && client.startCount == 1 &&
+          [client.testViewID isEqual:controller.viewID] && controller.viewVisible && controller.windowClientRunning,
+          @"A visible verified Final Cut host starts one lease pinned to this view's native marker");
+    check(current.timelineReadCount == 0 && controller.settings.loads.count == 0 && controller.reviewClients.count == 0,
+          @"Window sizing starts independently of timeline permission, an active project, and Analyze");
+    [controller viewDidAppear];
+    check(client.startCount == 1 && controller.windowClients.count == 1 && controller.permissions.count == 1,
+          @"Repeated appearance does not duplicate the running lease or reconnect the SDK host");
+    completePermission(controller.permissions[0], errAEEventNotPermitted);
+    check(client.active && client.startCount == 1 && client.stopCount == 0 && current.timelineReadCount == 0 &&
+          controller.settings.loads.count == 0,
+          @"Denied project Automation leaves a verified visible window lease independent of project-data access");
+    [controller requestConnection:nil];
+    completePermission(controller.permissions[1], noErr);
+    check(client.active && client.startCount == 1 && current.timelineReadCount == 1 &&
+          controller.projectUID == nil && controller.settings.loads.count == 0 && controller.reviewClients.count == 0,
+          @"Successful connection with no open project does not restart sizing or manufacture analysis work");
+    current.testTimeline.sequence = sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A");
+    [current.testTimeline notifySequenceChanged];
+    completeLoad(controller.settings.loads[0], values(-50, NO), nil);
+    current.testTimeline.sequence = nil;
+    [current.testTimeline notifySequenceChanged];
+    check(client.active && client.startCount == 1 && client.stopCount == 0 && controller.settings.loads.count == 1 &&
+          controller.reviewClients.count == 0,
+          @"Opening and closing a project cannot own the visible window lease or implicitly Analyze");
+    [controller viewWillDisappear];
+    [controller viewWillDisappear];
+    NSUInteger permissions = controller.permissions.count;
+    [controller requestConnection:nil];
+    check(!client.active && client.stopCount == 1 && !controller.viewVisible && !controller.windowClientRunning &&
+          client.startCount == 1 && controller.permissions.count == permissions,
+          @"Disappearance revokes the lease once, and a hidden reconnect cannot restart it");
+
+    [controller viewDidAppear];
+    check(client.active && client.startCount == 2 && controller.windowClients.count == 1,
+          @"Reopening a verified host restarts the same view lease without a project or Analyze");
+    NSUInteger reads = current.timelineReadCount;
+    permissions = controller.permissions.count;
+    current.bundleIdentifier = @"example.unrelated-host";
+    [controller requestConnection:nil];
+    check(!client.active && client.stopCount == 2 && controller.permissions.count == permissions,
+          @"Losing verified Final Cut identity stops sizing before requesting unrelated Automation access");
+    completePermission(controller.permissions.lastObject, noErr);
+    check(!client.active && client.startCount == 2 && current.timelineReadCount == reads && controller.reviewClients.count == 0,
+          @"A delayed permission result cannot restore a lease or read data after the host identity changed");
+    [controller viewWillDisappear];
+    hostSingleton = current;
+    [controller viewDidAppear];
+    hostSingleton = [NSObject new];
+    [controller viewDidAppear];
+    check(!client.active && client.startCount == 2 && controller.windowClients.count == 1 &&
+          controller.permissions.count == permissions,
+          @"An unrelated bundle and a non-SDK host cannot create or restart a window lease");
+
+    current.bundleIdentifier = @"com.apple.FinalCut";
+    hostSingleton = current;
+    [controller viewDidAppear];
+    check(client.active && client.startCount == 3 && [client.testViewID isEqual:controller.viewID],
+          @"A later verified appearance still uses the original view marker");
+    [controller viewWillDisappear];
+    completePermission(controller.permissions.lastObject, noErr);
+    check(!client.active && client.stopCount == 3 && current.timelineReadCount == reads && controller.reviewClients.count == 0,
+          @"A permission callback queued before disappearance cannot restart the lease or launch analysis");
+    [controller viewDidAppear];
+    client.active = NO; // Model an asynchronous quiet-launch failure, whose client is retryable.
+    [controller requestConnection:nil];
+    check(client.active && client.startCount == 5 && controller.windowClientRunning && controller.windowClients.count == 1 &&
+          controller.reviewClients.count == 0,
+          @"A verified visible reconnect retries a failed quiet launch despite the controller's prior running flag");
     closeController(controller);
     groupCount += 1;
 }
@@ -1109,10 +1230,10 @@ static void checkStickyChrome(SSWorkflowViewController *controller) {
     NSRect footer = frameInRoot(controller.footerView, controller);
     NSRect body = frameInRoot(controller.scroll, controller);
     check(fabs(column.size.width - fmin(560, controller.view.bounds.size.width)) < 0.5 &&
-          column.size.height > 0 && column.size.height <= controller.view.bounds.size.height + 0.5 &&
+          fabs(column.size.height - controller.view.bounds.size.height) < 0.5 &&
           fabs(NSMaxY(column) - NSMaxY(controller.view.bounds)) < 0.5 &&
-          fabs(NSMidX(column) - NSMidX(controller.view.bounds)) < 0.5,
-          @"The compact content column stays centered, top-aligned, and inside the host-sized root");
+          fabs(NSMidX(column) - NSMidX(controller.view.bounds)) <= 0.5,
+          @"The bounded content column stays centered and fills the host's fixed height");
     for (NSValue *value in @[[NSValue valueWithRect:header], [NSValue valueWithRect:footer], [NSValue valueWithRect:body]]) {
         NSRect part = value.rectValue;
         check(fabs(NSMinX(part) - NSMinX(column)) < 0.5 && fabs(part.size.width - column.size.width) < 0.5,
@@ -1212,6 +1333,22 @@ static void revealBodyControl(NSView *control, SSWorkflowViewController *control
     checkStickyChrome(controller);
 }
 
+static void revealFixedReviewPaneEdges(SSWorkflowViewController *controller) {
+    NSRect pane = [controller.reviewScroll convertRect:controller.reviewScroll.bounds toView:controller.content];
+    check(!controller.reviewScroll.hidden && !controller.cutColumnHeader.hidden && fabs(pane.size.height - 320) < 0.5,
+          @"The fixed cut-review area and headings stay present even in a short host");
+    CGFloat edgeHeight = fmin(24, controller.scroll.contentView.bounds.size.height);
+    for (NSNumber *bottom in @[@NO, @YES]) {
+        NSRect edge = NSMakeRect(pane.origin.x, bottom.boolValue ? NSMaxY(pane) - edgeHeight : NSMinY(pane),
+                                 pane.size.width, edgeHeight);
+        [controller.content scrollRectToVisible:edge];
+        [controller.scroll reflectScrolledClipView:controller.scroll.contentView];
+        check(NSContainsRect(NSInsetRect(controller.scroll.contentView.documentVisibleRect, -0.5, -0.5), edge),
+              @"Outer body scrolling can reveal both edges of the fixed table when the host is shorter than that table");
+        checkStickyChrome(controller);
+    }
+}
+
 static void exerciseOffscreenParentResize(BOOL constrainsHostSize) {
     SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
     SSWorkflowViewController *controller = openController(current);
@@ -1263,7 +1400,9 @@ static void exerciseOffscreenParentResize(BOOL constrainsHostSize) {
     for (NSTextField *field in controller.fields) revealBodyControl(field, controller);
     revealBodyControl(controller.output, controller);
     revealBodyControl(controller.saveButton, controller);
-    revealBodyControl(controller.reviewPanel, controller);
+    for (NSView *control in @[controller.allButton, controller.noneButton, controller.reviewSummary, controller.cutColumnHeader])
+        revealBodyControl(control, controller);
+    revealFixedReviewPaneEdges(controller);
 
     CGFloat narrowWidth = controller.content.frame.size.width;
     hostWidth.constant = 840;
@@ -1283,8 +1422,10 @@ static void exerciseOffscreenParentResize(BOOL constrainsHostSize) {
     checkStickyChrome(controller);
     checkBodyWidth(controller);
     NSMutableArray<NSView *> *normalControls = [controller.fields mutableCopy];
-    [normalControls addObjectsFromArray:@[controller.output, controller.saveButton, controller.reviewPanel]];
+    [normalControls addObjectsFromArray:@[controller.output, controller.saveButton, controller.allButton,
+        controller.noneButton, controller.reviewSummary, controller.cutColumnHeader]];
     for (NSView *control in normalControls) revealBodyControl(control, controller);
+    revealFixedReviewPaneEdges(controller);
     check([controller.fields[0].stringValue isEqual:@"-43"] && controller.contextGeneration == generation &&
           controller.settings.loads.count == 1 && controller.settings.saves.count == 0,
           @"Resizing and scrolling preserve the draft without loading, saving, or rebinding settings");
@@ -1438,7 +1579,7 @@ static void checkStructuredCutRows(SSWorkflowViewController *controller, NSArray
 
 static void renderSyntheticLayoutIfRequested(SSWorkflowViewController *controller, NSString *name) {
     if (!getenv("SILENT_SNIP_CONTROLLER_LAYOUT_RENDER")) return;
-    NSString *directory = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"build/WorkflowPrototype/Window13"];
+    NSString *directory = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"build/WorkflowPrototype/Window14"];
     NSError *error;
     check([NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:&error],
           @"The optional synthetic layout-render directory is writable");
@@ -1491,8 +1632,6 @@ static void structuredEighteenCutReviewFitsNarrowAndWideWindows(void) {
                       @"Extra host width cannot spread the timing values farther apart after the column reaches its cap");
             revealBodyControl(controller.reviewScroll, controller);
         }
-        if (width.integerValue == 560) renderSyntheticLayoutIfRequested(controller,
-            @"Final-Synthetic-18Cuts-560x477.png");
     }
     [client deliver:response busy:YES canApply:NO];
     settleOffscreenLayout(parent, controller);
@@ -1513,89 +1652,105 @@ static void structuredEighteenCutReviewFitsNarrowAndWideWindows(void) {
     groupCount += 1;
 }
 
-static void checkActionsFollowNaturalBody(SSWorkflowViewController *controller) {
-    NSRect body = frameInRoot(controller.scroll, controller);
-    NSRect footer = frameInRoot(controller.footerView, controller);
-    check(fabs(controller.scroll.contentView.bounds.size.height - controller.content.frame.size.height) <= 1,
-          @"A tall host gives an empty or short review only the body height its visible content needs");
-    check(fabs(NSMinY(body) - NSMaxY(footer)) < 0.5,
-          @"The action footer follows the compact body without an unused vertical gap");
-    NSRect visible = NSInsetRect(controller.scroll.contentView.documentVisibleRect, -0.5, -0.5);
-    check(NSContainsRect(visible, controller.content.bounds),
-          @"The naturally sized empty or short review remains entirely visible in the tall host");
+static NSArray<NSValue *> *fixedPaneGeometry(SSWorkflowViewController *controller) {
+    return @[[NSValue valueWithRect:frameInRoot(controller.contentColumn, controller)],
+        [NSValue valueWithRect:frameInRoot(controller.headerView, controller)],
+        [NSValue valueWithRect:frameInRoot(controller.footerView, controller)],
+        [NSValue valueWithRect:frameInRoot(controller.scroll, controller)],
+        [NSValue valueWithRect:[controller.reviewPanel convertRect:controller.reviewPanel.bounds toView:controller.content]],
+        [NSValue valueWithRect:[controller.reviewScroll convertRect:controller.reviewScroll.bounds toView:controller.content]],
+        [NSValue valueWithRect:[controller.cutColumnHeader convertRect:controller.cutColumnHeader.bounds toView:controller.content]]];
+}
+
+static void checkFixedCutPane(SSWorkflowViewController *controller, NSView *parent,
+                             NSUInteger rows, NSArray<NSValue *> *baseline) {
+    check(nearlyEqualSize(controller.view.frame.size, parent.bounds.size),
+          @"Changing cut counts leaves the complete frame-driven controller root owned by its host");
+    check(!controller.reviewScroll.hidden && !controller.cutColumnHeader.hidden &&
+          !controller.allButton.hidden && !controller.noneButton.hidden && controller.cutList.arrangedSubviews.count == rows,
+          @"The predetermined table, column headings, and selection controls remain visible for zero, one, or many cuts");
+    check(fabs(controller.reviewScroll.frame.size.height - 320) < 0.5 &&
+          fabs(controller.reviewScroll.contentView.bounds.size.height - 318) < 0.5,
+          @"The cut area keeps its fixed 320-point frame and bordered viewport regardless of row count");
+    check(fabs(controller.reviewSummary.frame.size.height - 30) < 0.5,
+          @"The reserved two-line review summary cannot move the predetermined table when a result arrives");
+    check(!controller.reviewScroll.hasHorizontalScroller &&
+          fabs(controller.cutList.frame.size.width - controller.reviewScroll.contentView.bounds.size.width) < 0.5 &&
+          fabs(controller.cutColumnHeader.frame.size.width - controller.reviewScroll.contentView.bounds.size.width) < 0.5,
+          @"The empty or populated table document and headings track its actual viewport width");
+    check(controller.content.frame.size.height <= controller.scroll.contentView.bounds.size.height + 0.5,
+          @"The standard fixed-frame hosts show all baseline controls without outer body scrolling");
+    if (rows == 0) check(!controller.allButton.enabled && !controller.noneButton.enabled && !controller.applyButton.enabled,
+          @"Keeping an empty table visible cannot enable selection commands or Apply");
+    if (baseline) {
+        NSArray<NSValue *> *geometry = fixedPaneGeometry(controller);
+        for (NSUInteger index = 0; index < geometry.count; ++index) {
+            NSRect actual = geometry[index].rectValue, expected = baseline[index].rectValue;
+            BOOL same = NSEqualRects(actual, expected);
+            if (index == geometry.count - 1) same = fabs(actual.origin.x - expected.origin.x) < 0.5 &&
+                fabs(actual.origin.y - expected.origin.y) < 0.5 && fabs(actual.size.height - expected.size.height) < 0.5;
+            check(same, @"Zero, one, and eighteen rows keep the outer frame, table position, toolbar, and footer geometry stable");
+        }
+    }
+    checkBodyWidth(controller);
+    checkNumericGroupArrangement(controller);
     checkStickyChrome(controller);
 }
 
-static void tallHostUsesOnlyTheHeightItsCutReviewNeeds(void) {
-    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Synthetic height fixture"));
-    SSTestWorkflowViewController *controller = openController(current);
-    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
-    NSView *parent = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 480, 640)];
-    [parent addSubview:controller.view];
-    settleOffscreenLayout(parent, controller);
-    [parent setFrameSize:NSMakeSize(840, 798)];
-    settleOffscreenLayout(parent, controller);
-    check(nearlyEqualSize(controller.view.frame.size, parent.bounds.size),
-          @"A tall frame-driven host retains ownership of the complete controller root");
-    check(controller.cutList.arrangedSubviews.count == 0 && controller.reviewScroll.hidden &&
-          controller.cutColumnHeader.hidden,
-          @"Idle review hides the empty cut table and its unused column headings");
-    CGFloat idleHeight = controller.contentColumn.frame.size.height;
-    check(idleHeight <= 450 && idleHeight < parent.bounds.size.height - 250,
-          @"Idle controls and actions occupy a compact column instead of the tall host's full height");
-    checkBodyWidth(controller);
-    checkNumericGroupArrangement(controller);
-    checkActionsFollowNaturalBody(controller);
-    renderSyntheticLayoutIfRequested(controller, @"Final-Synthetic-0Cuts-840x798.png");
+static void fixedCutPaneStaysStableAsRowsChange(void) {
+    for (NSValue *hostSize in @[[NSValue valueWithSize:NSMakeSize(615, 704)], [NSValue valueWithSize:NSMakeSize(840, 798)]]) {
+        SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Synthetic fixed-pane fixture"));
+        SSTestWorkflowViewController *controller = openController(current);
+        completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+        NSView *parent = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 480, 640)];
+        [parent addSubview:controller.view];
+        settleOffscreenLayout(parent, controller);
+        [parent setFrameSize:hostSize.sizeValue];
+        settleOffscreenLayout(parent, controller);
+        fprintf(stdout, "Fixed pane fixture %.0fx%.0f: body %.0f / viewport %.0f, table %.0f\n",
+            parent.bounds.size.width, parent.bounds.size.height, controller.content.frame.size.height,
+            controller.scroll.contentView.bounds.size.height, controller.reviewScroll.frame.size.height);
+        checkFixedCutPane(controller, parent, 0, nil);
+        NSArray<NSValue *> *baseline = fixedPaneGeometry(controller);
+        renderSyntheticLayoutIfRequested(controller, [NSString stringWithFormat:@"Synthetic-0Cuts-%.0fx%.0f.png",
+            parent.bounds.size.width, parent.bounds.size.height]);
 
-    SSFakeWorkflowReviewClient *client = beginReview(controller);
-    NSUInteger generation = controller.reviewGeneration;
-    NSUInteger contextGeneration = controller.contextGeneration;
-    NSDictionary *eighteen = syntheticEighteenCutReview();
-    NSMutableDictionary *one = [eighteen mutableCopy];
-    one[@"cuts"] = @[eighteen[@"cuts"][0]];
-    one[@"summary"] = @"1 selected · 1 detected range";
-    [client deliver:one busy:NO canApply:YES];
-    settleOffscreenLayout(parent, controller);
-    check(!controller.reviewScroll.hidden && !controller.cutColumnHeader.hidden &&
-          controller.cutList.arrangedSubviews.count == 1,
-          @"A single generated cut reveals the table and headings without changing the review controls");
-    NSButton *onlyRow = (NSButton *)controller.cutList.arrangedSubviews.firstObject;
-    check(controller.reviewScroll.frame.size.height >= onlyRow.frame.size.height &&
-          controller.reviewScroll.frame.size.height <= ceil(controller.cutList.fittingSize.height) + 4,
-          @"A one-cut review viewport is sized to its real row document rather than a large minimum table");
-    NSRect onlyRect = [onlyRow convertRect:onlyRow.bounds toView:controller.cutList];
-    check(NSContainsRect(NSInsetRect(controller.reviewScroll.contentView.documentVisibleRect, -0.5, -0.5), onlyRect),
-          @"The single cut is fully visible without scrolling a mostly empty viewport");
-    check(controller.contentColumn.frame.size.height <= idleHeight + 120,
-          @"Adding one cut grows the compact column only enough for its heading and row");
-    checkActionsFollowNaturalBody(controller);
+        SSFakeWorkflowReviewClient *client = beginReview(controller);
+        NSUInteger generation = controller.reviewGeneration;
+        NSUInteger contextGeneration = controller.contextGeneration;
+        NSDictionary *eighteen = syntheticEighteenCutReview();
+        NSMutableDictionary *one = [eighteen mutableCopy];
+        one[@"cuts"] = @[eighteen[@"cuts"][0]];
+        one[@"summary"] = @"1 selected · 1 detected range";
+        [client deliver:one busy:NO canApply:YES];
+        settleOffscreenLayout(parent, controller);
+        checkFixedCutPane(controller, parent, 1, baseline);
+        NSButton *onlyRow = (NSButton *)controller.cutList.arrangedSubviews.firstObject;
+        NSRect onlyRect = [onlyRow convertRect:onlyRow.bounds toView:controller.cutList];
+        check(NSContainsRect(NSInsetRect(controller.reviewScroll.contentView.documentVisibleRect, -0.5, -0.5), onlyRect),
+              @"A single cut remains fully visible inside the fixed area without resizing that area");
 
-    [client deliver:eighteen busy:NO canApply:YES];
-    settleOffscreenLayout(parent, controller);
-    check(nearlyEqualSize(controller.view.frame.size, parent.bounds.size),
-          @"Growing the review to eighteen cuts cannot resize the frame-driven host root");
-    check(!controller.reviewScroll.hidden && !controller.cutColumnHeader.hidden,
-          @"A populated review keeps its timing table visible");
-    checkStructuredCutRows(controller, eighteen[@"cuts"]);
-    renderSyntheticLayoutIfRequested(controller, @"Final-Synthetic-18Cuts-840x798.png");
+        [client deliver:eighteen busy:NO canApply:YES];
+        settleOffscreenLayout(parent, controller);
+        checkFixedCutPane(controller, parent, 18, baseline);
+        checkStructuredCutRows(controller, eighteen[@"cuts"]);
+        renderSyntheticLayoutIfRequested(controller, [NSString stringWithFormat:@"Synthetic-18Cuts-%.0fx%.0f.png",
+            parent.bounds.size.width, parent.bounds.size.height]);
 
-    NSMutableDictionary *none = [eighteen mutableCopy];
-    none[@"cuts"] = @[];
-    none[@"summary"] = @"No cut ranges detected";
-    [client deliver:none busy:NO canApply:NO];
-    settleOffscreenLayout(parent, controller);
-    check(controller.cutList.arrangedSubviews.count == 0 && controller.reviewScroll.hidden &&
-          controller.cutColumnHeader.hidden && controller.contentColumn.frame.size.height <= 450,
-          @"Returning to zero cuts removes the old table height and collapses its headings again");
-    checkActionsFollowNaturalBody(controller);
-    check(controller.reviewClient == client && controller.reviewGeneration == generation &&
-          controller.contextGeneration == contextGeneration && client.startCount == 1 && client.applyCommandCount == 0 &&
-          client.applyGestures.count == 0 && client.retryCount == 0 && client.cancelCount == 0 &&
-          controller.settings.loads.count == 1 && controller.settings.saves.count == 0 && !controller.applyButton.enabled,
-          @"Content-driven heights cannot dispatch work, rebind settings, or authorize Apply for an empty review");
-    [controller.view removeFromSuperview];
-    closeController(controller);
+        NSMutableDictionary *none = [eighteen mutableCopy];
+        none[@"cuts"] = @[];
+        none[@"summary"] = @"No cut ranges detected";
+        [client deliver:none busy:NO canApply:NO];
+        settleOffscreenLayout(parent, controller);
+        checkFixedCutPane(controller, parent, 0, baseline);
+        check(controller.reviewClient == client && controller.reviewGeneration == generation &&
+              controller.contextGeneration == contextGeneration && client.startCount == 1 && client.applyCommandCount == 0 &&
+              client.applyGestures.count == 0 && client.retryCount == 0 && client.cancelCount == 0 &&
+              controller.settings.loads.count == 1 && controller.settings.saves.count == 0,
+              @"Fixed-frame layout and row-count changes cannot dispatch work or rebind project settings");
+        [controller.view removeFromSuperview];
+        closeController(controller);
+    }
     groupCount += 1;
 }
 
@@ -1767,6 +1922,7 @@ int main(void) {
         invalidNumbersNeverDispatchSave();
         delayedPermissionCannotReconnectHiddenView();
         deniedPermissionKeepsConnectExplicit();
+        windowLeaseTracksVisibleVerifiedHostWithoutProjectWork();
         analyzeDispatchPinsPayloadAndGesture();
         applyRequiresReviewAndFreshGesture();
         editsInvalidateEveryReviewedSetting();
@@ -1784,7 +1940,7 @@ int main(void) {
         offscreenParentResizeKeepsContentReachable();
         frameDrivenParentResizeKeepsContentReachable();
         structuredEighteenCutReviewFitsNarrowAndWideWindows();
-        tallHostUsesOnlyTheHeightItsCutReviewNeeds();
+        fixedCutPaneStaysStableAsRowsChange();
         informationalDetailsKeepReviewAuthorityUnchanged();
         longRecoveryDetailsStayVisibleWithoutAuthorizingAnotherApply();
         longCancellationDetailsDoNotSuggestApply();

@@ -6,6 +6,7 @@
 #import <ProExtensionHost/ProExtensionHost.h>
 #import "SSWorkflowPersistence-Swift.h"
 #import "WorkflowReviewClient.h"
+#import "WorkflowWindowClient.h"
 
 @interface SSWorkflowDocument : NSStackView
 @end
@@ -74,6 +75,9 @@
 
 @interface SSWorkflowViewController : NSViewController <FCPXTimelineObserver, NSTextFieldDelegate>
 @property (nonatomic, strong) id<FCPXHost> host;
+@property (nonatomic, strong) SSWorkflowWindowClient *windowClient;
+@property (nonatomic) BOOL viewVisible;
+@property (nonatomic) BOOL windowClientRunning;
 @property (nonatomic, strong) FCPXTimeline *timeline;
 @property (nonatomic, strong) SSWorkflowSettingsBridge *settings;
 @property (nonatomic, strong) NSTextField *projectLabel;
@@ -371,7 +375,7 @@
     self.reviewScroll.autohidesScrollers = YES;
     self.reviewScroll.borderType = NSBezelBorder;
     self.reviewScroll.documentView = self.cutList;
-    self.reviewListHeightConstraint = [self.reviewScroll.heightAnchor constraintEqualToConstant:150];
+    self.reviewListHeightConstraint = [self.reviewScroll.heightAnchor constraintEqualToConstant:320];
     self.reviewListHeightConstraint.active = YES;
     NSMutableArray<NSTextField *> *columnLabels = [NSMutableArray new];
     for (NSString *title in @[@"Start", @"End", @"Duration"]) {
@@ -419,6 +423,7 @@
         [self.reviewScroll.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
         [reviewActions.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
         [self.reviewSummary.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
+        [self.reviewSummary.heightAnchor constraintEqualToConstant:30],
         [self.statusDetails.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
         [self.headerView.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
         [self.headerView.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
@@ -459,11 +464,9 @@
     CGFloat columnWidth = fmin(560, self.view.bounds.size.width);
     if (columnWidth <= 48 || hostHeight <= 0) return;
     self.updatingDocumentLayout = YES;
-    BOOL hasCuts = self.reviewCuts.count > 0;
-    self.reviewScroll.hidden = !hasCuts;
-    self.cutColumnHeader.hidden = !hasCuts;
-    if (!hasCuts) self.reviewListHeightConstraint.constant = 0;
-    else if (self.reviewListHeightConstraint.constant < 2) self.reviewListHeightConstraint.constant = 2;
+    self.reviewScroll.hidden = NO;
+    self.cutColumnHeader.hidden = NO;
+    self.reviewListHeightConstraint.constant = 320;
     BOOL settingsWide = columnWidth >= 530;
     if (self.settingsWideLayout != settingsWide) {
         for (NSUInteger index = 2; index < self.numericGroups.count; ++index) {
@@ -485,13 +488,11 @@
     self.content.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.content.alignment = NSLayoutAttributeLeading;
     self.statusLabel.preferredMaxLayoutWidth = fmax(100, columnWidth - 104);
-    CGFloat provisionalHeight = fmin(hostHeight, fmax(132, self.contentColumn.frame.size.height));
-    NSRect provisionalFrame = NSMakeRect(floor((self.view.bounds.size.width - columnWidth) / 2),
-        hostHeight - provisionalHeight, columnWidth, provisionalHeight);
-    if (!NSEqualRects(self.contentColumn.frame, provisionalFrame)) self.contentColumn.frame = provisionalFrame;
-
-    // A bounded second pass accounts for a scroller changing the clip width.
-    // Only the inner column shrinks to its content; the SDK still owns root size.
+    // The host owns root size. Reserve the same review area for idle, short,
+    // and long reviews; only the list and the surrounding body can scroll.
+    NSRect columnFrame = NSMakeRect(floor((self.view.bounds.size.width - columnWidth) / 2),
+        0, columnWidth, hostHeight);
+    if (!NSEqualRects(self.contentColumn.frame, columnFrame)) self.contentColumn.frame = columnFrame;
     for (NSUInteger pass = 0; pass < 2; ++pass) {
         [self.contentColumn layoutSubtreeIfNeeded];
         [self.scroll tile];
@@ -506,34 +507,16 @@
         [self.content layoutSubtreeIfNeeded];
         [self.reviewScroll tile];
         CGFloat listWidth = self.reviewScroll.contentView.bounds.size.width;
-        if (hasCuts) {
-            self.cutColumnHeaderWidthConstraint.constant = fmax(1, listWidth);
-            CGFloat rowWidth = listWidth - 12;
-            CGFloat durationOrigin = fmax(262, rowWidth - 148);
-            self.durationHeaderWidthConstraint.constant = fmax(0, fmin(140, rowWidth - durationOrigin - 8));
-            NSSize listSize = NSMakeSize(fmax(1, listWidth), fmax(1, ceil(self.cutList.fittingSize.height)));
-            if (!NSEqualSizes(self.cutList.frame.size, listSize)) [self.cutList setFrameSize:listSize];
-            [self.cutList layoutSubtreeIfNeeded];
-        }
-        CGFloat settingsHeight = ceil(self.settingsPanel.fittingSize.height);
-        CGFloat otherReviewHeight = self.reviewPanel.fittingSize.height - self.reviewListHeightConstraint.constant;
-        // Use authoritative host height, rather than the previous compact
-        // column height, so repeated layout cannot progressively shrink a list.
-        CGFloat availableListHeight = hostHeight - 56 - 76 - 24 - 12 - settingsHeight - otherReviewHeight;
-        CGFloat actualListHeight = ceil(self.cutList.fittingSize.height) + 2;
-        self.reviewListHeightConstraint.constant = hasCuts ? fmin(actualListHeight, fmax(90, floor(availableListHeight))) : 0;
-        [self.content layoutSubtreeIfNeeded];
-        CGFloat bodyHeight = fmax(1, ceil(self.content.fittingSize.height));
-        NSSize bodySize = NSMakeSize(width, bodyHeight);
+        self.cutColumnHeaderWidthConstraint.constant = fmax(1, listWidth);
+        CGFloat rowWidth = listWidth - 12;
+        CGFloat durationOrigin = fmax(262, rowWidth - 148);
+        self.durationHeaderWidthConstraint.constant = fmax(0, fmin(140, rowWidth - durationOrigin - 8));
+        NSSize listSize = NSMakeSize(fmax(1, listWidth), fmax(1, ceil(self.cutList.fittingSize.height)));
+        if (!NSEqualSizes(self.cutList.frame.size, listSize)) [self.cutList setFrameSize:listSize];
+        [self.cutList layoutSubtreeIfNeeded];
+        NSSize bodySize = NSMakeSize(width, fmax(1, ceil(self.content.fittingSize.height)));
         if (!NSEqualSizes(self.content.frame.size, bodySize)) [self.content setFrameSize:bodySize];
         [self.content layoutSubtreeIfNeeded];
-        CGFloat columnHeight = fmin(hostHeight, 56 + bodyHeight + 76);
-        NSRect columnFrame = NSMakeRect(floor((self.view.bounds.size.width - columnWidth) / 2),
-            hostHeight - columnHeight, columnWidth, columnHeight);
-        if (!NSEqualRects(self.contentColumn.frame, columnFrame)) self.contentColumn.frame = columnFrame;
-        [self.contentColumn layoutSubtreeIfNeeded];
-        [self.scroll tile];
-        [self.reviewScroll tile];
     }
     self.updatingDocumentLayout = NO;
 }
@@ -589,20 +572,53 @@
     self.analyzeButton.enabled = enabled && !self.reviewClient.busy;
 }
 
+- (SSWorkflowWindowClient *)newWindowClient {
+    return [[SSWorkflowWindowClient alloc] initWithViewID:self.viewID];
+}
+
+- (BOOL)hasVerifiedWindowHost {
+    return [self.host conformsToProtocol:@protocol(FCPXHost)] &&
+        [@"com.apple.FinalCut" isEqual:self.host.bundleIdentifier];
+}
+
+- (void)stopWindowClient {
+    if (!self.windowClientRunning) return;
+    self.windowClientRunning = NO;
+    [self.windowClient stop];
+}
+
+- (void)startWindowClientIfVisible {
+    if (!self.viewVisible || ![self hasVerifiedWindowHost]) {
+        [self stopWindowClient];
+        return;
+    }
+    if (!self.windowClient) self.windowClient = [self newWindowClient];
+    if (!self.windowClient) return;
+    self.windowClientRunning = YES;
+    [self.windowClient start];
+}
+
 - (void)viewDidAppear {
     [super viewDidAppear];
-    if (self.host) return;
+    self.viewVisible = YES;
+    if (self.host) {
+        [self startWindowClientIfVisible];
+        return;
+    }
     id singleton = ProExtensionHostSingleton();
     if (![singleton conformsToProtocol:@protocol(FCPXHost)]) {
+        [self stopWindowClient];
         [self setStatusMessage:@"Open this extension from Final Cut Pro."];
         return;
     }
     self.host = singleton;
     if (![@"com.apple.FinalCut" isEqual:self.host.bundleIdentifier]) {
+        [self stopWindowClient];
         self.host = nil;
         [self setStatusMessage:@"The Final Cut host could not be verified."];
         return;
     }
+    [self startWindowClientIfVisible];
     [self checkConnection:NO];
 }
 
@@ -625,13 +641,21 @@
 - (void)requestConnection:(id)sender { [self checkConnection:YES]; }
 
 - (void)checkConnection:(BOOL)ask {
+    // Window sizing belongs to the verified visible extension, independent
+    // of permission to inspect a project or the presence of a selection.
+    [self startWindowClientIfVisible];
+    if (!self.viewVisible || ![self hasVerifiedWindowHost]) return;
     NSUInteger generation = self.contextGeneration;
     self.connectButton.enabled = NO;
     [self setStatusMessage:ask ? @"Waiting for macOS permission…" : @"Checking the Final Cut connection…"];
     __weak SSWorkflowViewController *weakSelf = self;
     [self checkHostPermissionAskingUser:ask completion:^(OSStatus status) {
         SSWorkflowViewController *owner = weakSelf;
-        if (!owner || !owner.host || generation != owner.contextGeneration) return;
+        if (!owner || !owner.viewVisible || generation != owner.contextGeneration) return;
+        if (![owner hasVerifiedWindowHost]) {
+            [owner stopWindowClient];
+            return;
+        }
         if (status != noErr) {
             owner.connectButton.hidden = NO;
             owner.connectButton.enabled = YES;
@@ -647,6 +671,8 @@
 }
 
 - (void)viewWillDisappear {
+    self.viewVisible = NO;
+    [self stopWindowClient];
     [self clearCompletionMessage];
     [self invalidateReview];
     [self.timeline removeTimelineObserver:self];
@@ -813,8 +839,8 @@
     self.retryButton.hidden = ![self.reviewResponse[@"canRetryVerification"] boolValue];
     self.applyButton.hidden = !self.retryButton.hidden;
     self.cancelButton.hidden = NO;
-    self.allButton.hidden = self.reviewCuts.count == 0;
-    self.noneButton.hidden = self.reviewCuts.count == 0;
+    self.allButton.hidden = NO;
+    self.noneButton.hidden = NO;
     self.retryButton.enabled = !self.reviewClient.busy;
     self.progressIndicator.hidden = !self.reviewClient.busy;
     NSNumber *fraction = self.reviewResponse[@"progress"];

@@ -25,12 +25,15 @@
 - (BOOL)requestActivationOfHost:(NSRunningApplication *)host;
 - (NSTimeInterval)activationUptime;
 - (void)scheduleActivationCheck:(void (^)(void))check;
+- (BOOL)application:(NSRunningApplication *)app matchesPinnedURL:(NSURL *)url;
 @end
 
 @interface SSFakeHost : NSObject
 @property (nonatomic, copy) NSString *bundleIdentifier;
 @property (nonatomic) pid_t processIdentifier;
 @property (nonatomic, getter=isTerminated) BOOL terminated;
+@property (nonatomic, strong) NSURL *bundleURL;
+@property (nonatomic, strong) NSURL *executableURL;
 @end
 @implementation SSFakeHost
 @end
@@ -47,6 +50,7 @@
 @property (nonatomic, strong) NSURL *launchedHelper;
 @property (nonatomic, strong) NSURL *launchedRequest;
 @property (nonatomic) NSUInteger helperLaunches;
+@property (nonatomic, strong) NSError *helperError;
 @property (nonatomic) NSUInteger analysisLaunches;
 @property (nonatomic) NSUInteger pollingStarts;
 @property (nonatomic) BOOL attached;
@@ -113,7 +117,7 @@
 - (void)openHelperAtURL:(NSURL *)url completion:(void (^)(NSError *))completion {
     [self.events addObject:@"helper"];
     self.launchedHelper = url; self.helperLaunches += 1;
-    completion(nil);
+    completion(self.helperError);
 }
 - (void)openAnalysisURL:(NSURL *)request helper:(NSURL *)url completion:(void (^)(NSError *))completion {
     [self.events addObject:@"analysis"];
@@ -211,6 +215,52 @@ static void targetedLaunchAndURLBinding(void) {
     if (c.busy || !c.canApply || !c.canChangeSelection) fprintf(stderr, "Review state: busy=%d apply=%d selection=%d updates=%s\n",
         c.busy, c.canApply, c.canChangeSelection, c.updates.description.UTF8String);
     require(!c.busy && c.canApply && c.canChangeSelection, @"A valid current review enables its capabilities");
+    finish(c); groups += 1;
+}
+
+static void quietWindowPreparationUsesOnlyThePinnedHelper(void) {
+    SSOfflineClient *c = client();
+    NSURL *buildCopy = [NSURL fileURLWithPath:@"/Test/Repo/build/App/Silent Snip.app"];
+    c.apps = @[buildCopy, c.sibling]; c.infos[buildCopy.path] = helperInfo();
+    __block BOOL completed = NO;
+    __block NSError *failure;
+    [c prepareWindowHelper:^(NSError *error) { completed = YES; failure = error; }];
+    require(completed && !failure && c.helperLaunches == 1 && [c.launchedHelper isEqual:c.sibling] &&
+        c.analysisLaunches == 0 && c.activationRequests == 0 && c.posts.count == 0 && c.pollingStarts == 0 &&
+        !c.attached && !c.requestID && !c.busy && c.updates.count == 0 && c.failures.count == 0,
+        @"Quiet sizing preparation launches the pinned installed sibling without activating, analyzing, or creating review state");
+    SSFakeHost *launched = [SSFakeHost new];
+    launched.bundleIdentifier = @"local.silentsnip.app";
+    launched.bundleURL = c.sibling;
+    launched.executableURL = [c.sibling URLByAppendingPathComponent:@"Contents/MacOS/SilentSnip"];
+    require([c application:(id)launched matchesPinnedURL:c.sibling], @"The launched helper must match its bundle, canonical installation, and executable");
+    launched.bundleURL = buildCopy;
+    require(![c application:(id)launched matchesPinnedURL:c.sibling], @"A launched build copy cannot satisfy the installed helper pin");
+    launched.bundleURL = c.sibling; launched.executableURL = [c.sibling URLByAppendingPathComponent:@"Contents/MacOS/Other"];
+    require(![c application:(id)launched matchesPinnedURL:c.sibling], @"An unexpected launched executable cannot satisfy the pin");
+    launched.executableURL = [c.sibling URLByAppendingPathComponent:@"Contents/MacOS/SilentSnip"];
+    launched.bundleIdentifier = @"example.unrelated";
+    require(![c application:(id)launched matchesPinnedURL:c.sibling], @"An unrelated launched bundle cannot satisfy the pin");
+    finish(c);
+
+    c = client(); c.apps = @[]; failure = nil; completed = NO;
+    [c prepareWindowHelper:^(NSError *error) { completed = YES; failure = error; }];
+    require(completed && failure && c.helperLaunches == 0 && c.analysisLaunches == 0 && c.activationRequests == 0,
+        @"An unregistered neighboring helper cannot authorize quiet launch");
+    finish(c);
+
+    c = client(); c.apps = @[buildCopy, c.sibling]; c.infos[buildCopy.path] = helperInfo();
+    NSMutableDictionary *old = [helperInfo() mutableCopy]; old[@"SilentSnipWorkflowProtocolVersion"] = @2;
+    c.infos[c.sibling.path] = old; failure = nil;
+    [c prepareWindowHelper:^(NSError *error) { failure = error; }];
+    require(failure && c.helperLaunches == 0 && c.activationRequests == 0,
+        @"An incompatible pinned installation cannot silently fall back to a compatible build copy");
+    finish(c);
+
+    c = client(); c.helperError = [NSError errorWithDomain:@"test.quiet-launch" code:7 userInfo:nil]; failure = nil;
+    [c prepareWindowHelper:^(NSError *error) { failure = error; }];
+    require(failure == c.helperError && c.helperLaunches == 1 && c.analysisLaunches == 0 && c.activationRequests == 0 &&
+        c.updates.count == 0 && c.failures.count == 0, @"A quiet launcher error returns only to its lease owner without changing review UI state");
     finish(c); groups += 1;
 }
 
@@ -509,7 +559,7 @@ static void synchronousUIDetachCannotDispatch(void) {
 
 int main(void) {
     @autoreleasepool {
-        targetedLaunchAndURLBinding(); invalidPreflightNeverDispatches(); helperAmbiguityAndOldInstalledCopy();
+        targetedLaunchAndURLBinding(); quietWindowPreparationUsesOnlyThePinnedHelper(); invalidPreflightNeverDispatches(); helperAmbiguityAndOldInstalledCopy();
         malformedResponsesDoNotReachUI(); selectionNeedsExactNewAcknowledgment(); applyRetriesOnlyTheOwnedCommand();
         retryVerificationDoesNotApplyAgain(); freshCapabilityNonceBeforeAnyAnalysis(); timeoutCannotReviveReview();
         delayedAnalyzeActivationIsCancelledSafely(); applyActivationIsRecoverableAndRevisionBound();

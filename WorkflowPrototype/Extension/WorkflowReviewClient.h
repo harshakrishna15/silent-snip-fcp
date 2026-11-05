@@ -39,6 +39,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Stop polling and detach observers. This sends no cancellation or edit; the
 /// owner calls cancel first when closing/switching should cancel active work.
 - (void)detach;
+/// Launch only the pinned installed helper in the background. Creates no
+/// analysis request and does not activate Final Cut or change review state.
+- (void)prepareWindowHelper:(void (^)(NSError * _Nullable error))completion;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -9,6 +9,9 @@ import SilentSnipMac
     private var hostExitTimer: Timer?
     private var hostLifetime = FinalCutHelperLifetime()
     private var lateActivationTask: Task<Void, Never>?
+    private lazy var windowSizing = FinalCutWorkflowWindowSizing(isBusy: { [unowned self] in
+        coordinator.isBusy || storageCleanup.isRunning || ShareDestinationManager.shared.hasActiveRequest
+    })
     private lazy var storageCleanup = StorageCleanupController(isBusy: { [unowned self] in
         coordinator.isBusy || ShareDestinationManager.shared.hasActiveRequest
     }, protectedURLs: { [unowned self] in interactive.storageProtectedURLs },
@@ -102,6 +105,7 @@ import SilentSnipMac
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        windowSizing.start()
         menuBar = MenuBarController(isBusy: { [weak self] in
             self?.coordinator.isBusy == true || self?.storageCleanup.isRunning == true || ShareDestinationManager.shared.hasActiveRequest
         }, clearCache: { [weak self] in
@@ -137,6 +141,7 @@ import SilentSnipMac
             // Let cancellation record an interrupted import and finish cleanup
             // before applicationWillTerminate releases the retained sessions.
             storageTimer?.invalidate()
+            windowSizing.stop()
             lateActivationTask?.cancel()
             transport.stop()
             coordinator.stop()
@@ -184,6 +189,7 @@ import SilentSnipMac
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        windowSizing.stop()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         hostExitTimer?.invalidate()
         storageTimer?.invalidate()

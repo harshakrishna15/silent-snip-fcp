@@ -240,6 +240,15 @@ static NSString *SSResponseName(NSString *request) {
         });
     }];
 }
+- (void)prepareWindowHelper:(void (^)(NSError *))completion {
+    NSURL *helper = [self resolveHelperURL];
+    if (!helper) {
+        completion([NSError errorWithDomain:@"SilentSnipWorkflow" code:1
+            userInfo:@{NSLocalizedDescriptionKey: SSInstallMessage}]);
+        return;
+    }
+    [self openHelperAtURL:helper completion:completion];
+}
 - (void)beginObserving {
     self.observing = YES;
     NSDistributedNotificationCenter *center = NSDistributedNotificationCenter.defaultCenter;
