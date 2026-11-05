@@ -14,6 +14,11 @@ for source in WorkflowPrototype/Extension/WorkflowViewController.m \
   WorkflowPrototype/Extension/WorkflowReviewClient.m AudioPlugin/Extension/SilentSnipReviewConnection.m; do
   [[ -f "$source" ]] || { printf 'Required workflow source is missing: %s\n' "$source" >&2; exit 1; }
 done
+for resource in ExtensionIcon.icns ExtensionIcon.png ExtensionIcon@2x.png WorkflowBadge.icns WorkflowBadge.png WorkflowBadge@2x.png; do
+  [[ -f "WorkflowPrototype/Resources/$resource" && ! -L "WorkflowPrototype/Resources/$resource" ]] || {
+    printf 'Required Workflow icon resource is missing or symlinked: %s\n' "$resource" >&2; exit 1;
+  }
+done
 root="$PWD/build/WorkflowPrototype"
 destination="$root/Products/Silent Snip Workflow Prototype.app"
 for process in SilentSnipWorkflowExtension SilentSnipWorkflowPrototype; do
@@ -43,9 +48,15 @@ fi
 work=$(mktemp -d "$root/.Build.XXXXXX")
 app="$work/Silent Snip Workflow Prototype.app"
 extension="$app/Contents/PlugIns/SilentSnipWorkflowExtension.appex"
-mkdir -p "$app/Contents/MacOS" "$extension/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$extension/Contents/MacOS" "$extension/Contents/Resources"
 cp WorkflowPrototype/Container/Info.plist "$app/Contents/Info.plist"
 cp WorkflowPrototype/Extension/Info.plist "$extension/Contents/Info.plist"
+# Apple's Workflow SDK template uses the standard CFBundleIconFile key. Keep
+# a complete macOS icon and the template's 32/64 px representations available.
+cp WorkflowPrototype/Resources/WorkflowBadge.icns "$app/Contents/Resources/AppIcon.icns"
+for resource in ExtensionIcon.icns ExtensionIcon.png ExtensionIcon@2x.png WorkflowBadge.icns WorkflowBadge.png WorkflowBadge@2x.png; do
+  cp "WorkflowPrototype/Resources/$resource" "$extension/Contents/Resources/$resource"
+done
 sysroot=$(xcrun --sdk macosx --show-sdk-path)
 xcrun swiftc -swift-version 5 -O -parse-as-library -emit-object \
   -module-name SSWorkflowPersistence -target arm64-apple-macosx14.0 -sdk "$sysroot" \

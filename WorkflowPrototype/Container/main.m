@@ -9,11 +9,11 @@
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 210)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         backing:NSBackingStoreBuffered defer:NO];
-    self.window.title = @"Silent Snip Workflow Prototype";
+    self.window.title = @"Silent Snip";
     NSTextField *title = [NSTextField labelWithString:@"Ready to open in Final Cut Pro"];
     title.font = [NSFont boldSystemFontOfSize:19];
     NSTextField *detail = [NSTextField wrappingLabelWithString:
-        @"Choose Silent Snip Workflow Prototype from Final Cut Pro’s Extensions menu.\n\nSelect a timeline clip, Analyze its audio, review the pauses, then Apply to create a cleaned project copy. Keep the updated Silent Snip app installed for processing."];
+        @"Choose Window → Extensions → Silent Snip in Final Cut Pro.\n\nSelect a clip, analyze its audio, then review and apply the cuts. Silent Snip creates a cleaned project copy and preserves the original."];
     NSButton *done = [NSButton buttonWithTitle:@"Done" target:NSApp action:@selector(terminate:)];
     NSStackView *stack = [NSStackView stackViewWithViews:@[title, detail, done]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;

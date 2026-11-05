@@ -1093,21 +1093,62 @@ static void settleOffscreenLayout(NSView *parent, SSWorkflowViewController *cont
         [parent layoutSubtreeIfNeeded];
         [controller.view layoutSubtreeIfNeeded];
         [controller.scroll tile];
+        [controller.reviewScroll tile];
         [controller viewDidLayout];
     }
 }
 
-static void checkHeaderReachable(SSWorkflowViewController *controller) {
-    NSView *header = controller.content.arrangedSubviews.firstObject;
-    NSRect headerRect = [header convertRect:header.bounds toView:controller.content];
-    check(!NSIsEmptyRect(headerRect) &&
-          NSContainsRect(NSInsetRect(controller.content.bounds, -0.5, -0.5), headerRect),
-          @"The header has nonnegative, nonempty geometry inside the document");
-    [header scrollRectToVisible:header.bounds];
+static NSRect frameInRoot(NSView *view, SSWorkflowViewController *controller) {
+    return [view convertRect:view.bounds toView:controller.view];
+}
+
+static void checkStickyChrome(SSWorkflowViewController *controller) {
+    NSRect root = NSInsetRect(controller.view.bounds, -0.5, -0.5);
+    NSRect header = frameInRoot(controller.headerView, controller);
+    NSRect footer = frameInRoot(controller.footerView, controller);
+    NSRect body = frameInRoot(controller.scroll, controller);
+    check(!NSIsEmptyRect(header) && NSContainsRect(root, header) &&
+          ![controller.headerView isDescendantOf:controller.content],
+          @"The project header stays within the host viewport, outside the scrolling body");
+    check(!NSIsEmptyRect(footer) && NSContainsRect(root, footer) &&
+          ![controller.footerView isDescendantOf:controller.content],
+          @"The action footer stays within the host viewport, outside the scrolling body");
+    check(!NSIsEmptyRect(body) && NSContainsRect(root, body) &&
+          !NSIntersectsRect(NSInsetRect(header, 0.5, 0.5), NSInsetRect(body, 0.5, 0.5)) &&
+          !NSIntersectsRect(NSInsetRect(footer, 0.5, 0.5), NSInsetRect(body, 0.5, 0.5)),
+          @"The body viewport occupies the space between the fixed header and actions");
+    for (NSButton *button in @[controller.analyzeButton, controller.applyButton, controller.cancelButton]) {
+        NSRect rect = frameInRoot(button, controller);
+        check(!button.hidden && !NSIsEmptyRect(rect) && NSContainsRect(root, rect),
+              @"Analyze, Apply, and the native Cancel marker remain visible without body scrolling");
+    }
+    check([controller.cancelButton.accessibilityIdentifier isEqual:
+           [@"silentsnip.workflow.review." stringByAppendingString:controller.viewID]],
+          @"The fixed Cancel control preserves the worker's exact native view marker");
+}
+
+static void checkBodyWidth(SSWorkflowViewController *controller) {
+    check(fabs(controller.content.frame.size.width - controller.scroll.contentView.bounds.size.width) < 0.5,
+          @"Document width follows the actual body clip width, including scroller space");
+    check(!controller.scroll.hasHorizontalScroller,
+          @"The compact body does not require horizontal scrolling");
+    for (NSView *panel in @[controller.settingsPanel, controller.reviewPanel]) {
+        NSRect rect = [panel convertRect:panel.bounds toView:controller.content];
+        check(!NSIsEmptyRect(rect) && NSMinX(rect) >= -0.5 &&
+              NSMaxX(rect) <= NSMaxX(controller.content.bounds) + 0.5,
+              @"Settings and review cards stay inside the available document width");
+    }
+}
+
+static void revealBodyControl(NSView *control, SSWorkflowViewController *controller) {
+    NSRect rect = [control convertRect:control.bounds toView:controller.content];
+    check(!NSIsEmptyRect(rect), @"A scrollable settings or review control has usable geometry");
+    [controller.content scrollRectToVisible:rect];
     [controller.scroll reflectScrolledClipView:controller.scroll.contentView];
     NSRect visible = controller.scroll.contentView.documentVisibleRect;
-    check(NSIntersectsRect(headerRect, visible) && NSMinY(headerRect) >= NSMinY(visible) - 0.5,
-          @"The document header is reachable at the top of the scroll viewport");
+    check(NSContainsRect(NSInsetRect(visible, -0.5, -0.5), rect),
+          @"Each settings and review control can be brought fully into the short body viewport");
+    checkStickyChrome(controller);
 }
 
 static void exerciseOffscreenParentResize(BOOL constrainsHostSize) {
@@ -1135,7 +1176,10 @@ static void exerciseOffscreenParentResize(BOOL constrainsHostSize) {
           @"The initial root view fills its host-sized parent");
     check(controller.scroll.documentView == controller.content && controller.content.isFlipped,
           @"The scroll document uses a top-origin coordinate system");
-    checkHeaderReachable(controller);
+    check(controller.reviewScroll.documentView == controller.cutList,
+          @"The cut list has its own review viewport instead of extending the whole window");
+    checkStickyChrome(controller);
+    checkBodyWidth(controller);
 
     hostHeight.constant = 300;
     [parent setFrameSize:NSMakeSize(480, 300)];
@@ -1144,36 +1188,42 @@ static void exerciseOffscreenParentResize(BOOL constrainsHostSize) {
     logOffscreenGeometry(@"shrink after layout", parent, controller);
     check(nearlyEqualSize(controller.view.frame.size, parent.bounds.size),
           @"Reducing parent height resizes the root instead of clipping a fixed-height root");
-    check(nearlyEqualSize(controller.scroll.frame.size, controller.view.bounds.size) &&
-          fabs(NSMinX(controller.scroll.frame) - NSMinX(controller.view.bounds)) < 0.5 &&
-          fabs(NSMinY(controller.scroll.frame) - NSMinY(controller.view.bounds)) < 0.5,
-          @"The scroll viewport covers the root after the height reduction");
-    check(nearlyEqualSize(NSMakeSize(controller.content.frame.size.width, 0),
-                          NSMakeSize(controller.scroll.contentView.bounds.size.width, 0)),
-          @"Document width follows the actual clip width, including scroller space");
+    checkStickyChrome(controller);
+    checkBodyWidth(controller);
+    check(controller.content.orientation == NSUserInterfaceLayoutOrientationVertical,
+          @"Narrow host windows stack settings and review instead of clipping two columns");
     check(controller.content.frame.size.height > controller.scroll.contentView.bounds.size.height,
           @"The short parent exercises real vertical overflow rather than compressing away content");
-    checkHeaderReachable(controller);
-    NSView *scope = controller.content.arrangedSubviews.lastObject;
-    NSRect scopeRect = [scope convertRect:scope.bounds toView:controller.content];
-    [scope scrollRectToVisible:scope.bounds];
-    [controller.scroll reflectScrolledClipView:controller.scroll.contentView];
-    check(!NSIsEmptyRect(scopeRect) &&
-          NSContainsRect(NSInsetRect(controller.scroll.contentView.documentVisibleRect, -0.5, -0.5), scopeRect),
-          @"The bottom scope explanation remains fully reachable by scrolling");
-    checkHeaderReachable(controller);
+    for (NSTextField *field in controller.fields) revealBodyControl(field, controller);
+    revealBodyControl(controller.output, controller);
+    revealBodyControl(controller.saveButton, controller);
+    revealBodyControl(controller.reviewScroll, controller);
 
     CGFloat narrowWidth = controller.content.frame.size.width;
-    hostWidth.constant = 760;
-    [parent setFrameSize:NSMakeSize(760, 300)];
+    hostWidth.constant = 840;
+    hostHeight.constant = 477;
+    [parent setFrameSize:NSMakeSize(840, 477)];
     settleOffscreenLayout(parent, controller);
-    check(nearlyEqualSize(controller.view.frame.size, parent.bounds.size) &&
-          nearlyEqualSize(controller.scroll.frame.size, controller.view.bounds.size),
-          @"Widening the parent resizes both root and viewport");
+    check(nearlyEqualSize(controller.view.frame.size, parent.bounds.size),
+          @"The production-sized host still owns the root dimensions");
     check(controller.content.frame.size.width > narrowWidth + 200 &&
           fabs(controller.content.frame.size.width - controller.scroll.contentView.bounds.size.width) < 0.5,
           @"The document follows a wider clip viewport");
-    checkHeaderReachable(controller);
+    check(controller.content.orientation == NSUserInterfaceLayoutOrientationHorizontal,
+          @"The normal Final Cut viewport presents settings and review side by side");
+    [controller.scroll.contentView scrollToPoint:NSZeroPoint];
+    [controller.scroll reflectScrolledClipView:controller.scroll.contentView];
+    settleOffscreenLayout(parent, controller);
+    checkStickyChrome(controller);
+    checkBodyWidth(controller);
+    NSRect visible = NSInsetRect(controller.scroll.contentView.documentVisibleRect, -0.5, -0.5);
+    NSMutableArray<NSView *> *normalControls = [controller.fields mutableCopy];
+    [normalControls addObjectsFromArray:@[controller.output, controller.saveButton, controller.reviewScroll]];
+    for (NSView *control in normalControls) {
+        NSRect rect = [control convertRect:control.bounds toView:controller.content];
+        check(!NSIsEmptyRect(rect) && NSContainsRect(visible, rect),
+              @"Settings and the review viewport fit the normal 840-by-477 window without outer scrolling");
+    }
     check([controller.fields[0].stringValue isEqual:@"-43"] && controller.contextGeneration == generation &&
           controller.settings.loads.count == 1 && controller.settings.saves.count == 0,
           @"Resizing and scrolling preserve the draft without loading, saving, or rebinding settings");
@@ -1194,6 +1244,162 @@ static void frameDrivenParentResizeKeepsContentReachable(void) {
     // the header while the scroll viewport incorrectly thought it all fit.
     // Use the actual production controller: no preferred-size override.
     exerciseOffscreenParentResize(NO);
+}
+
+static NSString *longInformationalStatus(void) {
+    return @"Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts. "
+        "Analyzed Final Cut's rendered audio, including clip volume and enabled effects. "
+        "The threshold uses average loudness over short windows. Apply creates a cleaned project copy "
+        "with the retained processed sound preserved, while the original project keeps editable effects.";
+}
+
+static void informationalDetailsKeepReviewAuthorityUnchanged(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    NSString *message = longInformationalStatus();
+    [client deliver:reviewResponse(@"review", message) busy:NO canApply:YES];
+    NSUInteger generation = controller.reviewGeneration;
+    NSUInteger loads = controller.settings.loads.count;
+    NSString *nativeMarker = controller.cancelButton.accessibilityIdentifier;
+    check(controller.statusLabel.stringValue.length < message.length &&
+          [controller.statusDetails.stringValue isEqual:message],
+          @"Long informational status is compact while its full explanation remains available");
+    check(!controller.detailsExpanded && controller.statusDetails.hidden && !controller.detailsButton.hidden &&
+          controller.detailsButton.enabled && controller.detailsButton.title.length > 0,
+          @"The full informational explanation starts collapsed behind a named, reachable disclosure");
+    [controller toggleDetails:controller.detailsButton];
+    check(controller.detailsExpanded && !controller.statusDetails.hidden &&
+          [controller.statusDetails.stringValue isEqual:message],
+          @"Opening Details exposes every word of the current backend explanation");
+    [controller toggleDetails:controller.detailsButton];
+    check(!controller.detailsExpanded && controller.statusDetails.hidden,
+          @"Closing Details restores the compact review presentation");
+    check(controller.reviewClient == client && controller.reviewGeneration == generation &&
+          controller.applyButton.enabled && client.canApply && client.startCount == 1 &&
+          client.applyCommandCount == 0 && client.applyGestures.count == 0 && client.retryCount == 0 &&
+          controller.settings.loads.count == loads && controller.settings.saves.count == 0 &&
+          [controller.cancelButton.accessibilityIdentifier isEqual:nativeMarker],
+          @"Showing status details cannot alter a review, dispatch work, save settings, or replace the native authorization marker");
+    [client deliver:reviewResponse(@"review", @"Review ready") busy:NO canApply:YES];
+    check([controller.statusLabel.stringValue isEqual:@"Review ready"] && controller.detailsButton.hidden &&
+          controller.statusDetails.hidden && ![controller.statusDetails.stringValue containsString:message],
+          @"A later short status clears the previous expanded explanation instead of leaving stale information");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void longRecoveryDetailsStayVisibleWithoutAuthorizingAnotherApply(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    NSString *message = @"The cleaned project was imported, but verification could not finish. "
+        "Return to the intended project in Final Cut Pro and choose Retry Verification. "
+        "This retry checks the existing imported result and its saved media evidence. "
+        "Keep the original source and processed audio files available until verification completes. "
+        "Do not create another result to resolve this pending verification.";
+    NSMutableDictionary *response = [reviewResponse(@"failed", message) mutableCopy];
+    response[@"canRetryVerification"] = @YES;
+    [client deliver:response busy:NO canApply:NO];
+    check(controller.detailsExpanded && !controller.statusDetails.hidden &&
+          [controller.statusDetails.stringValue isEqual:message],
+          @"Long recovery instructions expand automatically rather than being hidden by the compact status");
+    check(!controller.retryButton.hidden && controller.retryButton.enabled && !controller.applyButton.enabled &&
+          !controller.analyzeButton.enabled && !controller.fields[0].enabled && controller.reviewClient == client,
+          @"Expanded recovery retains the existing result and exposes Retry without permitting a new Analyze or Apply");
+    [controller toggleDetails:controller.detailsButton];
+    check(controller.retryButton.enabled && !controller.applyButton.enabled && !controller.analyzeButton.enabled &&
+          !controller.fields[0].enabled && client.startCount == 1 && client.applyCommandCount == 0 && client.retryCount == 0 &&
+          controller.settings.saves.count == 0,
+          @"Collapsing recovery details cannot bypass retained-result recovery or dispatch a command");
+    [controller toggleDetails:controller.detailsButton];
+    check(!controller.statusDetails.hidden && [controller.statusDetails.stringValue isEqual:message],
+          @"The same complete recovery instructions remain available after disclosure changes");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void longCancellationDetailsDoNotSuggestApply(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    NSString *message = @"Analysis was cancelled before a cut review became available. The original project remains unchanged. "
+        "Return to the intended project and select the source timeline clip before choosing Analyze Audio again. "
+        "Any temporary analysis work has stopped, and this cancelled request does not provide cuts that can be applied.";
+    [client deliver:reviewResponse(@"cancelled", message) busy:NO canApply:NO];
+    check(message.length > 180 && [controller.statusLabel.stringValue isEqual:@"Cancelled. Review the details."],
+          @"A long cancelled response reports cancellation rather than suggesting an analysis is ready");
+    check(controller.detailsExpanded && !controller.statusDetails.hidden && !controller.detailsButton.hidden &&
+          [controller.statusDetails.stringValue isEqual:message] && [controller.statusLabel.toolTip isEqual:message],
+          @"The complete cancellation explanation expands automatically and remains available in the tooltip");
+    check(controller.reviewClient == client && !controller.applyButton.enabled && !client.canApply &&
+          controller.analyzeButton.enabled && controller.retryButton.hidden,
+          @"Cancellation keeps Apply disabled while permitting a new explicit analysis");
+    [controller toggleDetails:controller.detailsButton];
+    [controller toggleDetails:controller.detailsButton];
+    check(controller.settings.loads.count == 1 && controller.settings.saves.count == 0 &&
+          client.startCount == 1 && client.applyCommandCount == 0 && client.applyGestures.count == 0 &&
+          client.retryCount == 0 && client.cancelCount == 0 && client.detachCount == 0,
+          @"Showing cancellation details cannot dispatch additional analysis, Apply, Retry, Cancel, or settings work");
+    [client deliver:reviewResponse(@"cancelled", @"Analysis cancelled.") busy:NO canApply:NO];
+    check([controller.statusLabel.stringValue isEqual:@"Analysis cancelled."] && controller.detailsButton.hidden &&
+          controller.statusDetails.hidden && [controller.statusDetails.stringValue isEqual:@"Analysis cancelled."],
+          @"A later short cancellation stays exact and clears the earlier long explanation");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void exerciseLongLocalSaveFailureAfterState(NSString *state, BOOL canApply) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    [client deliver:reviewResponse(state, longInformationalStatus()) busy:NO canApply:canApply];
+    NSUInteger generation = controller.reviewGeneration;
+    NSUInteger contextGeneration = controller.contextGeneration;
+    NSArray *cuts = controller.reviewCuts;
+    NSString *marker = controller.cancelButton.accessibilityIdentifier;
+    NSString *message = @"Project settings remain unsaved. Check the destination folder's permissions and available storage, "
+        "then choose Save Settings again. Detection values are still shown in the window so that you can review "
+        "the intended values before retrying this explicit settings save. Your existing cut review remains available.";
+    check(message.length > 180 && controller.saveButton.enabled,
+          @"The local error fixture exercises a real explicit Save after an informational worker state");
+    [controller saveSettings:controller.saveButton];
+    check(controller.settings.saves.count == 1 && !controller.saveButton.enabled,
+          @"Only the explicit Save creates the pending persistence request");
+    completeSave(controller.settings.saves[0], [NSError errorWithDomain:@"test.persistence" code:2
+        userInfo:@{NSLocalizedDescriptionKey: message}]);
+    check(controller.detailsExpanded && !controller.statusDetails.hidden && !controller.detailsButton.hidden &&
+          [controller.statusDetails.stringValue isEqual:message] && [controller.statusLabel.toolTip isEqual:message],
+          @"A long local Save error exposes its full text regardless of the retained worker state");
+    check([controller.statusLabel.stringValue isEqual:@"Unable to finish. Review the details."],
+          @"A local Save error uses an error headline rather than the earlier review or completion headline");
+    check(controller.reviewClient == client && controller.reviewGeneration == generation &&
+          controller.contextGeneration == contextGeneration && controller.reviewCuts == cuts &&
+          [controller.reviewResponse[@"state"] isEqual:state] && client.canApply == canApply &&
+          controller.applyButton.enabled == canApply && controller.saveButton.enabled &&
+          [controller.cancelButton.accessibilityIdentifier isEqual:marker],
+          @"Presenting the local Save error preserves the existing review identity, cut data, and Apply authority");
+    [controller toggleDetails:controller.detailsButton];
+    [controller toggleDetails:controller.detailsButton];
+    check(controller.detailsExpanded && [controller.statusDetails.stringValue isEqual:message] &&
+          controller.settings.loads.count == 1 && controller.settings.saves.count == 1 &&
+          client.startCount == 1 && client.applyCommandCount == 0 && client.applyGestures.count == 0 &&
+          client.retryCount == 0 && client.cancelCount == 0 && client.detachCount == 0,
+          @"Presenting or toggling the local error cannot dispatch backend work or an additional settings save");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void longLocalSaveFailurePreservesReadyReview(void) {
+    exerciseLongLocalSaveFailureAfterState(@"review", YES);
+}
+
+static void longLocalSaveFailureOverridesCompletedHeadline(void) {
+    exerciseLongLocalSaveFailureAfterState(@"completed", NO);
 }
 
 int main(void) {
@@ -1224,6 +1430,11 @@ int main(void) {
         delayedTerminalCannotClaimTheNewSDKProject();
         offscreenParentResizeKeepsContentReachable();
         frameDrivenParentResizeKeepsContentReachable();
+        informationalDetailsKeepReviewAuthorityUnchanged();
+        longRecoveryDetailsStayVisibleWithoutAuthorizingAnotherApply();
+        longCancellationDetailsDoNotSuggestApply();
+        longLocalSaveFailurePreservesReadyReview();
+        longLocalSaveFailureOverridesCompletedHeadline();
         check(hostSingleton == nil, @"No host fixture survives the test groups");
         printf("Passed %lu controller groups (%lu assertions); no Final Cut, windows, events, notifications, helper launches, or settings files used.\n",
                (unsigned long)groupCount, (unsigned long)assertionCount);

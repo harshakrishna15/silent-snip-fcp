@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreServices/CoreServices.h>
+#import <QuartzCore/QuartzCore.h>
 #import <ProExtension/ProExtension.h>
 #import <ProExtensionHost/ProExtensionHost.h>
 #import "SSWorkflowPersistence-Swift.h"
@@ -10,6 +11,22 @@
 @end
 @implementation SSWorkflowDocument
 - (BOOL)isFlipped { return YES; }
+@end
+
+@interface SSWorkflowCard : SSWorkflowDocument
+@end
+@implementation SSWorkflowCard
+- (BOOL)wantsUpdateLayer { return YES; }
+- (void)updateLayer {
+    self.layer.backgroundColor = NSColor.controlBackgroundColor.CGColor;
+    self.layer.borderColor = NSColor.separatorColor.CGColor;
+    self.layer.borderWidth = 0.5;
+    self.layer.cornerRadius = 8;
+}
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    self.needsDisplay = YES;
+}
 @end
 
 @interface SSWorkflowViewController : NSViewController <FCPXTimelineObserver, NSTextFieldDelegate>
@@ -26,6 +43,17 @@
 @property (nonatomic, strong) NSButton *connectButton;
 @property (nonatomic, strong) NSScrollView *scroll;
 @property (nonatomic, strong) NSStackView *content;
+@property (nonatomic, strong) NSView *headerView;
+@property (nonatomic, strong) NSView *footerView;
+@property (nonatomic, strong) NSStackView *settingsPanel;
+@property (nonatomic, strong) NSStackView *reviewPanel;
+@property (nonatomic, strong) NSScrollView *reviewScroll;
+@property (nonatomic, strong) NSLayoutConstraint *reviewListHeightConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *settingsPanelWidthConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *reviewPanelWidthConstraint;
+@property (nonatomic, strong) NSButton *detailsButton;
+@property (nonatomic, strong) NSTextField *statusDetails;
+@property (nonatomic) BOOL detailsExpanded;
 @property (nonatomic) BOOL updatingDocumentLayout;
 @property (nonatomic, strong) NSURL *libraryURL;
 @property (nonatomic, strong) NSString *projectUID;
@@ -68,118 +96,226 @@
     return label;
 }
 
+- (NSStackView *)cardWithViews:(NSArray<NSView *> *)views {
+    NSStackView *card = [SSWorkflowCard stackViewWithViews:views];
+    card.wantsLayer = YES;
+    card.orientation = NSUserInterfaceLayoutOrientationVertical;
+    card.alignment = NSLayoutAttributeLeading;
+    card.spacing = 8;
+    card.edgeInsets = NSEdgeInsetsMake(14, 14, 14, 14);
+    return card;
+}
+
 - (void)loadView {
-    // The SDK owns the window size. preferredContentSize installs root-size
-    // constraints that can outgrow its remote viewport and clip the header.
+    // The SDK owns the window size. Keep the root frame-driven so its remote
+    // viewport can resize it without introducing preferred-size constraints.
     self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 480, 640)];
     self.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    NSScrollView *scroll = [NSScrollView new];
-    scroll.drawsBackground = NO;
-    scroll.hasVerticalScroller = YES;
-    scroll.autohidesScrollers = YES;
-    scroll.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:scroll];
-    self.scroll = scroll;
     self.settings = [SSWorkflowSettingsBridge new];
     self.viewID = NSUUID.UUID.UUIDString;
+    self.headerView = [NSView new];
+    self.footerView = [NSView new];
+    self.scroll = [NSScrollView new];
+    self.scroll.drawsBackground = NO;
+    self.scroll.hasVerticalScroller = YES;
+    self.scroll.hasHorizontalScroller = NO;
+    self.scroll.autohidesScrollers = YES;
+    for (NSView *part in @[self.headerView, self.scroll, self.footerView]) {
+        part.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.view addSubview:part];
+    }
+
     self.connectButton = [NSButton buttonWithTitle:@"Connect to Final Cut Pro" target:self action:@selector(requestConnection:)];
     self.connectButton.accessibilityIdentifier = @"silentsnip.workflow.connect";
     self.connectButton.hidden = YES;
-    NSTextField *title = [self label:@"Silent Snip" size:25 weight:NSFontWeightBold];
-    NSTextField *subtitle = [self label:@"Workflow Prototype" size:12 weight:NSFontWeightMedium];
-    subtitle.textColor = NSColor.secondaryLabelColor;
     self.projectLabel = [self label:@"Connecting to Final Cut Pro…" size:17 weight:NSFontWeightSemibold];
+    self.projectLabel.maximumNumberOfLines = 1;
+    self.projectLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.projectLabel.accessibilityIdentifier = @"silentsnip.workflow.project";
-    self.libraryLabel = [self label:@"" size:12 weight:NSFontWeightRegular];
+    [self.projectLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.libraryLabel = [self label:@"" size:11 weight:NSFontWeightRegular];
+    self.libraryLabel.maximumNumberOfLines = 1;
+    self.libraryLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.libraryLabel.textColor = NSColor.secondaryLabelColor;
     self.libraryLabel.accessibilityIdentifier = @"silentsnip.workflow.library";
-    self.playheadLabel = [self label:@"Playhead —" size:13 weight:NSFontWeightRegular];
-    self.playheadLabel.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+    [self.libraryLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.playheadLabel = [self label:@"Playhead —" size:11 weight:NSFontWeightRegular];
+    self.playheadLabel.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+    self.playheadLabel.textColor = NSColor.secondaryLabelColor;
+    self.playheadLabel.maximumNumberOfLines = 1;
     self.playheadLabel.accessibilityIdentifier = @"silentsnip.workflow.playhead";
-    NSTextField *heading = [self label:@"Detection settings" size:14 weight:NSFontWeightSemibold];
+    NSStackView *metadata = [NSStackView stackViewWithViews:@[self.libraryLabel, self.playheadLabel]];
+    metadata.spacing = 12;
+    NSStackView *project = [NSStackView stackViewWithViews:@[self.projectLabel, metadata]];
+    project.orientation = NSUserInterfaceLayoutOrientationVertical;
+    project.alignment = NSLayoutAttributeLeading;
+    project.spacing = 3;
+    NSMutableArray *headerItems = [NSMutableArray new];
+    NSImage *icon = [[NSBundle bundleForClass:SSWorkflowViewController.class] imageForResource:@"WorkflowBadge"];
+    if (icon) {
+        NSImageView *image = [NSImageView imageViewWithImage:icon];
+        image.imageScaling = NSImageScaleProportionallyUpOrDown;
+        [image.widthAnchor constraintEqualToConstant:28].active = YES;
+        [image.heightAnchor constraintEqualToConstant:28].active = YES;
+        [headerItems addObject:image];
+    }
+    [headerItems addObjectsFromArray:@[project, self.connectButton]];
+    NSStackView *header = [NSStackView stackViewWithViews:headerItems];
+    header.spacing = 12;
+    header.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.headerView addSubview:header];
+
     NSMutableArray *fields = [NSMutableArray new];
+    NSMutableArray *settingsViews = [NSMutableArray arrayWithObject:[self label:@"Silence detection" size:14 weight:NSFontWeightSemibold]];
     NSArray *labels = @[@"Silence threshold", @"Minimum silence", @"Before speech", @"After speech"];
     NSArray *units = @[@"dBFS", @"sec", @"sec", @"sec"];
-    NSMutableArray *rows = [NSMutableArray new];
     for (NSUInteger index = 0; index < labels.count; ++index) {
         NSTextField *field = [NSTextField textFieldWithString:@""];
+        field.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
         field.alignment = NSTextAlignmentRight;
         field.accessibilityLabel = labels[index];
         field.accessibilityIdentifier = [NSString stringWithFormat:@"silentsnip.workflow.setting.%lu", (unsigned long)index];
         field.delegate = self;
-        [field.widthAnchor constraintEqualToConstant:90].active = YES;
-        NSTextField *name = [self label:labels[index] size:13 weight:NSFontWeightRegular];
-        [name.widthAnchor constraintEqualToConstant:160].active = YES;
-        NSTextField *unit = [self label:units[index] size:12 weight:NSFontWeightRegular];
+        [field.widthAnchor constraintEqualToConstant:64].active = YES;
+        NSTextField *name = [self label:labels[index] size:12 weight:NSFontWeightRegular];
+        [name.widthAnchor constraintEqualToConstant:110].active = YES;
+        NSTextField *unit = [self label:units[index] size:11 weight:NSFontWeightRegular];
         unit.textColor = NSColor.secondaryLabelColor;
+        unit.maximumNumberOfLines = 1;
+        unit.lineBreakMode = NSLineBreakByClipping;
+        [unit.widthAnchor constraintEqualToConstant:36].active = YES;
         NSStackView *row = [NSStackView stackViewWithViews:@[name, field, unit]];
-        row.spacing = 12;
-        [rows addObject:row];
+        row.spacing = 6;
+        [settingsViews addObject:row];
         [fields addObject:field];
     }
     self.fields = fields;
     self.output = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    self.output.font = [NSFont systemFontOfSize:12];
     [self.output addItemsWithTitles:@[@"Remove Silence", @"Replace with 1-Second Gaps"]];
     self.output.accessibilityLabel = @"Output";
     self.output.accessibilityIdentifier = @"silentsnip.workflow.output";
     self.output.target = self;
     self.output.action = @selector(settingsChanged:);
-    NSStackView *outputRow = [NSStackView stackViewWithViews:@[[self label:@"Output" size:13 weight:NSFontWeightRegular], self.output]];
-    outputRow.spacing = 16;
+    [self.output setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.saveButton = [NSButton buttonWithTitle:@"Save Settings" target:self action:@selector(saveSettings:)];
     self.saveButton.bezelStyle = NSBezelStyleRounded;
     self.saveButton.accessibilityIdentifier = @"silentsnip.workflow.save";
+    [settingsViews addObjectsFromArray:@[[self label:@"Output" size:11 weight:NSFontWeightMedium], self.output, self.saveButton]];
+    self.settingsPanel = [self cardWithViews:settingsViews];
+
     self.statusLabel = [self label:@"Waiting for a project…" size:12 weight:NSFontWeightRegular];
     self.statusLabel.textColor = NSColor.secondaryLabelColor;
+    self.statusLabel.maximumNumberOfLines = 2;
+    self.statusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.statusLabel.accessibilityIdentifier = @"silentsnip.workflow.status";
+    [self.statusLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.detailsButton = [NSButton buttonWithTitle:@"Details" target:self action:@selector(toggleDetails:)];
+    self.detailsButton.bezelStyle = NSBezelStyleInline;
+    self.detailsButton.font = [NSFont systemFontOfSize:11];
+    self.detailsButton.accessibilityIdentifier = @"silentsnip.workflow.details";
+    self.detailsButton.hidden = YES;
+    self.statusDetails = [self label:self.statusLabel.stringValue size:12 weight:NSFontWeightRegular];
+    self.statusDetails.textColor = NSColor.secondaryLabelColor;
+    self.statusDetails.accessibilityIdentifier = @"silentsnip.workflow.status-details";
+    self.statusDetails.hidden = YES;
     self.analyzeButton = [NSButton buttonWithTitle:@"Analyze Audio" target:self action:@selector(analyzeAudio:)];
     self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
-    self.applyButton = [NSButton buttonWithTitle:@"Apply" target:self action:@selector(applyCuts:)];
+    self.applyButton = [NSButton buttonWithTitle:@"Apply Cuts" target:self action:@selector(applyCuts:)];
     self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
     self.cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancelReview:)];
-    // The worker verifies this native view and a fresh disabled button gesture;
-    // a broadcast request or revision alone cannot authorize an edit.
+    // This marker must remain visible even while idle and disabled: the worker
+    // verifies this native view together with a fresh disabled gesture button.
     self.cancelButton.accessibilityIdentifier = [@"silentsnip.workflow.review." stringByAppendingString:self.viewID];
-    NSStackView *actions = [NSStackView stackViewWithViews:@[self.analyzeButton, self.applyButton, self.cancelButton]];
-    actions.spacing = 12;
+    self.retryButton = [NSButton buttonWithTitle:@"Retry Verification" target:self action:@selector(retryVerification:)];
+    self.retryButton.hidden = YES;
+    NSStackView *actions = [NSStackView stackViewWithViews:@[self.analyzeButton, self.applyButton, self.retryButton, self.cancelButton]];
+    actions.spacing = 8;
+    NSStackView *status = [NSStackView stackViewWithViews:@[self.statusLabel, self.detailsButton]];
+    status.spacing = 8;
+    status.alignment = NSLayoutAttributeCenterY;
     self.progressIndicator = [NSProgressIndicator new];
     self.progressIndicator.style = NSProgressIndicatorStyleBar;
     self.progressIndicator.minValue = 0;
     self.progressIndicator.maxValue = 1;
     self.progressIndicator.hidden = YES;
-    [self.progressIndicator.widthAnchor constraintEqualToConstant:300].active = YES;
+    [self.progressIndicator.heightAnchor constraintEqualToConstant:3].active = YES;
+    NSStackView *footer = [NSStackView stackViewWithViews:@[actions, status, self.progressIndicator]];
+    footer.orientation = NSUserInterfaceLayoutOrientationVertical;
+    footer.alignment = NSLayoutAttributeLeading;
+    footer.spacing = 5;
+    footer.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.footerView addSubview:footer];
+
     self.reviewSummary = [self label:@"Select one timeline clip with audio, then Analyze." size:12 weight:NSFontWeightRegular];
     self.reviewSummary.accessibilityIdentifier = @"silentsnip.workflow.summary";
+    self.reviewSummary.maximumNumberOfLines = 3;
+    self.reviewSummary.lineBreakMode = NSLineBreakByTruncatingTail;
     self.allButton = [NSButton buttonWithTitle:@"Select All" target:self action:@selector(selectAllCuts:)];
     self.noneButton = [NSButton buttonWithTitle:@"Deselect All" target:self action:@selector(deselectAllCuts:)];
-    self.retryButton = [NSButton buttonWithTitle:@"Retry Verification" target:self action:@selector(retryVerification:)];
-    self.retryButton.hidden = YES;
-    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[self.allButton, self.noneButton, self.retryButton]];
-    reviewActions.spacing = 12;
-    self.cutList = [NSStackView stackViewWithViews:@[]];
+    for (NSButton *button in @[self.allButton, self.noneButton]) {
+        button.controlSize = NSControlSizeSmall;
+        button.font = [NSFont systemFontOfSize:11];
+    }
+    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[self.allButton, self.noneButton]];
+    reviewActions.spacing = 6;
+    self.cutList = [SSWorkflowDocument stackViewWithViews:@[]];
     self.cutList.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.cutList.alignment = NSLayoutAttributeLeading;
-    self.cutList.spacing = 6;
-    NSTextField *scope = [self label:@"Analyze measures the selected clip with its audio effects. Apply creates a cleaned copy of the whole project; the original stays unchanged." size:12 weight:NSFontWeightRegular];
+    self.cutList.spacing = 4;
+    self.cutList.edgeInsets = NSEdgeInsetsMake(6, 6, 6, 6);
+    self.cutList.autoresizingMask = NSViewWidthSizable;
+    self.reviewScroll = [NSScrollView new];
+    self.reviewScroll.drawsBackground = NO;
+    self.reviewScroll.hasVerticalScroller = YES;
+    self.reviewScroll.hasHorizontalScroller = NO;
+    self.reviewScroll.autohidesScrollers = YES;
+    self.reviewScroll.borderType = NSBezelBorder;
+    self.reviewScroll.documentView = self.cutList;
+    self.reviewListHeightConstraint = [self.reviewScroll.heightAnchor constraintEqualToConstant:150];
+    self.reviewListHeightConstraint.active = YES;
+    NSTextField *scope = [self label:@"Creates a cleaned copy; original unchanged." size:11 weight:NSFontWeightRegular];
     scope.textColor = NSColor.secondaryLabelColor;
-    NSMutableArray *views = [NSMutableArray arrayWithArray:@[title, subtitle, self.projectLabel, self.libraryLabel,
-        self.playheadLabel, self.connectButton, actions, self.progressIndicator, self.statusLabel, self.reviewSummary, heading]];
-    [views addObjectsFromArray:rows];
-    [views addObjectsFromArray:@[outputRow, self.saveButton, reviewActions, self.cutList, scope]];
-    NSStackView *stack = [SSWorkflowDocument stackViewWithViews:views];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.alignment = NSLayoutAttributeLeading;
-    stack.spacing = 12;
-    stack.edgeInsets = NSEdgeInsetsMake(24, 24, 24, 24);
-    stack.translatesAutoresizingMaskIntoConstraints = YES;
-    stack.autoresizingMask = NSViewWidthSizable;
-    scroll.documentView = stack;
-    self.content = stack;
+    self.reviewPanel = [self cardWithViews:@[[self label:@"Cut review" size:14 weight:NSFontWeightSemibold],
+        self.reviewSummary, self.statusDetails, reviewActions, self.reviewScroll, scope]];
+    self.reviewPanel.spacing = 7;
+    self.content = [SSWorkflowDocument stackViewWithViews:@[self.settingsPanel, self.reviewPanel]];
+    self.content.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.content.alignment = NSLayoutAttributeLeading;
+    self.content.spacing = 14;
+    self.content.edgeInsets = NSEdgeInsetsMake(16, 16, 16, 16);
+    self.content.autoresizingMask = NSViewWidthSizable;
+    self.scroll.documentView = self.content;
+    self.settingsPanelWidthConstraint = [self.settingsPanel.widthAnchor constraintEqualToConstant:448];
+    self.reviewPanelWidthConstraint = [self.reviewPanel.widthAnchor constraintEqualToConstant:448];
     [NSLayoutConstraint activateConstraints:@[
-        [scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [scroll.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [scroll.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
+        self.settingsPanelWidthConstraint, self.reviewPanelWidthConstraint,
+        [self.output.widthAnchor constraintEqualToAnchor:self.settingsPanel.widthAnchor constant:-28],
+        [self.reviewScroll.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-28],
+        [self.reviewSummary.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-28],
+        [self.statusDetails.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-28],
+        [self.headerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.headerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.headerView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.headerView.heightAnchor constraintEqualToConstant:64],
+        [header.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:16],
+        [header.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-16],
+        [header.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
+        [self.projectLabel.widthAnchor constraintEqualToAnchor:project.widthAnchor],
+        [metadata.widthAnchor constraintEqualToAnchor:project.widthAnchor],
+        [self.footerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.footerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.footerView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.footerView.heightAnchor constraintEqualToConstant:88],
+        [footer.leadingAnchor constraintEqualToAnchor:self.footerView.leadingAnchor constant:16],
+        [footer.trailingAnchor constraintEqualToAnchor:self.footerView.trailingAnchor constant:-16],
+        [footer.topAnchor constraintEqualToAnchor:self.footerView.topAnchor constant:9],
+        [status.widthAnchor constraintEqualToAnchor:footer.widthAnchor],
+        [self.progressIndicator.widthAnchor constraintEqualToAnchor:footer.widthAnchor],
+        [self.scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.scroll.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor],
+        [self.scroll.bottomAnchor constraintEqualToAnchor:self.footerView.topAnchor]
     ]];
     [self setControlsEnabled:NO];
     [self updateReviewControls];
@@ -196,19 +332,79 @@
     CGFloat width = self.scroll.contentView.bounds.size.width;
     if (width <= 48) return;
     self.updatingDocumentLayout = YES;
-    for (NSView *child in self.content.arrangedSubviews) {
-        if ([child isKindOfClass:NSTextField.class]) ((NSTextField *)child).preferredMaxLayoutWidth = width - 48;
-    }
+    BOOL wide = width >= 700;
+    self.content.orientation = wide ? NSUserInterfaceLayoutOrientationHorizontal : NSUserInterfaceLayoutOrientationVertical;
+    self.content.alignment = wide ? NSLayoutAttributeTop : NSLayoutAttributeLeading;
+    CGFloat settingsWidth = wide ? 264 : width - 32;
+    CGFloat reviewWidth = wide ? width - 32 - 14 - settingsWidth : width - 32;
+    self.settingsPanelWidthConstraint.constant = settingsWidth;
+    self.reviewPanelWidthConstraint.constant = reviewWidth;
+    self.reviewSummary.preferredMaxLayoutWidth = reviewWidth - 28;
+    self.statusDetails.preferredMaxLayoutWidth = reviewWidth - 28;
+    self.statusLabel.preferredMaxLayoutWidth = fmax(100, self.view.bounds.size.width - 104);
     [self.content setFrameSize:NSMakeSize(width, self.content.frame.size.height)];
+    // Measure the rest of the review card independently of its list, then let
+    // that list use the remaining normal-height viewport. Narrow windows keep
+    // a small list and scroll the cards vertically.
+    [self.content layoutSubtreeIfNeeded];
+    CGFloat otherHeight = self.reviewPanel.fittingSize.height - self.reviewListHeightConstraint.constant;
+    CGFloat available = self.scroll.contentView.bounds.size.height - 32;
+    self.reviewListHeightConstraint.constant = wide ? fmax(90, floor(available - otherHeight)) : fmax(90, fmin(150, self.scroll.contentView.bounds.size.height - 2));
+    [self.content layoutSubtreeIfNeeded];
     CGFloat height = fmax(1, ceil(self.content.fittingSize.height));
     NSSize size = NSMakeSize(width, height);
     if (!NSEqualSizes(self.content.frame.size, size)) [self.content setFrameSize:size];
     [self.content layoutSubtreeIfNeeded];
+    CGFloat listWidth = self.reviewScroll.contentView.bounds.size.width;
+    for (NSButton *row in self.cutList.arrangedSubviews) {
+        row.lineBreakMode = NSLineBreakByTruncatingTail;
+        [row setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
+    [self.cutList setFrameSize:NSMakeSize(fmax(1, listWidth), fmax(1, ceil(self.cutList.fittingSize.height)))];
+    [self.cutList layoutSubtreeIfNeeded];
     self.updatingDocumentLayout = NO;
 }
 
 - (void)setStatusMessage:(NSString *)message {
-    self.statusLabel.stringValue = message;
+    [self setStatusMessage:message requiresAttention:NO];
+}
+
+- (void)setStatusMessage:(NSString *)message requiresAttention:(BOOL)requiresAttention {
+    message = message ?: @"";
+    BOOL changed = ![self.statusDetails.stringValue isEqual:message];
+    self.statusDetails.stringValue = message;
+    self.statusDetails.toolTip = message;
+    self.statusLabel.toolTip = message;
+    BOOL longMessage = message.length > 180;
+    self.detailsButton.hidden = !longMessage;
+    if (!longMessage) {
+        self.statusLabel.stringValue = message;
+        self.detailsExpanded = NO;
+    } else {
+        NSString *state = self.reviewResponse[@"state"];
+        BOOL attention = requiresAttention || [self.reviewResponse[@"canRetryVerification"] boolValue] ||
+            [@[@"failed", @"unavailable", @"error", @"cancelled"] containsObject:state];
+        // Local persistence and transport errors carry explicit presentation
+        // intent: an earlier review or completion cannot classify that error.
+        if (changed || requiresAttention) self.detailsExpanded = attention;
+        if (requiresAttention) self.statusLabel.stringValue = @"Unable to finish. Review the details.";
+        else if ([self.reviewResponse[@"canRetryVerification"] boolValue]) self.statusLabel.stringValue = @"Verification needs attention. Review the details.";
+        else if ([state isEqual:@"cancelled"]) self.statusLabel.stringValue = @"Cancelled. Review the details.";
+        else if (attention) self.statusLabel.stringValue = @"Unable to finish. Review the details.";
+        else if (self.reviewClient.busy) self.statusLabel.stringValue = @"Working in Final Cut Pro…";
+        else if ([@[@"completed", @"complete"] containsObject:state]) self.statusLabel.stringValue = @"Cleaned project ready. See Details.";
+        else self.statusLabel.stringValue = @"Analysis ready. Review the cuts, then Apply Cuts.";
+    }
+    self.statusDetails.hidden = !longMessage || !self.detailsExpanded;
+    self.detailsButton.title = self.detailsExpanded ? @"Hide Details" : @"Details";
+    [self updateDocumentFrame];
+}
+
+- (void)toggleDetails:(id)sender {
+    if (self.detailsButton.hidden) return;
+    self.detailsExpanded = !self.detailsExpanded;
+    self.statusDetails.hidden = !self.detailsExpanded;
+    self.detailsButton.title = self.detailsExpanded ? @"Hide Details" : @"Details";
     [self updateDocumentFrame];
 }
 
@@ -324,6 +520,7 @@
     if (self.completionMessage && (![context[@"projectUID"] isEqual:self.completionContext[@"projectUID"]] ||
         ![context[@"libraryURL"] isEqual:self.completionContext[@"libraryURL"]])) [self clearCompletionMessage];
     self.projectLabel.stringValue = context[@"projectName"] ?: @"Open a project in Final Cut Pro";
+    self.projectLabel.toolTip = self.projectLabel.stringValue;
     self.libraryLabel.stringValue = context[@"libraryName"] ?: @"";
     [self refreshPlayhead];
     // Proxy refreshes can repeat for the same project. Preserve unsaved edits
@@ -350,7 +547,7 @@
         SSWorkflowViewController *owner = weakSelf;
         if (!owner || generation != owner.contextGeneration || !owner.timeline) return;
         if (error) {
-            [owner setStatusMessage:error.localizedDescription];
+            [owner setStatusMessage:error.localizedDescription requiresAttention:YES];
             return;
         }
         NSArray *keys = @[@"thresholdDBFS", @"minimumSilenceDuration", @"beforeSpeechPadding", @"afterSpeechPadding"];
@@ -407,9 +604,17 @@
     [self.reviewClient detach];
     self.reviewClient = nil;
     self.reviewResponse = nil;
+    self.detailsExpanded = NO;
+    self.statusDetails.stringValue = @"";
+    self.statusDetails.toolTip = nil;
+    self.statusDetails.hidden = YES;
+    self.detailsButton.hidden = YES;
+    self.detailsButton.title = @"Details";
+    self.statusLabel.toolTip = nil;
     self.reviewCuts = @[];
     for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
     self.reviewSummary.stringValue = @"Select one timeline clip with audio, then Analyze.";
+    self.reviewSummary.toolTip = self.reviewSummary.stringValue;
     self.analyzeButton.title = @"Analyze Audio";
     self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
     self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
@@ -433,6 +638,10 @@
     self.allButton.enabled = self.reviewClient.canChangeSelection;
     self.noneButton.enabled = self.reviewClient.canChangeSelection;
     self.retryButton.hidden = ![self.reviewResponse[@"canRetryVerification"] boolValue];
+    self.applyButton.hidden = !self.retryButton.hidden;
+    self.cancelButton.hidden = NO;
+    self.allButton.hidden = self.reviewCuts.count == 0;
+    self.noneButton.hidden = self.reviewCuts.count == 0;
     self.retryButton.enabled = !self.reviewClient.busy;
     self.progressIndicator.hidden = !self.reviewClient.busy;
     NSNumber *fraction = self.reviewResponse[@"progress"];
@@ -460,17 +669,22 @@
             NSButton *row = [NSButton checkboxWithTitle:title target:self action:@selector(toggleCut:)];
             row.tag = (NSInteger)index;
             row.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
-            row.toolTip = cut[@"reason"];
+            row.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
+            row.toolTip = [NSString stringWithFormat:@"%@%@%@", title,
+                [cut[@"reason"] length] ? @" — " : @"", cut[@"reason"] ?: @""];
+            row.accessibilityHelp = row.toolTip;
             row.accessibilityIdentifier = [@"silentsnip.workflow.cut." stringByAppendingString:cut[@"id"]];
             [self.cutList addArrangedSubview:row];
+            [row.widthAnchor constraintEqualToAnchor:self.cutList.widthAnchor constant:-12].active = YES;
         }
     }
     NSString *summary = response[@"summary"] ?: @"";
     NSString *target = response[@"targetClipName"];
     self.reviewSummary.stringValue = target.length ? [NSString stringWithFormat:@"Clip: %@\n%@", target, summary] : summary;
+    self.reviewSummary.toolTip = self.reviewSummary.stringValue;
     [self setStatusMessage:response[@"message"] ?: @""];
     [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
-    self.analyzeButton.title = @"Analyze Audio Again";
+    self.analyzeButton.title = @"Analyze Again";
     [self updateReviewControls];
     NSString *state = response[@"state"];
     if ([@[@"completed", @"complete", @"failed", @"cancelled", @"unavailable"] containsObject:state]) {
@@ -513,7 +727,7 @@
         if (!owner || generation != owner.reviewGeneration || !owner.timeline) return;
         [owner invalidateReview];
         [owner setControlsEnabled:owner.settingsLoaded];
-        [owner setStatusMessage:message];
+        [owner setStatusMessage:message requiresAttention:YES];
     }];
     NSString *gesture = NSUUID.UUID.UUIDString;
     self.analyzeButton.accessibilityIdentifier = [@"silentsnip.workflow.analyze.requested." stringByAppendingString:gesture];
@@ -568,7 +782,7 @@
         if (!owner || generation != owner.contextGeneration || !owner.timeline) return;
         [owner setControlsEnabled:YES];
         if (!owner.reviewClient.busy && ![owner.reviewResponse[@"canRetryVerification"] boolValue])
-            [owner setStatusMessage:error ? error.localizedDescription : @"Settings saved for this project."];
+            [owner setStatusMessage:error ? error.localizedDescription : @"Settings saved for this project." requiresAttention:error != nil];
     }];
 }
 @end

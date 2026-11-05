@@ -7,6 +7,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+import zlib
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "Scripts/check-workflow-prototype.py"
@@ -44,6 +45,26 @@ def write_macho(path, *, bootstrap=False, wrong_entry=False, library=None,
     path.chmod(0o755)
 
 
+def icon_png(pixels):
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    header = struct.pack(">IIBBBBB", pixels, pixels, 8, 6, 0, 0, 0)
+    rows = (b"\0" + b"\0\0\0\0" * pixels) * pixels
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def write_icons(bundle, name):
+    resources = bundle / "Contents/Resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    body = b""
+    for kind, pixels in [(b"icp5", 32), (b"ic12", 64)]:
+        data = icon_png(pixels)
+        body += kind + struct.pack(">I", len(data) + 8) + data
+        if name in {"ExtensionIcon", "WorkflowBadge"}:
+            (resources / (name + (".png" if pixels == 32 else "@2x.png"))).write_bytes(data)
+    (resources / (name + ".icns")).write_bytes(b"icns" + struct.pack(">I", len(body) + 8) + body)
+
+
 class WorkflowPrototypePackageTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="WorkflowPackage-")
@@ -51,13 +72,17 @@ class WorkflowPrototypePackageTests(unittest.TestCase):
         self.app = Path(self.directory.name) / "Different Name.package"
         self.extension = self.app / "Contents/PlugIns" / MODULE.EXTENSION_NAME
         self.app_info = dict(CFBundleIdentifier=MODULE.APP_ID, CFBundlePackageType="APPL",
-                             CFBundleExecutable="SilentSnipWorkflowPrototype")
+                             CFBundleExecutable="SilentSnipWorkflowPrototype", CFBundleVersion="10",
+                             CFBundleIconFile="AppIcon")
         self.extension_info = dict(CFBundleIdentifier=MODULE.EXTENSION_ID, CFBundlePackageType="XPC!",
-            CFBundleExecutable="SilentSnipWorkflowExtension", NSExtension={
+            CFBundleExecutable="SilentSnipWorkflowExtension", CFBundleVersion="10", CFBundleIconFile="ExtensionIcon", NSExtension={
                 "NSExtensionPointIdentifier": "com.apple.FinalCut.WorkflowExtension",
                 "ProExtensionPrincipalViewControllerClass": "SSWorkflowViewController"})
         self.write_info(self.app, self.app_info)
         self.write_info(self.extension, self.extension_info)
+        write_icons(self.app, "AppIcon")
+        write_icons(self.extension, "ExtensionIcon")
+        write_icons(self.extension, "WorkflowBadge")
         self.app_binary = self.app / "Contents/MacOS/SilentSnipWorkflowPrototype"
         self.extension_binary = self.extension / "Contents/MacOS/SilentSnipWorkflowExtension"
         write_macho(self.app_binary)
@@ -92,6 +117,44 @@ class WorkflowPrototypePackageTests(unittest.TestCase):
         self.assertFalse(report["nativeFinalCutBehaviorEstablished"])
         self.assertIs(report["signedEntitlements"]["com.apple.security.automation.apple-events"], True)
         self.assertIn(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.app.resolve())], self.calls)
+        self.assertEqual(report["extensionIcon"]["bundleIconFile"], "ExtensionIcon")
+        self.assertEqual([image["pixels"] for image in report["extensionIcon"]["toolbarPNGs"]], [32, 64])
+        self.assertFalse(report["extensionIcon"]["nativeToolbarRenderingEstablished"])
+        self.assertEqual([image["pixels"] for image in report["headerBadgePNGs"]], [32, 64])
+
+    def test_template_toolbar_icon_cannot_replace_the_required_colored_header_badge(self):
+        (self.extension / "Contents/Resources/WorkflowBadge@2x.png").unlink()
+        with self.assertRaisesRegex(ValueError, "header badge resource"):
+            self.verify()
+
+    def test_current_package_cannot_omit_declared_icon_or_its_resource(self):
+        self.extension_info.pop("CFBundleIconFile")
+        self.write_info(self.extension, self.extension_info)
+        with self.assertRaisesRegex(ValueError, "bundle icon name"):
+            self.verify()
+        self.extension_info["CFBundleIconFile"] = "ExtensionIcon"
+        self.write_info(self.extension, self.extension_info)
+        (self.extension / "Contents/Resources/ExtensionIcon.icns").unlink()
+        with self.assertRaisesRegex(ValueError, "bundle icon resource"):
+            self.verify()
+
+    def test_icon_escape_and_malformed_container_are_rejected(self):
+        path = self.extension / "Contents/Resources/ExtensionIcon.icns"
+        outside = Path(self.directory.name) / "Other.icns"
+        path.rename(outside)
+        path.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "escaping Workflow bundle icon"):
+            self.verify()
+        path.unlink()
+        path.write_bytes(b"icns" + struct.pack(">I", 1000) + b"bad-data")
+        with self.assertRaisesRegex(ValueError, "icon container"):
+            self.verify()
+
+    def test_toolbar_icon_keeps_sdk_small_and_retina_representations(self):
+        path = self.extension / "Contents/Resources/ExtensionIcon@2x.png"
+        path.write_bytes(icon_png(32))
+        with self.assertRaisesRegex(ValueError, "32/64 px RGBA"):
+            self.verify()
 
     def test_production_identity_rejected_before_external_commands(self):
         self.app_info["CFBundleIdentifier"] = "local.silentsnip.app"

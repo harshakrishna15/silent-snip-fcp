@@ -40,6 +40,45 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def verify_icon(bundle, info, expected_name, *, required=False):
+    """Check the SDK's public bundle-icon declaration without loading an app."""
+    name = info.get("CFBundleIconFile")
+    if name is None and not required:
+        return None  # Historical frontend packages predate the branded icon.
+    require(name == expected_name, "Missing or unexpected Workflow bundle icon name")
+    resources = bundle / "Contents/Resources"
+    path = resources / (expected_name + ".icns")
+    require(path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(bundle),
+            "Missing or escaping Workflow bundle icon resource")
+    data = path.read_bytes()
+    require(len(data) >= 16 and data[:4] == b"icns" and struct.unpack(">I", data[4:8])[0] == len(data),
+            "Invalid Workflow bundle icon container")
+    cursor = 8
+    images = 0
+    while cursor < len(data):
+        require(cursor + 8 <= len(data), "Incomplete Workflow icon representation")
+        kind = data[cursor:cursor+4]
+        length = struct.unpack(">I", data[cursor+4:cursor+8])[0]
+        require(length > 8 and cursor + length <= len(data), "Invalid Workflow icon representation bounds")
+        if kind.startswith(b"ic"):
+            images += 1
+        cursor += length
+    require(cursor == len(data) and images > 0, "Workflow bundle icon has no image representations")
+    variants = []
+    if expected_name == "ExtensionIcon":
+        for filename, pixels in [("ExtensionIcon.png", 32), ("ExtensionIcon@2x.png", 64)]:
+            image = resources / filename
+            require(image.is_file() and not image.is_symlink() and image.resolve().is_relative_to(bundle),
+                    "Missing or escaping Workflow toolbar icon representation")
+            raw = image.read_bytes()
+            require(len(raw) >= 33 and raw[:8] == b"\x89PNG\r\n\x1a\n" and raw[12:16] == b"IHDR"
+                    and struct.unpack(">II", raw[16:24]) == (pixels, pixels) and raw[24:26] == b"\x08\x06",
+                    "Workflow toolbar icon must include 32/64 px RGBA PNG representations")
+            variants.append(dict(filename=filename, pixels=pixels, SHA256=sha(image)))
+    return dict(bundleIconFile=name, ICNS_SHA256=sha(path), imageRepresentations=images,
+                toolbarPNGs=variants, nativeToolbarRenderingEstablished=False)
+
+
 def read_info(bundle):
     path = bundle / "Contents/Info.plist"
     require(path.is_file() and not path.is_symlink(), "Missing or symlinked bundle metadata")
@@ -152,6 +191,24 @@ def verify_app(app, run=subprocess.run):
     require(extension_info.get("CFBundleIdentifier") == EXTENSION_ID and extension_info.get("CFBundlePackageType") == "XPC!",
             "Unexpected Workflow Extension identity")
     check_routes(extension_info)
+    version = info.get("CFBundleVersion", "")
+    branded = isinstance(version, str) and version.isascii() and version.isdecimal() and int(version) >= 9
+    if branded:
+        require(extension_info.get("CFBundleVersion") == version,
+                "Workflow container and extension versions differ")
+    containing_icon = verify_icon(app, info, "AppIcon", required=branded)
+    extension_icon = verify_icon(extension, extension_info, "ExtensionIcon", required=branded)
+    header_badge = []
+    if branded and int(version) >= 10:
+        for filename, pixels in [("WorkflowBadge.png", 32), ("WorkflowBadge@2x.png", 64)]:
+            image = extension / "Contents/Resources" / filename
+            require(image.is_file() and not image.is_symlink() and image.resolve().is_relative_to(extension),
+                    "Missing or escaping Workflow header badge resource")
+            raw = image.read_bytes()
+            require(len(raw) >= 33 and raw[:8] == b"\x89PNG\r\n\x1a\n" and raw[12:16] == b"IHDR"
+                    and struct.unpack(">II", raw[16:24]) == (pixels, pixels) and raw[24:26] == b"\x08\x06",
+                    "Workflow header badge must include 32/64 px RGBA PNG representations")
+            header_badge.append(dict(filename=filename, pixels=pixels, SHA256=sha(image)))
     registration = extension_info.get("NSExtension")
     require(isinstance(registration, dict) and
             registration.get("NSExtensionPointIdentifier") == "com.apple.FinalCut.WorkflowExtension" and
@@ -186,6 +243,7 @@ def verify_app(app, run=subprocess.run):
     tool(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], run)
     return dict(verified=True, app=str(app), containingBundleIdentifier=APP_ID,
                 extensionBundleIdentifier=EXTENSION_ID, signedEntitlements=entitlements,
+                containingIcon=containing_icon, extensionIcon=extension_icon, headerBadgePNGs=header_badge,
                 containingExecutableSHA256=sha(containing_binary), extensionExecutableSHA256=sha(extension_binary),
                 containingMachO=containing_macho, extensionMachO=extension_macho,
                 deepStrictSignatureVerified=True, installationPerformedByChecker=False,
