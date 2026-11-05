@@ -29,6 +29,44 @@
 }
 @end
 
+// Keep each cut a native checkbox for selection and accessibility, while
+// drawing its timing values in stable columns instead of one clipped title.
+@interface SSWorkflowCutCell : NSButtonCell
+@end
+@implementation SSWorkflowCutCell
+- (NSRect)drawTitle:(NSAttributedString *)title withFrame:(NSRect)frame inView:(NSView *)view { return frame; }
+@end
+
+@interface SSWorkflowCutRow : NSButton
+@property (nonatomic, copy) NSString *startValue;
+@property (nonatomic, copy) NSString *endValue;
+@property (nonatomic, copy) NSString *durationValue;
+@property (nonatomic, strong) NSFont *textFont;
+- (NSRect)columnRectForIndex:(NSUInteger)index;
+@end
+@implementation SSWorkflowCutRow
+- (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric, 22); }
+- (NSRect)columnRectForIndex:(NSUInteger)index {
+    CGFloat available = fmax(0, self.bounds.size.width - 26);
+    CGFloat origin = index < 2 ? index * 0.3 : 0.6;
+    CGFloat width = available * (index < 2 ? 0.3 : 0.4);
+    CGFloat height = ceil(self.textFont.ascender - self.textFont.descender);
+    return NSMakeRect(26 + origin * available, floor((self.bounds.size.height - height) / 2), width - 8, height);
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    NSMutableParagraphStyle *style = [NSMutableParagraphStyle new];
+    style.alignment = NSTextAlignmentRight;
+    style.lineBreakMode = NSLineBreakByClipping;
+    NSDictionary *attributes = @{NSFontAttributeName: self.textFont,
+        NSForegroundColorAttributeName: self.enabled ? NSColor.controlTextColor : NSColor.disabledControlTextColor,
+        NSParagraphStyleAttributeName: style};
+    NSArray *values = @[self.startValue ?: @"", self.endValue ?: @"", self.durationValue ?: @""];
+    for (NSUInteger index = 0; index < values.count; ++index)
+        [values[index] drawInRect:[self columnRectForIndex:index] withAttributes:attributes];
+}
+@end
+
 @interface SSWorkflowViewController : NSViewController <FCPXTimelineObserver, NSTextFieldDelegate>
 @property (nonatomic, strong) id<FCPXHost> host;
 @property (nonatomic, strong) FCPXTimeline *timeline;
@@ -45,7 +83,18 @@
 @property (nonatomic, strong) NSStackView *content;
 @property (nonatomic, strong) NSView *headerView;
 @property (nonatomic, strong) NSView *footerView;
+@property (nonatomic, strong) NSLayoutConstraint *footerHeightConstraint;
 @property (nonatomic, strong) NSStackView *settingsPanel;
+@property (nonatomic, strong) NSStackView *settingsGroups;
+@property (nonatomic, strong) NSStackView *settingsTopRow;
+@property (nonatomic, strong) NSStackView *settingsBottomRow;
+@property (nonatomic, copy) NSArray<NSView *> *numericGroups;
+@property (nonatomic) BOOL settingsWideLayout;
+@property (nonatomic, strong) NSStackView *cutColumnHeader;
+@property (nonatomic, strong) NSLayoutConstraint *cutColumnHeaderWidthConstraint;
+@property (nonatomic, strong) NSStackView *footerMainRow;
+@property (nonatomic, strong) NSLayoutConstraint *footerStatusWidthConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *footerActionsWidthConstraint;
 @property (nonatomic, strong) NSStackView *reviewPanel;
 @property (nonatomic, strong) NSScrollView *reviewScroll;
 @property (nonatomic, strong) NSLayoutConstraint *reviewListHeightConstraint;
@@ -102,7 +151,7 @@
     card.orientation = NSUserInterfaceLayoutOrientationVertical;
     card.alignment = NSLayoutAttributeLeading;
     card.spacing = 8;
-    card.edgeInsets = NSEdgeInsetsMake(14, 14, 14, 14);
+    card.edgeInsets = NSEdgeInsetsMake(12, 12, 12, 12);
     return card;
 }
 
@@ -166,7 +215,7 @@
     [self.headerView addSubview:header];
 
     NSMutableArray *fields = [NSMutableArray new];
-    NSMutableArray *settingsViews = [NSMutableArray arrayWithObject:[self label:@"Silence detection" size:14 weight:NSFontWeightSemibold]];
+    NSMutableArray *groups = [NSMutableArray new];
     NSArray *labels = @[@"Silence threshold", @"Minimum silence", @"Before speech", @"After speech"];
     NSArray *units = @[@"dBFS", @"sec", @"sec", @"sec"];
     for (NSUInteger index = 0; index < labels.count; ++index) {
@@ -178,18 +227,33 @@
         field.delegate = self;
         [field.widthAnchor constraintEqualToConstant:64].active = YES;
         NSTextField *name = [self label:labels[index] size:12 weight:NSFontWeightRegular];
-        [name.widthAnchor constraintEqualToConstant:110].active = YES;
+        name.maximumNumberOfLines = 1;
         NSTextField *unit = [self label:units[index] size:11 weight:NSFontWeightRegular];
         unit.textColor = NSColor.secondaryLabelColor;
         unit.maximumNumberOfLines = 1;
         unit.lineBreakMode = NSLineBreakByClipping;
         [unit.widthAnchor constraintEqualToConstant:36].active = YES;
-        NSStackView *row = [NSStackView stackViewWithViews:@[name, field, unit]];
-        row.spacing = 6;
-        [settingsViews addObject:row];
+        NSStackView *value = [NSStackView stackViewWithViews:@[field, unit]];
+        value.spacing = 6;
+        NSStackView *group = [NSStackView stackViewWithViews:@[name, value]];
+        group.orientation = NSUserInterfaceLayoutOrientationVertical;
+        group.alignment = NSLayoutAttributeLeading;
+        group.spacing = 3;
+        [groups addObject:group];
         [fields addObject:field];
     }
     self.fields = fields;
+    self.numericGroups = groups;
+    self.settingsTopRow = [NSStackView stackViewWithViews:@[groups[0], groups[1]]];
+    self.settingsBottomRow = [NSStackView stackViewWithViews:@[groups[2], groups[3]]];
+    for (NSStackView *row in @[self.settingsTopRow, self.settingsBottomRow]) {
+        row.distribution = NSStackViewDistributionFillEqually;
+        row.spacing = 14;
+    }
+    self.settingsGroups = [NSStackView stackViewWithViews:@[self.settingsTopRow, self.settingsBottomRow]];
+    self.settingsGroups.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.settingsGroups.alignment = NSLayoutAttributeLeading;
+    self.settingsGroups.spacing = 8;
     self.output = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     self.output.font = [NSFont systemFontOfSize:12];
     [self.output addItemsWithTitles:@[@"Remove Silence", @"Replace with 1-Second Gaps"]];
@@ -198,11 +262,15 @@
     self.output.target = self;
     self.output.action = @selector(settingsChanged:);
     [self.output setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.output setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.saveButton = [NSButton buttonWithTitle:@"Save Settings" target:self action:@selector(saveSettings:)];
     self.saveButton.bezelStyle = NSBezelStyleRounded;
     self.saveButton.accessibilityIdentifier = @"silentsnip.workflow.save";
-    [settingsViews addObjectsFromArray:@[[self label:@"Output" size:11 weight:NSFontWeightMedium], self.output, self.saveButton]];
-    self.settingsPanel = [self cardWithViews:settingsViews];
+    NSView *outputSpring = [NSView new];
+    [outputSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *outputRow = [NSStackView stackViewWithViews:@[[self label:@"Output" size:12 weight:NSFontWeightRegular], self.output, self.saveButton, outputSpring]];
+    outputRow.spacing = 10;
+    self.settingsPanel = [self cardWithViews:@[self.settingsGroups, outputRow]];
 
     self.statusLabel = [self label:@"Waiting for a project…" size:12 weight:NSFontWeightRegular];
     self.statusLabel.textColor = NSColor.secondaryLabelColor;
@@ -229,7 +297,10 @@
     self.cancelButton.accessibilityIdentifier = [@"silentsnip.workflow.review." stringByAppendingString:self.viewID];
     self.retryButton = [NSButton buttonWithTitle:@"Retry Verification" target:self action:@selector(retryVerification:)];
     self.retryButton.hidden = YES;
-    NSStackView *actions = [NSStackView stackViewWithViews:@[self.analyzeButton, self.applyButton, self.retryButton, self.cancelButton]];
+    NSView *actionSpring = [NSView new];
+    [actionSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *actions = [NSStackView stackViewWithViews:@[actionSpring, self.analyzeButton, self.applyButton, self.retryButton, self.cancelButton]];
+    [actions setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
     actions.spacing = 8;
     NSStackView *status = [NSStackView stackViewWithViews:@[self.statusLabel, self.detailsButton]];
     status.spacing = 8;
@@ -240,16 +311,22 @@
     self.progressIndicator.maxValue = 1;
     self.progressIndicator.hidden = YES;
     [self.progressIndicator.heightAnchor constraintEqualToConstant:3].active = YES;
-    NSStackView *footer = [NSStackView stackViewWithViews:@[actions, status, self.progressIndicator]];
+    self.footerMainRow = [NSStackView stackViewWithViews:@[status, actions]];
+    self.footerMainRow.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.footerMainRow.alignment = NSLayoutAttributeLeading;
+    self.footerMainRow.spacing = 3;
+    self.footerStatusWidthConstraint = [status.widthAnchor constraintEqualToAnchor:self.footerMainRow.widthAnchor];
+    self.footerActionsWidthConstraint = [actions.widthAnchor constraintEqualToAnchor:self.footerMainRow.widthAnchor];
+    NSStackView *footer = [NSStackView stackViewWithViews:@[self.footerMainRow, self.progressIndicator]];
     footer.orientation = NSUserInterfaceLayoutOrientationVertical;
     footer.alignment = NSLayoutAttributeLeading;
-    footer.spacing = 5;
+    footer.spacing = 3;
     footer.translatesAutoresizingMaskIntoConstraints = NO;
     [self.footerView addSubview:footer];
 
     self.reviewSummary = [self label:@"Select one timeline clip with audio, then Analyze." size:12 weight:NSFontWeightRegular];
     self.reviewSummary.accessibilityIdentifier = @"silentsnip.workflow.summary";
-    self.reviewSummary.maximumNumberOfLines = 3;
+    self.reviewSummary.maximumNumberOfLines = 2;
     self.reviewSummary.lineBreakMode = NSLineBreakByTruncatingTail;
     self.allButton = [NSButton buttonWithTitle:@"Select All" target:self action:@selector(selectAllCuts:)];
     self.noneButton = [NSButton buttonWithTitle:@"Deselect All" target:self action:@selector(deselectAllCuts:)];
@@ -257,13 +334,16 @@
         button.controlSize = NSControlSizeSmall;
         button.font = [NSFont systemFontOfSize:11];
     }
-    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[self.allButton, self.noneButton]];
+    NSView *reviewSpring = [NSView new];
+    [reviewSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[[self label:@"Cut review" size:14 weight:NSFontWeightSemibold], reviewSpring, self.allButton, self.noneButton]];
     reviewActions.spacing = 6;
     self.cutList = [SSWorkflowDocument stackViewWithViews:@[]];
     self.cutList.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.cutList.alignment = NSLayoutAttributeLeading;
-    self.cutList.spacing = 4;
+    self.cutList.spacing = 2;
     self.cutList.edgeInsets = NSEdgeInsetsMake(6, 6, 6, 6);
+    self.cutList.translatesAutoresizingMaskIntoConstraints = YES;
     self.cutList.autoresizingMask = NSViewWidthSizable;
     self.reviewScroll = [NSScrollView new];
     self.reviewScroll.drawsBackground = NO;
@@ -274,30 +354,53 @@
     self.reviewScroll.documentView = self.cutList;
     self.reviewListHeightConstraint = [self.reviewScroll.heightAnchor constraintEqualToConstant:150];
     self.reviewListHeightConstraint.active = YES;
+    NSMutableArray<NSTextField *> *columnLabels = [NSMutableArray new];
+    for (NSString *title in @[@"Start", @"End", @"Duration"]) {
+        NSTextField *column = [self label:title size:11 weight:NSFontWeightMedium];
+        column.textColor = NSColor.secondaryLabelColor;
+        column.alignment = NSTextAlignmentRight;
+        column.maximumNumberOfLines = 1;
+        [columnLabels addObject:column];
+    }
+    self.cutColumnHeader = [NSStackView stackViewWithViews:columnLabels];
+    self.cutColumnHeader.distribution = NSStackViewDistributionFill;
+    [columnLabels[1].widthAnchor constraintEqualToAnchor:columnLabels[0].widthAnchor].active = YES;
+    [columnLabels[2].widthAnchor constraintEqualToAnchor:columnLabels[0].widthAnchor multiplier:4.0 / 3.0 constant:8.0 / 3.0].active = YES;
+    self.cutColumnHeader.spacing = 8;
+    self.cutColumnHeader.edgeInsets = NSEdgeInsetsMake(0, 33, 0, 13);
+    self.cutColumnHeaderWidthConstraint = [self.cutColumnHeader.widthAnchor constraintEqualToConstant:400];
+    self.cutColumnHeaderWidthConstraint.active = YES;
     NSTextField *scope = [self label:@"Creates a cleaned copy; original unchanged." size:11 weight:NSFontWeightRegular];
     scope.textColor = NSColor.secondaryLabelColor;
-    self.reviewPanel = [self cardWithViews:@[[self label:@"Cut review" size:14 weight:NSFontWeightSemibold],
-        self.reviewSummary, self.statusDetails, reviewActions, self.reviewScroll, scope]];
-    self.reviewPanel.spacing = 7;
+    self.reviewPanel = [self cardWithViews:@[reviewActions, self.reviewSummary,
+        self.statusDetails, self.cutColumnHeader, self.reviewScroll, scope]];
+    self.reviewPanel.spacing = 4;
     self.content = [SSWorkflowDocument stackViewWithViews:@[self.settingsPanel, self.reviewPanel]];
     self.content.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.content.alignment = NSLayoutAttributeLeading;
-    self.content.spacing = 14;
-    self.content.edgeInsets = NSEdgeInsetsMake(16, 16, 16, 16);
+    self.content.spacing = 12;
+    self.content.edgeInsets = NSEdgeInsetsMake(12, 12, 12, 12);
+    self.content.translatesAutoresizingMaskIntoConstraints = YES;
     self.content.autoresizingMask = NSViewWidthSizable;
     self.scroll.documentView = self.content;
     self.settingsPanelWidthConstraint = [self.settingsPanel.widthAnchor constraintEqualToConstant:448];
     self.reviewPanelWidthConstraint = [self.reviewPanel.widthAnchor constraintEqualToConstant:448];
+    self.footerHeightConstraint = [self.footerView.heightAnchor constraintEqualToConstant:76];
     [NSLayoutConstraint activateConstraints:@[
         self.settingsPanelWidthConstraint, self.reviewPanelWidthConstraint,
-        [self.output.widthAnchor constraintEqualToAnchor:self.settingsPanel.widthAnchor constant:-28],
-        [self.reviewScroll.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-28],
-        [self.reviewSummary.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-28],
-        [self.statusDetails.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-28],
+        [self.settingsGroups.widthAnchor constraintEqualToAnchor:self.settingsPanel.widthAnchor constant:-24],
+        [self.settingsTopRow.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
+        [self.settingsBottomRow.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
+        [outputRow.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
+        [self.output.widthAnchor constraintLessThanOrEqualToConstant:290],
+        [self.reviewScroll.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
+        [reviewActions.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
+        [self.reviewSummary.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
+        [self.statusDetails.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
         [self.headerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.headerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.headerView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [self.headerView.heightAnchor constraintEqualToConstant:64],
+        [self.headerView.heightAnchor constraintEqualToConstant:56],
         [header.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:16],
         [header.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-16],
         [header.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
@@ -306,11 +409,11 @@
         [self.footerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.footerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.footerView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [self.footerView.heightAnchor constraintEqualToConstant:88],
+        self.footerHeightConstraint,
         [footer.leadingAnchor constraintEqualToAnchor:self.footerView.leadingAnchor constant:16],
         [footer.trailingAnchor constraintEqualToAnchor:self.footerView.trailingAnchor constant:-16],
-        [footer.topAnchor constraintEqualToAnchor:self.footerView.topAnchor constant:9],
-        [status.widthAnchor constraintEqualToAnchor:footer.widthAnchor],
+        [footer.topAnchor constraintEqualToAnchor:self.footerView.topAnchor constant:7],
+        [self.footerMainRow.widthAnchor constraintEqualToAnchor:footer.widthAnchor],
         [self.progressIndicator.widthAnchor constraintEqualToAnchor:footer.widthAnchor],
         [self.scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -333,33 +436,45 @@
     if (width <= 48) return;
     self.updatingDocumentLayout = YES;
     BOOL wide = width >= 700;
-    self.content.orientation = wide ? NSUserInterfaceLayoutOrientationHorizontal : NSUserInterfaceLayoutOrientationVertical;
-    self.content.alignment = wide ? NSLayoutAttributeTop : NSLayoutAttributeLeading;
-    CGFloat settingsWidth = wide ? 264 : width - 32;
-    CGFloat reviewWidth = wide ? width - 32 - 14 - settingsWidth : width - 32;
-    self.settingsPanelWidthConstraint.constant = settingsWidth;
-    self.reviewPanelWidthConstraint.constant = reviewWidth;
-    self.reviewSummary.preferredMaxLayoutWidth = reviewWidth - 28;
-    self.statusDetails.preferredMaxLayoutWidth = reviewWidth - 28;
-    self.statusLabel.preferredMaxLayoutWidth = fmax(100, self.view.bounds.size.width - 104);
+    if (self.settingsWideLayout != wide) {
+        for (NSUInteger index = 2; index < self.numericGroups.count; ++index) {
+            NSView *group = self.numericGroups[index];
+            NSStackView *source = wide ? self.settingsBottomRow : self.settingsTopRow;
+            NSStackView *destination = wide ? self.settingsTopRow : self.settingsBottomRow;
+            [source removeArrangedSubview:group];
+            [group removeFromSuperview];
+            [destination addArrangedSubview:group];
+        }
+        self.settingsWideLayout = wide;
+    }
+    self.settingsBottomRow.hidden = wide;
+    self.footerHeightConstraint.constant = wide ? 56 : 76;
+    self.content.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.content.alignment = NSLayoutAttributeLeading;
+    CGFloat cardWidth = width - 24;
+    self.settingsPanelWidthConstraint.constant = cardWidth;
+    self.reviewPanelWidthConstraint.constant = cardWidth;
+    self.reviewSummary.preferredMaxLayoutWidth = cardWidth - 24;
+    self.statusDetails.preferredMaxLayoutWidth = cardWidth - 24;
+    self.footerStatusWidthConstraint.active = !wide;
+    self.footerActionsWidthConstraint.active = !wide;
+    self.footerMainRow.orientation = wide ? NSUserInterfaceLayoutOrientationHorizontal : NSUserInterfaceLayoutOrientationVertical;
+    self.footerMainRow.alignment = wide ? NSLayoutAttributeCenterY : NSLayoutAttributeLeading;
+    self.statusLabel.preferredMaxLayoutWidth = fmax(100, self.view.bounds.size.width - (wide ? 410 : 104));
     [self.content setFrameSize:NSMakeSize(width, self.content.frame.size.height)];
-    // Measure the rest of the review card independently of its list, then let
-    // that list use the remaining normal-height viewport. Narrow windows keep
-    // a small list and scroll the cards vertically.
     [self.content layoutSubtreeIfNeeded];
+    CGFloat settingsHeight = ceil(self.settingsPanel.fittingSize.height);
     CGFloat otherHeight = self.reviewPanel.fittingSize.height - self.reviewListHeightConstraint.constant;
-    CGFloat available = self.scroll.contentView.bounds.size.height - 32;
-    self.reviewListHeightConstraint.constant = wide ? fmax(90, floor(available - otherHeight)) : fmax(90, fmin(150, self.scroll.contentView.bounds.size.height - 2));
+    CGFloat available = self.scroll.contentView.bounds.size.height - 24 - 12 - settingsHeight;
+    CGFloat minimum = wide ? 90 : fmax(90, fmin(150, self.scroll.contentView.bounds.size.height - 2));
+    self.reviewListHeightConstraint.constant = fmax(minimum, floor(available - otherHeight));
     [self.content layoutSubtreeIfNeeded];
     CGFloat height = fmax(1, ceil(self.content.fittingSize.height));
     NSSize size = NSMakeSize(width, height);
     if (!NSEqualSizes(self.content.frame.size, size)) [self.content setFrameSize:size];
     [self.content layoutSubtreeIfNeeded];
     CGFloat listWidth = self.reviewScroll.contentView.bounds.size.width;
-    for (NSButton *row in self.cutList.arrangedSubviews) {
-        row.lineBreakMode = NSLineBreakByTruncatingTail;
-        [row setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    }
+    self.cutColumnHeaderWidthConstraint.constant = fmax(1, listWidth);
     [self.cutList setFrameSize:NSMakeSize(fmax(1, listWidth), fmax(1, ceil(self.cutList.fittingSize.height)))];
     [self.cutList layoutSubtreeIfNeeded];
     self.updatingDocumentLayout = NO;
@@ -666,10 +781,22 @@
         for (NSUInteger index = 0; index < cuts.count; ++index) {
             NSDictionary *cut = cuts[index];
             NSString *title = [NSString stringWithFormat:@"%@ – %@  (%@)", cut[@"start"], cut[@"end"], cut[@"duration"]];
-            NSButton *row = [NSButton checkboxWithTitle:title target:self action:@selector(toggleCut:)];
+            SSWorkflowCutRow *row = [[SSWorkflowCutRow alloc] initWithFrame:NSZeroRect];
+            row.cell = [SSWorkflowCutCell new];
+            row.buttonType = NSButtonTypeSwitch;
+            row.imagePosition = NSImageLeft;
+            row.alignment = NSTextAlignmentLeft;
+            row.title = title;
+            row.target = self;
+            row.action = @selector(toggleCut:);
+            row.startValue = [cut[@"start"] description];
+            row.endValue = [cut[@"end"] description];
+            row.durationValue = [cut[@"duration"] description];
+            row.textFont = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+            row.accessibilityLabel = title;
             row.tag = (NSInteger)index;
             row.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
-            row.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
+            row.font = row.textFont;
             row.toolTip = [NSString stringWithFormat:@"%@%@%@", title,
                 [cut[@"reason"] length] ? @" — " : @"", cut[@"reason"] ?: @""];
             row.accessibilityHelp = row.toolTip;

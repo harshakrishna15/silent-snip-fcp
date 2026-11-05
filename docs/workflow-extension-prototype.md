@@ -2,11 +2,23 @@
 
 November 4, 2026. Branch: `codex/workflow-extension-prototype`.
 
-**Installed frontend 10 passed native wide-window, icon, Details, cut-selection, and Analyze → Apply smoke checks.** Worker 53, AU29, and the worker ZIP are unchanged. The earlier frontend-8/worker-53 exact-PCM removal/gap evidence retains its original scope; no new PCM export was made for this UI update. The three-second complete-flow target remains unmet.
+**Installed frontend 11 passed the recorded 18-cut native review and Apply check with its compact settings/review layout.** The generated 60-second fixture opened a verified **44.6-second** cleaned result. Worker 53, AU29, and the worker ZIP are unchanged. This UI run adds no PCM-export proof or speed claim; the earlier frontend-8/worker-53 fidelity results retain their original scope. The three-second complete-flow target remains unmet.
 
 **Milestone 1 passed native validation in build 5** for the hosted window, project/library/playhead observation, independent per-project settings, restart/reopen persistence, and reachable controls. Those checks remain historical evidence; they did not run audio analysis, Share, or timeline edits.
 
-## Frontend 10 interface: scoped native pass
+## Frontend 11: compact settings and full-width review
+
+Open **Window → Extensions → Silent Snip**. The four detection settings share one row in wide windows and a two-by-two arrangement in narrow windows. Output and Save Settings share a row. Cut review uses the full width below, with compact checkboxes and aligned **Start / End / Duration** columns. Project information stays at the top; status and actions stay at the bottom. In wide windows the status is on the left and actions on the right. **Details / Hide Details** retains the full message without filling the review table.
+
+The generated 60-second, 18-pause fixture was tested only inside the required workspace **Cutdown Integration.fcpbundle**. At the native **1728 × 1596-pixel** window, header/footer controls remained visible and values including **10.300 s** were fully readable. Scrolling to the last row and toggling it changed the acknowledged selection **18 → 17 → 18**; Details expanded and collapsed. Fresh Analyze/Apply markers were observed for request `25D5A3D7-5F4D-46CB-B4F9-9CD988266BD7`. Import verification found no differences and verified source media; Final Cut opened the **44.6-second** result after **15.4 seconds** of removal, with **19 direct primary PCM clips and no gaps**. The generated source WAV stayed referenced in place with its hash unchanged. Native narrow resizing, keyboard/VoiceOver navigation, and error/recovery presentation were not exercised. Playhead-transition accuracy was not certified: the fixture initially received a cached prior SDK playhead.
+
+Offline controller checks passed **31 groups / 1,909 functional assertions** and **19 focused package tests**, covering widths 460, 480, and 840. Optional offscreen rendering reached **31 groups / 1,917 assertions**, with eight extra image checks and PNGs at 460 × 477 and 840 × 477. Those simulated views use no native host window; their PNGs were inspected for geometry, not native control appearance.
+
+Helper Analyze **5.6645 s** + Apply **12.5260 s** totaled **18.1905 s** for this generated no-effects sine fixture. This is UI smoke timing, not a throughput benchmark or PCM comparison. Earlier frontend-8/worker-53 fidelity proof remains separately versioned. The prior project/selection/settings were restored, with Analyze enabled and Apply/Cancel disabled; the window was left open and needs Analyze again after reload.
+
+`Package11.json`, `Installed-Package11.json`, and `Install11.json` under `build/WorkflowPrototype/Window11` passed package/installed-hash/deep-signature checks. `After11-Preservation.json` passed all **16** preservation checks, including unchanged worker53/AU29/ZIP, installed frontend package/directory identity, AU registration, immutable audit inputs, and accessible setup-file fingerprints. Protected preferences were not accessed; active/default preference equality remains unverified. `Native11.json`, `Native11-Evidence-SHA256.json`, and copied receipts/XML/timings under `Native-25D5A3D7` retain the final observations; no new PCM export or benchmark is claimed.
+
+## Historical frontend 10 interface: scoped native pass
 
 Open **Window → Extensions → Silent Snip**. The shortened menu/title was observed natively. The toolbar now shows a distinct white waveform; the header uses a colored mint badge, separate from the transparent toolbar template artwork. Bundle identities and the `Silent Snip Workflow Prototype.app` filename remain unchanged.
 
@@ -14,7 +26,7 @@ The project/library/playhead header and Analyze Audio / Apply Cuts / Cancel foot
 
 Native checks passed at **1728 × 1596** and zoomed **3360 × 1906 pixels**, with header/footer controls visible and **dBFS** on one line. Details expanded the full review text and collapsed again. Deselecting the sole 0.3-second cut was acknowledged as zero selected with Apply disabled; reselecting it restored one selected cut. **Native narrow resizing, long-list scrolling, and error/recovery presentation were not exercised**. Offline checks passed **30 controller groups / 622 assertions** and **124 Python tests**.
 
-Fresh Analyze/Apply markers were observed for request `11438CAF-52EA-485B-B5CB-AC3B8960C3CC`. Strict import verification reported no differences and verified source media; Final Cut opened the **59.7-second** result with **two direct primary processed-PCM clips and no gaps**. Helper Analyze **12.5711 s** + Apply **20.6306 s** totaled **33.2017 s**. This was a UI smoke test, not a speed benchmark or new native PCM comparison. Source-project navigation restored **-45 / 0.3 / 0.1 / 0.1 / Remove**, cleared the old review, and left Analyze enabled and Apply/Cancel disabled; the window remains open ready.
+Fresh Analyze/Apply markers were observed for request `11438CAF-52EA-485B-B5CB-AC3B8960C3CC`. Strict import verification reported no differences and verified source media; Final Cut opened the **59.7-second** result with **two direct primary processed-PCM clips and no gaps**. Helper Analyze **12.5711 s** + Apply **20.6306 s** totaled **33.2017 s**. This was a UI smoke test, not a speed benchmark or new native PCM comparison. Source-project navigation restored **-45 / 0.3 / 0.1 / 0.1 / Remove**, cleared the old review, and left Analyze enabled and Apply/Cancel disabled; the window was left open ready.
 
 Evidence is in `build/WorkflowPrototype/Window10`: `Native10.json`, `Native10-Evidence-SHA256.json`, copied receipts/XML/timings under `Native-11438CAF`, `Package10.json`, `Installed-Package10.json`, `Install10.json`, and final controller/Python logs. `After10-Preservation.json` passed all **16** checks: unchanged worker 53 / AU29 / ZIP, installed frontend package/identity/inode, deep signatures, AU registration, immutable audit inputs, and accessible setup-file fingerprints. Protected preferences were not accessed; selected command set/default destination and complete preference equality remain unverified.
 
@@ -39,7 +51,7 @@ Combined facts are recorded in `build/PrimaryStoryline53/Combined-Native-Facts.j
 
 The recorded frontend **8** / worker **53** installation matched its verified package hashes; Audio Unit **29** remains byte-identical to build 47. The frontend provides explicit **Analyze Audio**, cut review/selection, **Apply**, **Cancel**, and existing-result **Retry Verification**. It delegates processing to `local.silentsnip.app` using workflow protocol **1**; the extension's SDK access remains inspection-only. Explicit Analyze, Apply, and Retry actions activate and wait for the exact Final Cut process before dispatch. Worker authorization still requires the native window/gesture, project identity, selected clip, and fresh project XML; settings edits invalidate an idle review, busy temporary projects defer rebinding, and retryable imported results retain recovery.
 
-Recorded worker-53 checks passed **645 Swift tests** (14 Workflow, 563 Mac, 68 Core; **three existing opt-in skips**, zero failures) and **120 Python tests**. Historical frontend-8 checks passed **25 controller groups / 376 assertions** and **14 review-client groups / 131 assertions**; frontend-10 controller coverage is recorded separately above. These include no-detector analysis, preservation of different serialized detector settings, activation/cancellation, stale callbacks, and recovery guards. The controller/client harnesses use fake dependencies without live Final Cut, helper launches, distributed notifications, or settings files.
+Recorded worker-53 checks passed **645 Swift tests** (14 Workflow, 563 Mac, 68 Core; **three existing opt-in skips**, zero failures) and **120 Python tests**. Historical frontend-8 checks passed **25 controller groups / 376 assertions** and **14 review-client groups / 131 assertions**; frontend-10 and frontend-11 controller coverage is recorded separately above. These include no-detector analysis, preservation of different serialized detector settings, activation/cancellation, stale callbacks, and recovery guards. The controller/client harnesses use fake dependencies without live Final Cut, helper launches, distributed notifications, or settings files.
 
 ### Historical frontend 8 / worker 52 native flow
 
@@ -89,7 +101,7 @@ The first native host connection returned Apple Event permission error `-1743` w
 
 ## Build and evidence
 
-`Scripts/build-workflow-prototype.sh` builds the model with the shared `build/swift` cache and assembles `build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app`. It does not install or register that app. Worker builds separately produce `build/App/Silent Snip.app` and `dist/Silent Snip.zip`. The final installation moved both staged apps' contents into their existing installed directories; those staging app copies are now absent. Current verification uses the installed executables, recorded package hashes, and worker ZIP. Frontend 10 uses compatible worker 53; an inert staging bundle does not advertise the Workflow capability.
+`Scripts/build-workflow-prototype.sh` builds the model with the shared `build/swift` cache and assembles `build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app`. It does not install or register that app. Worker builds separately produce `build/App/Silent Snip.app` and `dist/Silent Snip.zip`. The final installation moved both staged apps' contents into their existing installed directories; those staging app copies are now absent. Current verification uses the installed executables, recorded package hashes, and worker ZIP. Frontend 11 uses compatible worker 53; an inert staging bundle does not advertise the Workflow capability.
 
 For a local developer build:
 
@@ -150,14 +162,15 @@ If protected preference access later becomes available, compare parsed values se
 | --- | --- |
 | Apple Workflow Extensions SDK 1.0.3 installed | Verified metadata |
 | Production build-47 preservation baseline | Recorded before prototype installation |
-| Prototype packaging/build validation | Frontend 10 / unchanged worker 53 passed package/install/signature and 16 preservation checks; earlier frontend-8 proof retained |
+| Prototype packaging/build validation | Frontend 11 / unchanged worker 53 passed package/install/signature and 16 preservation checks; earlier versions retained |
 | Native Final Cut extension load and project/playhead observation | Build 5 passed; earlier functional checks retained |
 | Native per-project settings persistence and isolation | Frontend 10 restored source settings through result-to-original navigation; build-5 reopen and build-3 restart evidence remain historical |
-| Native layout and control reachability | Frontend 10 passed the two recorded wide sizes; narrow/long-list/error presentation covered offline only |
-| Automated model, packaging, controller, and client checks | Worker 53: 645 Swift; latest Python: 124; frontend 10: 30 controller groups / 622 assertions; historical client checks retained |
+| Native layout and control reachability | Frontend 11 passed its recorded normal window, 18-row scrolling/selection and Details; native narrow resizing untested |
+| Automated model, packaging, controller, and client checks | Frontend 11: 31 controller groups / 1,909 functional assertions and 19 focused package tests; earlier full suites retained |
 | Native setup/preference comparison | Production/setup-file checks passed; protected preferences and active command-set selection remain limited |
 | Native Workflow Analyze → review → Apply and audio fidelity | Frontend 7 / worker 51 passed five-minute Gate → Limiter/no-detector gaps and one-minute delay/detector/connected-role removal, with exact native PCM |
-| Frontend 10 name/layout/Details/waveform icon | Passed the recorded native wide-window, Details and selection checks; limitations above |
+| Historical frontend 10 name/layout/Details/waveform icon | Passed its recorded native scope; limitations above |
+| Frontend 11 compact layout / 18-cut Apply | Native review/selection/Details and verified 44.6-second result passed; no new PCM comparison or benchmark |
 | Worker 53 audio-only primary PCM | Removal and real-gap modes passed native layout, exact PCM, metadata/source, and fresh post-Apply original checks |
 | Historical frontend 8 / worker 52 native flow | Passed as recorded; frontend-8 close/reopen remains unverified |
 | Three-second complete-flow target and universal effect compatibility | Not established |

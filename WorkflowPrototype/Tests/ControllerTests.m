@@ -1132,12 +1132,43 @@ static void checkBodyWidth(SSWorkflowViewController *controller) {
           @"Document width follows the actual body clip width, including scroller space");
     check(!controller.scroll.hasHorizontalScroller,
           @"The compact body does not require horizontal scrolling");
+    NSEdgeInsets insets = controller.content.edgeInsets;
+    CGFloat expectedWidth = controller.content.bounds.size.width - insets.left - insets.right;
     for (NSView *panel in @[controller.settingsPanel, controller.reviewPanel]) {
         NSRect rect = [panel convertRect:panel.bounds toView:controller.content];
-        check(!NSIsEmptyRect(rect) && NSMinX(rect) >= -0.5 &&
-              NSMaxX(rect) <= NSMaxX(controller.content.bounds) + 0.5,
-              @"Settings and review cards stay inside the available document width");
+        check(!NSIsEmptyRect(rect) && fabs(NSMinX(rect) - insets.left) < 0.5 &&
+              fabs(rect.size.width - expectedWidth) < 0.5,
+              @"The compact settings band and review each use the full body width");
     }
+    check(controller.content.orientation == NSUserInterfaceLayoutOrientationVertical,
+          @"Settings remain above the full-width review at every viewport size");
+}
+
+static void checkNumericGroupArrangement(SSWorkflowViewController *controller, BOOL wide) {
+    NSMutableArray<NSValue *> *rectangles = [NSMutableArray new];
+    for (NSTextField *field in controller.fields) {
+        NSRect rect = [field convertRect:field.bounds toView:controller.settingsPanel];
+        check(!NSIsEmptyRect(rect) && NSContainsRect(NSInsetRect(controller.settingsPanel.bounds, -0.5, -0.5), rect),
+              @"Every numeric setting stays inside the compact settings band");
+        [rectangles addObject:[NSValue valueWithRect:rect]];
+    }
+    NSRect first = rectangles[0].rectValue, second = rectangles[1].rectValue;
+    NSRect third = rectangles[2].rectValue, fourth = rectangles[3].rectValue;
+    if (wide) {
+        check(fabs(NSMidY(first) - NSMidY(second)) < 0.5 && fabs(NSMidY(first) - NSMidY(third)) < 0.5 &&
+              fabs(NSMidY(first) - NSMidY(fourth)) < 0.5 && NSMaxX(first) < NSMinX(second) &&
+              NSMaxX(second) < NSMinX(third) && NSMaxX(third) < NSMinX(fourth),
+              @"The normal window presents all four numeric settings in one compact row");
+    } else {
+        check(fabs(NSMidY(first) - NSMidY(second)) < 0.5 && fabs(NSMidY(third) - NSMidY(fourth)) < 0.5 &&
+              fabs(NSMidY(first) - NSMidY(third)) >= first.size.height &&
+              fabs(NSMinX(first) - NSMinX(third)) < 0.5 && fabs(NSMinX(second) - NSMinX(fourth)) < 0.5,
+              @"A narrow window reflows the four settings into two aligned rows of two");
+    }
+    NSRect output = [controller.output convertRect:controller.output.bounds toView:controller.settingsPanel];
+    NSRect save = [controller.saveButton convertRect:controller.saveButton.bounds toView:controller.settingsPanel];
+    check(fabs(NSMidY(output) - NSMidY(save)) <= 3 && NSMaxX(output) <= NSMinX(save),
+          @"Output and Save share one compact row without overlapping");
 }
 
 static void revealBodyControl(NSView *control, SSWorkflowViewController *controller) {
@@ -1191,7 +1222,8 @@ static void exerciseOffscreenParentResize(BOOL constrainsHostSize) {
     checkStickyChrome(controller);
     checkBodyWidth(controller);
     check(controller.content.orientation == NSUserInterfaceLayoutOrientationVertical,
-          @"Narrow host windows stack settings and review instead of clipping two columns");
+          @"Narrow host windows keep settings above the full-width review");
+    checkNumericGroupArrangement(controller, NO);
     check(controller.content.frame.size.height > controller.scroll.contentView.bounds.size.height,
           @"The short parent exercises real vertical overflow rather than compressing away content");
     for (NSTextField *field in controller.fields) revealBodyControl(field, controller);
@@ -1209,8 +1241,7 @@ static void exerciseOffscreenParentResize(BOOL constrainsHostSize) {
     check(controller.content.frame.size.width > narrowWidth + 200 &&
           fabs(controller.content.frame.size.width - controller.scroll.contentView.bounds.size.width) < 0.5,
           @"The document follows a wider clip viewport");
-    check(controller.content.orientation == NSUserInterfaceLayoutOrientationHorizontal,
-          @"The normal Final Cut viewport presents settings and review side by side");
+    checkNumericGroupArrangement(controller, YES);
     [controller.scroll.contentView scrollToPoint:NSZeroPoint];
     [controller.scroll reflectScrolledClipView:controller.scroll.contentView];
     settleOffscreenLayout(parent, controller);
@@ -1222,7 +1253,7 @@ static void exerciseOffscreenParentResize(BOOL constrainsHostSize) {
     for (NSView *control in normalControls) {
         NSRect rect = [control convertRect:control.bounds toView:controller.content];
         check(!NSIsEmptyRect(rect) && NSContainsRect(visible, rect),
-              @"Settings and the review viewport fit the normal 840-by-477 window without outer scrolling");
+              @"The compact settings band and review viewport fit the normal 840-by-477 window without outer scrolling");
     }
     check([controller.fields[0].stringValue isEqual:@"-43"] && controller.contextGeneration == generation &&
           controller.settings.loads.count == 1 && controller.settings.saves.count == 0,
@@ -1244,6 +1275,189 @@ static void frameDrivenParentResizeKeepsContentReachable(void) {
     // the header while the scroll viewport incorrectly thought it all fit.
     // Use the actual production controller: no preferred-size override.
     exerciseOffscreenParentResize(NO);
+}
+
+static NSDictionary *syntheticEighteenCutReview(void) {
+    NSMutableArray *cuts = [NSMutableArray new];
+    for (NSUInteger index = 0; index < 18; ++index) {
+        NSString *start = [NSString stringWithFormat:@"01:00:%02lu:00", (unsigned long)(index * 3)];
+        NSString *end = [NSString stringWithFormat:@"01:00:%02lu:00", (unsigned long)(index * 3 + 1)];
+        NSString *duration = @"1.000 sec";
+        if (index == 0) {
+            start = @"123:59:59:29";
+            end = @"124:01:23:13";
+            duration = @"1 min 23.456 sec";
+        } else if (index == 17) {
+            start = @"00:00:00:00";
+            end = @"34:17:36:23";
+            duration = @"123456.767 sec";
+        }
+        [cuts addObject:@{@"id": [NSString stringWithFormat:@"synthetic-cut-%lu", (unsigned long)index],
+            @"start": start, @"end": end, @"duration": duration, @"included": @(index != 3),
+            @"eligible": @(index != 3), @"reason": index == 3 ? @"Protected synthetic range" : @""}];
+    }
+    return @{@"state": @"review", @"message": @"Review the generated cut ranges.",
+        @"targetClipName": @"Synthetic 18-cut layout fixture", @"summary": @"17 selected · 18 detected ranges",
+        @"canRetryVerification": @NO, @"cuts": cuts};
+}
+
+static void checkStructuredCutRows(SSWorkflowViewController *controller, NSArray<NSDictionary *> *cuts) {
+    check(controller.cutList.arrangedSubviews.count == 18 && cuts.count == 18,
+          @"The generated review exercises eighteen complete structured cut rows");
+    if (getenv("SILENT_SNIP_CONTROLLER_LAYOUT_DEBUG")) fprintf(stderr,
+        "cut document root=%s frame=%s bounds=%s clip=%s viewport=%s horizontal=%d\n",
+        NSStringFromRect(controller.view.bounds).UTF8String, NSStringFromRect(controller.cutList.frame).UTF8String,
+        NSStringFromRect(controller.cutList.bounds).UTF8String, NSStringFromRect(controller.reviewScroll.contentView.bounds).UTF8String,
+        NSStringFromRect(controller.reviewScroll.frame).UTF8String, controller.reviewScroll.hasHorizontalScroller);
+    check(!controller.reviewScroll.hasHorizontalScroller &&
+          fabs(controller.cutList.frame.size.width - controller.reviewScroll.contentView.bounds.size.width) < 0.5,
+          @"The cut document follows its review viewport without horizontal overflow");
+    NSRect priorColumns[3];
+    for (NSUInteger index = 0; index < cuts.count; ++index) {
+        NSView *view = controller.cutList.arrangedSubviews[index];
+        check([view isKindOfClass:SSWorkflowCutRow.class],
+              @"A structured timing row remains a native checkbox subclass");
+        SSWorkflowCutRow *row = (SSWorkflowCutRow *)view;
+        NSDictionary *cut = cuts[index];
+        NSArray<NSString *> *values = @[row.startValue, row.endValue, row.durationValue];
+        check([row.startValue isEqual:cut[@"start"]] && [row.endValue isEqual:cut[@"end"]] &&
+              [row.durationValue isEqual:cut[@"duration"]] && row.tag == (NSInteger)index &&
+              row.target == controller && row.action == @selector(toggleCut:),
+              @"Each checkbox retains its full timing values, row identity, and selection action");
+        check(row.state == ([cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff) &&
+              row.enabled == [cut[@"eligible"] boolValue],
+              @"Included and protected ranges keep their native checkbox state and eligibility");
+        NSRect rowRect = [row convertRect:row.bounds toView:controller.cutList];
+        check(!NSIsEmptyRect(rowRect) && NSMinX(rowRect) >= -0.5 &&
+              NSMaxX(rowRect) <= NSMaxX(controller.cutList.bounds) + 0.5,
+              @"Every row fills the available review width without extending beyond its document");
+        NSRect previous = NSZeroRect;
+        for (NSUInteger column = 0; column < values.count; ++column) {
+            NSRect rect = [row columnRectForIndex:column];
+            NSSize text = [values[column] sizeWithAttributes:@{NSFontAttributeName: row.textFont}];
+            if (getenv("SILENT_SNIP_CONTROLLER_LAYOUT_DEBUG") && text.width > rect.size.width + 0.5)
+                fprintf(stderr, "cut fit width=%.1f row=%lu col=%lu text=%s measured=%.2f rect=%s\n",
+                    controller.view.bounds.size.width, (unsigned long)index, (unsigned long)column,
+                    values[column].UTF8String, text.width, NSStringFromRect(rect).UTF8String);
+            check(!NSIsEmptyRect(rect) && NSContainsRect(NSInsetRect(row.bounds, -0.5, -0.5), rect) &&
+                  text.width <= rect.size.width + 0.5 && text.height <= rect.size.height + 1,
+                  @"The actual drawing column fits the entire start, end, or long duration value without ellipsis or clipping");
+            check(column == 0 ? NSMinX(rect) >= 24 : NSMaxX(previous) <= NSMinX(rect),
+                  @"Timing columns do not overlap each other or the native checkbox");
+            check([row.accessibilityLabel containsString:values[column]] && [row.toolTip containsString:values[column]],
+                  @"Complete displayed timing values remain available to accessibility and tooltips");
+            if (index > 0) check(fabs(NSMinX(rect) - NSMinX(priorColumns[column])) < 0.5 &&
+                                 fabs(rect.size.width - priorColumns[column].size.width) < 0.5,
+                                 @"Every cut uses the same aligned timing-column geometry");
+            priorColumns[column] = rect;
+            previous = rect;
+        }
+    }
+    SSWorkflowCutRow *first = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.firstObject;
+    check(controller.cutColumnHeader.arrangedSubviews.count == 3,
+          @"Start, End, and Duration have separate column headings");
+    NSArray *headings = @[@"Start", @"End", @"Duration"];
+    if (getenv("SILENT_SNIP_CONTROLLER_LAYOUT_DEBUG")) fprintf(stderr,
+        "cut header frame=%s bounds=%s constant=%.2f panel=%s\n",
+        NSStringFromRect(controller.cutColumnHeader.frame).UTF8String,
+        NSStringFromRect(controller.cutColumnHeader.bounds).UTF8String,
+        controller.cutColumnHeaderWidthConstraint.constant, NSStringFromRect(controller.reviewPanel.bounds).UTF8String);
+    for (NSUInteger column = 0; column < 3; ++column) {
+        NSTextField *heading = (NSTextField *)controller.cutColumnHeader.arrangedSubviews[column];
+        // NSStackView places label alignment rectangles. NSTextField's frame
+        // and cell drawing/title rects include its extra native side padding,
+        // so compare that documented alignment anchor, not the outer frame.
+        NSRect headingAlignment = [heading alignmentRectForFrame:heading.frame];
+        NSRect headingRect = [heading.superview convertRect:headingAlignment toView:controller.reviewPanel];
+        NSRect valueRect = [first convertRect:[first columnRectForIndex:column] toView:controller.reviewPanel];
+        if (getenv("SILENT_SNIP_CONTROLLER_LAYOUT_DEBUG")) fprintf(stderr,
+            "cut heading rootWidth=%.1f column=%lu heading=%s value=%s title=%s align=%s\n", controller.view.bounds.size.width,
+            (unsigned long)column, NSStringFromRect(headingRect).UTF8String, NSStringFromRect(valueRect).UTF8String,
+            NSStringFromRect([heading.cell titleRectForBounds:heading.bounds]).UTF8String,
+            NSStringFromRect([heading alignmentRectForFrame:heading.frame]).UTF8String);
+        NSSize headingSize = [heading.stringValue sizeWithAttributes:@{NSFontAttributeName: heading.font}];
+        check([heading.stringValue isEqual:headings[column]] && headingSize.width <= headingRect.size.width &&
+              fabs(NSMaxX(headingRect) - NSMaxX(valueRect)) <= 1,
+              @"Each visible heading aligns with the values in its timing column");
+    }
+    check(controller.cutList.frame.size.height > controller.reviewScroll.contentView.bounds.size.height,
+          @"The eighteen rows exercise actual inner-list scrolling");
+    SSWorkflowCutRow *last = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.lastObject;
+    NSRect lastRect = [last convertRect:last.bounds toView:controller.cutList];
+    [last scrollRectToVisible:last.bounds];
+    [controller.reviewScroll reflectScrolledClipView:controller.reviewScroll.contentView];
+    check(NSContainsRect(NSInsetRect(controller.reviewScroll.contentView.documentVisibleRect, -0.5, -0.5), lastRect),
+          @"The final long-duration range remains fully reachable through the inner list");
+    [controller.reviewScroll.contentView scrollToPoint:NSZeroPoint];
+    [controller.reviewScroll reflectScrolledClipView:controller.reviewScroll.contentView];
+    checkStickyChrome(controller);
+}
+
+static void renderSyntheticLayoutIfRequested(SSWorkflowViewController *controller, NSString *name) {
+    if (!getenv("SILENT_SNIP_CONTROLLER_LAYOUT_RENDER")) return;
+    NSString *directory = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"build/WorkflowPrototype/Window11"];
+    NSError *error;
+    check([NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:&error],
+          @"The optional synthetic layout-render directory is writable");
+    check([directory.stringByResolvingSymlinksInPath isEqual:directory.stringByStandardizingPath],
+          @"Optional layout render output does not traverse a symlink");
+    [controller.view setAppearance:[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]];
+    [controller.view layoutSubtreeIfNeeded];
+    [controller.view setNeedsDisplay:YES];
+    NSBitmapImageRep *bitmap = [controller.view bitmapImageRepForCachingDisplayInRect:controller.view.bounds];
+    check(bitmap != nil, @"The offscreen view can create an optional bitmap without a window");
+    [controller.view cacheDisplayInRect:controller.view.bounds toBitmapImageRep:bitmap];
+    NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    NSString *path = [directory stringByAppendingPathComponent:name];
+    check(png.length > 0 && [png writeToFile:path atomically:YES],
+          @"The optional synthetic eighteen-cut screenshot is saved");
+    fprintf(stdout, "Synthetic layout render: %s\n", path.UTF8String);
+}
+
+static void structuredEighteenCutReviewFitsNarrowAndWideWindows(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Synthetic layout project"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    NSDictionary *response = syntheticEighteenCutReview();
+    [client deliver:response busy:NO canApply:YES];
+    NSView *parent = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 480, 640)];
+    [parent addSubview:controller.view];
+    settleOffscreenLayout(parent, controller);
+    NSUInteger generation = controller.reviewGeneration;
+    NSUInteger contextGeneration = controller.contextGeneration;
+    NSString *marker = controller.cancelButton.accessibilityIdentifier;
+    for (NSNumber *width in @[@460, @480, @840]) {
+        [parent setFrameSize:NSMakeSize(width.doubleValue, 477)];
+        settleOffscreenLayout(parent, controller);
+        checkBodyWidth(controller);
+        checkNumericGroupArrangement(controller, width.doubleValue >= 700);
+        checkStructuredCutRows(controller, response[@"cuts"]);
+        if (width.integerValue == 840) {
+            NSRect visible = NSInsetRect(controller.scroll.contentView.documentVisibleRect, -0.5, -0.5);
+            NSRect review = [controller.reviewScroll convertRect:controller.reviewScroll.bounds toView:controller.content];
+            check(NSContainsRect(visible, review), @"The wide review uses the visible body area instead of a clipped or offscreen list");
+        }
+        if (width.integerValue != 480) renderSyntheticLayoutIfRequested(controller,
+            [NSString stringWithFormat:@"Synthetic-18Cuts-%ldx477.png", (long)width.integerValue]);
+    }
+    [client deliver:response busy:YES canApply:NO];
+    settleOffscreenLayout(parent, controller);
+    for (NSButton *row in controller.cutList.arrangedSubviews) check(!row.enabled,
+          @"Every structured checkbox disables while the reviewed request is pending");
+    check(!controller.applyButton.enabled && !controller.fields[0].enabled,
+          @"The compact presentation preserves busy Apply and settings guards");
+    [client deliver:response busy:NO canApply:YES];
+    settleOffscreenLayout(parent, controller);
+    checkStructuredCutRows(controller, response[@"cuts"]);
+    check(controller.reviewClient == client && controller.reviewGeneration == generation &&
+          controller.contextGeneration == contextGeneration && client.startCount == 1 && client.applyCommandCount == 0 &&
+          client.applyGestures.count == 0 && client.retryCount == 0 && controller.settings.loads.count == 1 &&
+          controller.settings.saves.count == 0 && [controller.cancelButton.accessibilityIdentifier isEqual:marker],
+          @"Resizing, list scrolling, and drawing eighteen ranges cannot rebind settings or dispatch backend work");
+    [controller.view removeFromSuperview];
+    closeController(controller);
+    groupCount += 1;
 }
 
 static NSString *longInformationalStatus(void) {
@@ -1430,6 +1644,7 @@ int main(void) {
         delayedTerminalCannotClaimTheNewSDKProject();
         offscreenParentResizeKeepsContentReachable();
         frameDrivenParentResizeKeepsContentReachable();
+        structuredEighteenCutReviewFitsNarrowAndWideWindows();
         informationalDetailsKeepReviewAuthorityUnchanged();
         longRecoveryDetailsStayVisibleWithoutAuthorizingAnotherApply();
         longCancellationDetailsDoNotSuggestApply();
