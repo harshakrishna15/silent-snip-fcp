@@ -2,11 +2,17 @@
 
 November 4, 2026. Branch: `codex/workflow-extension-prototype`.
 
-**Frontend 15 passed native empty/18-cut review and verified Apply with shorter window copy.** The **615 × 736-point** outer window and permanent **320-point** pane are preserved. Package/install checks and all **12** scoped preservation checks passed; worker 54, Audio Unit 29, and the worker ZIP are unchanged. Frontend 14's completed size-restoration/review/Apply proof and limits are retained below; size restoration still requires the helper and its existing Accessibility grant, with native resize controls remaining available. No new PCM or speed claim follows from this copy cleanup.
+**Frontend 16 passed native header/settings checks with the displayed library name removed.** Project title and playhead remain; SDK library identity, project settings, and review authorization are unchanged. Controller checks passed **33 groups / 5,304 assertions**, with package/install checks and all **12** scoped preservation checks passed. Worker 54, Audio Unit 29, and the worker ZIP are unchanged; the **615 × 736-point** restoration target and **320-point** pane remain. Frontend 15's completed review/Apply proof and earlier size-restoration evidence remain historical, with no new processing, PCM, or speed claim for this visual change.
 
 **Milestone 1 passed native validation in build 5** for the hosted window, project/library/playhead observation, independent per-project settings, restart/reopen persistence, and reachable controls. Those checks remain historical evidence; they did not run audio analysis, Share, or timeline edits.
 
-## Frontend 15: shorter window copy
+## Frontend 16: header cleanup
+
+Native inspection confirmed project title/playhead without the library name in the visible window or AX header. Saved fixture settings loaded, and the original project/clip, settings, enabled Gate/Limiter, and **75.933-second** playhead were restored. The **615 × 736-point** outer window and **320-point** table remain, with Analyze enabled and Apply disabled; the window was left open. SDK library URL/project UID still govern settings and verification.
+
+Controller checks passed **33 groups / 5,304 assertions**. `Package16.json`, `Installed-Package16.json`, `Install16.json`, and all **12** `After16-Preservation.json` checks passed; worker54/AU29/ZIP remain unchanged. Registration settled to one correct path without a manual rescue. Evidence is under `build/WorkflowPrototype/Window16/{Native16.json,Native16-Evidence-SHA256.json,Native-Final-Size.json}`. This was a header/settings/layout check: no new Analyze, Apply, PCM, startup, or throughput validation was run. Frontend-15 processing proof remains historical; protected preferences remain unverified.
+
+## Historical frontend 15: shorter window copy
 
 The permanent cleaned-copy sentence and routine loaded/ready text are removed. Normal review uses its existing target/counts summary without another status paragraph or informational Details button; raw informational text remains in the tooltip. Empty review says **Select a clip to analyze.** Save, changed-settings, and completion messages are shorter. Actionable errors, recovery instructions, snapshot hints, and unknown residual warnings retain their text/Details. Control names, units, project information, cut totals, review authority, and the fixed **320-point** table are unchanged.
 
@@ -198,16 +204,17 @@ If protected preference access later becomes available, compare parsed values se
 | --- | --- |
 | Apple Workflow Extensions SDK 1.0.3 installed | Verified metadata |
 | Production build-47 preservation baseline | Recorded before prototype installation |
-| Prototype packaging/build validation | Frontend-15 package/install/signature checks and all 12 scoped preservation checks passed; worker54/AU29/ZIP unchanged |
+| Prototype packaging/build validation | Frontend-16 package/install checks and all 12 scoped preservation checks passed; worker54/AU29/ZIP unchanged |
 | Native Final Cut extension load and project/playhead observation | Build 5 passed; earlier functional checks retained |
 | Native per-project settings persistence and isolation | Frontend 10 restored source settings through result-to-original navigation; build-5 reopen and build-3 restart evidence remain historical |
-| Native layout and control reachability | Frontend 15 empty/18-cut review and verified Apply passed at 615 × 736 points with a 320-point pane; frontend-14 reopen/restart/Zoom proof remains historical |
+| Native layout and control reachability | Frontend-16 project/playhead-only header and saved-settings checks passed; frontend-15 review/Apply and frontend-14 reopen/restart/Zoom proof remain historical |
 | Automated model, packaging, controller, and client checks | Worker 54: 652 Swift + final 8 focused sizing tests, 124 Python; frontend 14: controller 33 / 5,304, window client 7 / 158, review client 15 / 143 |
 | Native setup/preference comparison | AU29/single registration and accessible setup bytes/values passed; protected preferences and selected defaults remain unverified |
 | Native Workflow Analyze → review → Apply and audio fidelity | Frontend 7 / worker 51 passed five-minute Gate → Limiter/no-detector gaps and one-minute delay/detector/connected-role removal, with exact native PCM |
 | Historical frontend 10 name/layout/Details/waveform icon | Passed its recorded native scope; limitations above |
 | Historical frontend 11 compact layout / 18-cut Apply | Passed as recorded; no new PCM comparison or benchmark |
-| Frontend 15 copy cleanup | Controller 33 / 5,304 and native empty/18-cut review/Apply passed; one-cut/error/completed-label presentation is offline coverage |
+| Frontend 16 header cleanup | Controller 33 / 5,304, native header/settings, package/install and 12 preservation checks passed; no new processing run |
+| Historical frontend 15 copy cleanup | Controller 33 / 5,304 and native empty/18-cut review/Apply passed; one-cut/error/completed-label presentation is offline coverage |
 | Historical frontend 14 / worker 54 size restoration and permanent pane | Native reopen/restart, Zoom recovery, review selection, and verified Apply passed; no OS resize lock or new PCM comparison |
 | Historical frontend 13 compact layout / window size | Scoped native layout/Apply pass; manual size did not persist after restart; resize lock/fixed default not achieved |
 | Worker 53 audio-only primary PCM | Removal and real-gap modes passed native layout, exact PCM, metadata/source, and fresh post-Apply original checks |

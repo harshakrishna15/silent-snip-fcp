@@ -81,7 +81,6 @@
 @property (nonatomic, strong) FCPXTimeline *timeline;
 @property (nonatomic, strong) SSWorkflowSettingsBridge *settings;
 @property (nonatomic, strong) NSTextField *projectLabel;
-@property (nonatomic, strong) NSTextField *libraryLabel;
 @property (nonatomic, strong) NSTextField *playheadLabel;
 @property (nonatomic, strong) NSTextField *statusLabel;
 @property (nonatomic, strong) NSArray<NSTextField *> *fields;
@@ -201,20 +200,12 @@
     self.projectLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.projectLabel.accessibilityIdentifier = @"silentsnip.workflow.project";
     [self.projectLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    self.libraryLabel = [self label:@"" size:11 weight:NSFontWeightRegular];
-    self.libraryLabel.maximumNumberOfLines = 1;
-    self.libraryLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    self.libraryLabel.textColor = NSColor.secondaryLabelColor;
-    self.libraryLabel.accessibilityIdentifier = @"silentsnip.workflow.library";
-    [self.libraryLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.playheadLabel = [self label:@"Playhead —" size:11 weight:NSFontWeightRegular];
     self.playheadLabel.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
     self.playheadLabel.textColor = NSColor.secondaryLabelColor;
     self.playheadLabel.maximumNumberOfLines = 1;
     self.playheadLabel.accessibilityIdentifier = @"silentsnip.workflow.playhead";
-    NSStackView *metadata = [NSStackView stackViewWithViews:@[self.libraryLabel, self.playheadLabel]];
-    metadata.spacing = 12;
-    NSStackView *project = [NSStackView stackViewWithViews:@[self.projectLabel, metadata]];
+    NSStackView *project = [NSStackView stackViewWithViews:@[self.projectLabel, self.playheadLabel]];
     project.orientation = NSUserInterfaceLayoutOrientationVertical;
     project.alignment = NSLayoutAttributeLeading;
     project.spacing = 3;
@@ -431,7 +422,6 @@
         [header.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-16],
         [header.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
         [self.projectLabel.widthAnchor constraintEqualToAnchor:project.widthAnchor],
-        [metadata.widthAnchor constraintEqualToAnchor:project.widthAnchor],
         [self.footerView.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
         [self.footerView.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
         [self.footerView.bottomAnchor constraintEqualToAnchor:self.contentColumn.bottomAnchor],
@@ -718,7 +708,6 @@
         ![context[@"libraryURL"] isEqual:self.completionContext[@"libraryURL"]])) [self clearCompletionMessage];
     self.projectLabel.stringValue = context[@"projectName"] ?: @"Open a project in Final Cut Pro";
     self.projectLabel.toolTip = self.projectLabel.stringValue;
-    self.libraryLabel.stringValue = context[@"libraryName"] ?: @"";
     [self refreshPlayhead];
     // Proxy refreshes can repeat for the same project. Preserve unsaved edits
     // and an in-flight load instead of replacing either with saved defaults.

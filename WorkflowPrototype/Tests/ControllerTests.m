@@ -1579,7 +1579,7 @@ static void checkStructuredCutRows(SSWorkflowViewController *controller, NSArray
 
 static void renderSyntheticLayoutIfRequested(SSWorkflowViewController *controller, NSString *name) {
     if (!getenv("SILENT_SNIP_CONTROLLER_LAYOUT_RENDER")) return;
-    NSString *directory = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"build/WorkflowPrototype/Window15"];
+    NSString *directory = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"build/WorkflowPrototype/Window16"];
     NSError *error;
     check([NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:&error],
           @"The optional synthetic layout-render directory is writable");

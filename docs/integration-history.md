@@ -7,6 +7,10 @@ Product prose uses the current Silent Snip name; recorded project names and arti
 This is an archived snapshot. Statements labeled “current” below describe their original revision, not the latest source. Use [workflow.md](workflow.md) and [overhaul-progress.md](overhaul-progress.md) for current behavior and verification status. All shell commands assume the workspace root.
 
 
+## November 4, 2026 addendum: frontend 16 header cleanup
+
+Frontend 16 passed native visible/AX header checks with only project title/playhead, plus saved-fixture settings checks. SDK library URL/project UID still govern settings and authorization. The original project/clip, settings, enabled Gate/Limiter, and **75.933-second** playhead were restored, with the window open, Analyze enabled, Apply disabled, **615 × 736-point** outer bounds, and the **320-point** pane. Controller **33 / 5,304**, package/install checks, and all **12** `After16-Preservation.json` checks passed; worker54/AU29/ZIP are unchanged. Registration settled to one correct path without manual rescue. `Native16.json` and `Native16-Evidence-SHA256.json` are under `build/WorkflowPrototype/Window16`. No new Analyze/Apply, PCM, startup, or throughput validation was run; frontend-15 processing proof below remains historical, and protected preferences remain unverified.
+
 ## November 4, 2026 addendum: frontend 15 copy cleanup
 
 Frontend 15 removes the permanent cleaned-copy sentence, routine idle/ready prose, and normal informational Details paragraphs/buttons. The existing summary retains target/counts; short operational messages replace redundant prose, while errors, recovery, snapshot hints, and unknown residual warnings remain actionable. The fixed **320-point** table and all review controls/authority remain unchanged.
