@@ -59,9 +59,9 @@ delete_preferences() {
 require_stopped() {
   local name
   [[ "$dry_run" == false ]] || return 0
-  for name in 'Final Cut Pro' SilentSnip SilentSnipAudio; do
+  for name in 'Final Cut Pro' SilentSnip SilentSnipAudio SilentSnipWorkflowPrototype SilentSnipWorkflowExtension; do
     if /usr/bin/pgrep -x "$name" >/dev/null; then
-      fail 'Quit Final Cut Pro, Silent Snip, and its Audio Unit before uninstalling. No process was stopped.'
+      fail 'Quit Final Cut Pro, Silent Snip, and its extensions before uninstalling. No process was stopped.'
     else
       local status=$?
       [[ "$status" == 1 ]] || fail 'Cannot inspect running apps. Retry with process-list access; no further changes were made.'
@@ -74,6 +74,7 @@ pluginkit=/usr/bin/pluginkit
 plistbuddy=/usr/libexec/PlistBuddy
 apps=()
 extensions=()
+extension_identities=()
 preference_domains=()
 
 # Find app copies produced by normal, staged, or diagnostic builds. Never follow
@@ -89,15 +90,22 @@ if [[ -d "$build_dir" ]]; then
     [[ -f "$app/Contents/Info.plist" ]] || continue
     identity=$("$plistbuddy" -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist") || fail "Cannot inspect bundle: $app"
     extension=''
+    extension_identity=''
     case "$identity" in
       local.silentsnip.helper|local.silentsnip.helper.candidate) ;;
-      local.silentsnip.app)
+      local.silentsnip.app|local.silentsnip.workflowprototype)
         [[ ! -L "$app/Contents" && ! -L "$app/Contents/PlugIns" ]] || fail "Audio bundle contains a symlinked extension parent; nothing was removed: $app"
-        extension="$app/Contents/PlugIns/SilentSnipAudio.appex"
+        if [[ "$identity" == local.silentsnip.app ]]; then
+          extension="$app/Contents/PlugIns/SilentSnipAudio.appex"
+          expected_extension=local.silentsnip.app.audio
+        else
+          extension="$app/Contents/PlugIns/SilentSnipWorkflowExtension.appex"
+          expected_extension=local.silentsnip.workflowprototype.extension
+        fi
         if [[ -e "$extension" || -L "$extension" ]]; then
           [[ ! -L "$extension" && -d "$extension" ]] || fail "Cannot safely inspect extension: $extension"
           extension_identity=$("$plistbuddy" -c 'Print :CFBundleIdentifier' "$extension/Contents/Info.plist") || fail "Cannot inspect extension: $extension"
-          [[ "$extension_identity" == local.silentsnip.app.audio ]] || fail "Unexpected extension identity at $extension; nothing was removed."
+          [[ "$extension_identity" == "$expected_extension" ]] || fail "Unexpected extension identity at $extension; nothing was removed."
         else
           extension=''
         fi
@@ -106,6 +114,7 @@ if [[ -d "$build_dir" ]]; then
     esac
     apps+=("$app")
     extensions+=("$extension")
+    extension_identities+=("$extension_identity")
   done < "$manifest"
 fi
 
@@ -120,7 +129,7 @@ if [[ "$remove_data" == true ]]; then
     "$user_library/Application Scripts"; do
     [[ ! -L "$parent" ]] || fail "Data directory is a symlink; remove its app data manually: $parent"
   done
-  for identity in local.silentsnip.helper local.silentsnip.helper.candidate local.silentsnip.app local.silentsnip.app.audio; do
+  for identity in local.silentsnip.helper local.silentsnip.helper.candidate local.silentsnip.app local.silentsnip.app.audio local.silentsnip.workflowprototype local.silentsnip.workflowprototype.extension; do
     if /usr/bin/defaults read "$identity" >/dev/null 2>&1; then
       preference_domains+=("$identity")
     elif [[ -e "$user_library/Preferences/$identity.plist" || -L "$user_library/Preferences/$identity.plist" ]]; then
@@ -142,8 +151,8 @@ for ((index=0; index<${#apps[@]}; index++)); do
   extension="${extensions[$index]}"
   if [[ -n "$extension" ]]; then
     if ! run "$pluginkit" -r "$extension"; then
-      registry=$("$pluginkit" -m -A -D -v -i local.silentsnip.app.audio) || fail 'Cannot verify Audio Unit removal; app bundles were kept.'
-      [[ -z "${registry//[[:space:]]/}" ]] || fail "Audio Unit removal failed and registrations remain; app bundles were kept: $extension"
+      registry=$("$pluginkit" -m -A -D -v -i "${extension_identities[$index]}") || fail 'Cannot verify extension removal; app bundles were kept.'
+      [[ -z "${registry//[[:space:]]/}" ]] || fail "Extension removal failed and registrations remain; app bundles were kept: $extension"
     fi
   fi
   run "$lsregister" -u "${apps[$index]}" || fail 'App unregistration failed; app bundles were kept. Retry uninstall or run Scripts/register-local.sh to restore registration.'
@@ -179,10 +188,12 @@ if [[ "$remove_data" == true ]]; then
   fi
   legacy_data="$user_library/Application Support/Silent Snip Audio"
   if [[ -e "$legacy_data" || -L "$legacy_data" ]]; then run /bin/rm -rf -- "$legacy_data"; fi
+  workflow_data="$user_library/Application Support/Silent Snip Workflow Prototype"
+  if [[ -e "$workflow_data" || -L "$workflow_data" ]]; then run /bin/rm -rf -- "$workflow_data"; fi
   for identity in ${preference_domains[@]+"${preference_domains[@]}"}; do
     delete_preferences "$identity"
   done
-  for identity in local.silentsnip.helper local.silentsnip.helper.candidate local.silentsnip.app local.silentsnip.app.audio; do
+  for identity in local.silentsnip.helper local.silentsnip.helper.candidate local.silentsnip.app local.silentsnip.app.audio local.silentsnip.workflowprototype local.silentsnip.workflowprototype.extension; do
     for path in "$user_library/Containers/$identity" "$user_library/Caches/$identity" \
       "$user_library/Saved Application State/$identity.savedState" "$user_library/Application Scripts/$identity"; do
       if [[ -e "$path" || -L "$path" ]]; then run /bin/rm -rf -- "$path"; fi

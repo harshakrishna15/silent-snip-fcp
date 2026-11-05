@@ -4,6 +4,76 @@ import XCTest
 @testable import SilentSnipMac
 
 @MainActor final class AnalysisReviewCoordinatorTests: XCTestCase {
+    func testRestoredWorkflowVerificationPublishesFreshGestureOnEveryState() async throws {
+        let requestID = UUID(), view = UUID()
+        func request(_ gesture: UUID) throws -> AnalyzeRequest {
+            AnalyzeRequest(id: requestID, settings: .defaults, outputMode: .remove,
+                workflowOrigin: try WorkflowReviewOrigin(view: view, gesture: gesture,
+                    libraryURL: URL(fileURLWithPath: "/tmp/Recovery.fcpbundle"), projectUID: "source", projectName: "Source"))
+        }
+        let old = try request(UUID()), fresh = try request(UUID())
+        var responses: [ReviewResponse] = []
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in throw ReviewError.staleProject },
+            verificationOperation: { _, _ in }, canRetryVerification: { $0 == requestID },
+            emit: { responses.append($0.response) }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.restoreVerification(old)
+        try await waitUntil { responses.last?.state == "completed" }
+        XCTAssertTrue(responses.allSatisfy { $0.workflowGesture == old.workflowOrigin?.gesture })
+        responses.removeAll()
+        coordinator.restoreVerification(fresh)
+        try await waitUntil { responses.last?.state == "completed" }
+        XCTAssertEqual(Set(responses.map(\.state)), ["verifying", "completed"])
+        XCTAssertTrue(responses.allSatisfy { $0.request == requestID && $0.workflowGesture == fresh.workflowOrigin?.gesture })
+        XCTAssertNotEqual(old.workflowOrigin?.gesture, fresh.workflowOrigin?.gesture)
+    }
+
+    func testWorkflowExplicitUpdateUsesSnapshotPreservesOriginAndNavigatesWithoutApplying() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: fixture.directory.appendingPathComponent("Fixture.fcpbundle"),
+            projectUID: "workflow-project", projectName: "Workflow project")
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove, workflowOrigin: origin)
+        let initial = ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        var latest: ReviewResponse?, checked: AnalyzeRequest?, applied: AnalyzeRequest?, navigationCount = 0, hostChecks = 0
+        let edit = UUID()
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in initial },
+            applyOperation: { request, result, _ in
+                XCTAssertTrue(result.usesAudioSnapshot); applied = request
+            }, authorizeApply: { _ in true }, recalculationOperation: { _, _, _ in hostChecks += 1 },
+            authorizeRecalculation: { $0.view == origin.view && $0.settingsEdit == edit },
+            localPreviewOperation: { request, result, _ in
+                XCTAssertTrue(result.usesAudioSnapshot); checked = request
+            }, highlightOperation: { request, _, _ in
+                XCTAssertEqual(request.workflowOrigin, origin); navigationCount += 1
+            }, emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        XCTAssertEqual(latest?.canUpdateCuts, true)
+        let revision = try XCTUnwrap(latest).revision
+        let update = ReviewCommand(request: request.id, command: .recalculate, expectedRevision: revision, view: origin.view,
+            settings: .init(threshold: -35, minimum: 0.7, before: 0.05, after: 0.15), output: "gaps",
+            settingsEdit: edit, settingsSequence: 1, verifySettings: true, localPreview: true)
+        coordinator.handle(update)
+        try await waitUntil { latest?.state == "review" && latest?.settingsEdit == edit }
+        XCTAssertEqual(checked?.workflowOrigin, origin)
+        XCTAssertEqual(checked?.outputMode, .gaps)
+        XCTAssertEqual(checked?.settings.minimumSilenceDuration, 0.7)
+        XCTAssertEqual(hostChecks, 0)
+        XCTAssertEqual(latest?.usesAudioSnapshot, true)
+        coordinator.handle(update)
+        let cut = try XCTUnwrap(latest?.cuts.first)
+        coordinator.handle(.init(request: request.id, command: .highlight, cutID: cut.id,
+            expectedRevision: latest?.revision, view: origin.view))
+        try await waitUntil { navigationCount == 1 && latest?.state == "review" }
+        XCTAssertNil(applied)
+        XCTAssertTrue(try XCTUnwrap(latest?.cuts.first).included)
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: latest?.revision,
+            view: origin.view, applyGesture: UUID()))
+        try await waitUntil { latest?.state == "completed" }
+        XCTAssertEqual(applied, checked)
+    }
+
     func testWorkflowReviewRetainsOriginAndTargetThroughSelectionAndOneApply() async throws {
         let fixture = try makeFixture(); defer { fixture.remove() }
         let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
@@ -40,6 +110,31 @@ import XCTest
         XCTAssertEqual(latest?.targetClipName, "Voice")
         coordinator.handle(command)
         XCTAssertEqual(applyCount, 1)
+    }
+
+    func testWorkflowUpdateRejectsOtherViewsOutOfRangeSettingsAndUnverifiedCommands() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: fixture.directory.appendingPathComponent("Fixture.fcpbundle"),
+            projectUID: "workflow-project", projectName: "Workflow project")
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove, workflowOrigin: origin)
+        var latest: ReviewResponse?, updates = 0
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
+            ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        }, authorizeRecalculation: { _ in true }, localPreviewOperation: { _, _, _ in updates += 1 },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let revision = try XCTUnwrap(latest).revision
+        for (view, before, verify, local) in [(UUID(), 0.1, true, true),
+            (origin.view, 2.1, true, true), (origin.view, 0.1, false, true), (origin.view, 0.1, true, false)] {
+            coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: revision, view: view,
+                settings: .init(threshold: -35, minimum: 0.7, before: before, after: 0.1), output: "gaps",
+                settingsEdit: UUID(), settingsSequence: 1, verifySettings: verify, localPreview: local))
+            XCTAssertEqual(updates, 0)
+            XCTAssertEqual(coordinator.currentRequest, request)
+            XCTAssertEqual(latest?.revision, revision)
+        }
     }
 
     private func settingsCommand(_ request: AnalyzeRequest, revision: Int, view: UUID, sequence: Int,

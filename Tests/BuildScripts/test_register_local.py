@@ -11,7 +11,8 @@ REPO = Path(__file__).resolve().parents[2]
 
 class RegistrationTests(unittest.TestCase):
     def run_registration(self, host_running=False, check_only=False, cleanup_failure=False,
-                         missing_registration=False, add_failure=False, combined=False, explicit=False, candidate=False):
+                         missing_registration=False, add_failure=False, combined=False, explicit=False, candidate=False,
+                         workflow=False, package_failure=False, retired_registration=False, wrong_frontend=False):
         with tempfile.TemporaryDirectory(prefix="silentsnip-register-") as directory:
             root = Path(directory)
             (root / "Scripts").mkdir()
@@ -29,7 +30,12 @@ class RegistrationTests(unittest.TestCase):
             combined_path = "Copied/Silent Snip.app" if explicit else "build/App/Silent Snip.app"
             if combined:
                 bundles[combined_path] = "local.silentsnip.app"
-                bundles[combined_path + "/Contents/PlugIns/SilentSnipAudio.appex"] = "local.silentsnip.app.audio"
+                if not workflow:
+                    bundles[combined_path + "/Contents/PlugIns/SilentSnipAudio.appex"] = "local.silentsnip.app.audio"
+            frontend_path = "Copied/Workflow.app" if explicit else "build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app"
+            if workflow:
+                bundles[frontend_path] = "other.app" if wrong_frontend else "local.silentsnip.workflowprototype"
+                bundles[frontend_path + "/Contents/PlugIns/SilentSnipWorkflowExtension.appex"] = "local.silentsnip.workflowprototype.extension"
             for name, identity in bundles.items():
                 path = root / name / "Contents/Info.plist"
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,7 +60,9 @@ class RegistrationTests(unittest.TestCase):
 printf "pluginkit %s\\n" "$*" >> "$CALL_LOG"
 if [[ "$1" == -r ]]; then exit "$CLEANUP_STATUS"; fi
 if [[ "$1" == -a ]]; then exit "$ADD_STATUS"; fi
-if [[ "$1" == -m && "$MISSING_REGISTRATION" == 0 ]]; then printf '%s\\n' "$REGISTERED_PATH"; fi
+if [[ "$1" == -m && "$WORKFLOW" == 1 && "$*" == *local.silentsnip.app.audio ]]; then
+  if [[ "$RETIRED_REGISTRATION" == 1 ]]; then printf '%s\\n' "$RETIRED_PATH"; fi
+elif [[ "$1" == -m && "$MISSING_REGISTRATION" == 0 ]]; then printf '%s\\n' "$REGISTERED_PATH"; fi
 exit 0
 ''',
                 "lsregister": '''#!/bin/bash
@@ -73,14 +81,18 @@ exit 0
                 script = script.replace(original, str(tool))
             path = root / "Scripts/register-local.sh"
             path.write_text(script)
+            (root / "Scripts/check-workflow-prototype.py").write_text("import os, sys; sys.exit(int(os.environ['PACKAGE_FAILURE']))\n")
             log = root / "calls"
             options = (["--check-only"] if check_only else []) + (["--app", str(root / combined_path)] if explicit else [])
-            registered = (root / combined_path / "Contents/PlugIns/SilentSnipAudio.appex") if combined else (root / "build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app/Contents/PlugIns/SilentSnipAudio.appex")
+            if workflow and explicit: options += ["--frontend", str(root / frontend_path)]
+            registered = (root / frontend_path / "Contents/PlugIns/SilentSnipWorkflowExtension.appex") if workflow else ((root / combined_path / "Contents/PlugIns/SilentSnipAudio.appex") if combined else (root / "build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app/Contents/PlugIns/SilentSnipAudio.appex"))
             result = subprocess.run(["/bin/bash", str(path)] + options,
                 env=dict(os.environ, HOST_STATUS="0" if host_running else "1", CALL_LOG=str(log),
                          CLEANUP_STATUS="1" if cleanup_failure else "0", ADD_STATUS="1" if add_failure else "0",
                          MISSING_REGISTRATION="1" if missing_registration else "0",
-                         REGISTERED_PATH=str(registered)),
+                         REGISTERED_PATH=str(registered), WORKFLOW="1" if workflow else "0",
+                         PACKAGE_FAILURE="1" if package_failure else "0", RETIRED_REGISTRATION="1" if retired_registration else "0",
+                         RETIRED_PATH=str(root / combined_path / "Contents/PlugIns/SilentSnipAudio.appex")),
                 capture_output=True, text=True)
             return result, log.read_text().splitlines() if log.exists() else []
 
@@ -143,6 +155,40 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any(call.startswith("lsregister -f ") and "/Copied/Silent Snip.app" in call for call in calls))
         result, calls = self.run_registration(combined=True, explicit=True, check_only=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [])
+
+    def test_au_free_worker_and_frontend_are_registered_and_old_local_au_retired(self):
+        result, calls = self.run_registration(combined=True, workflow=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        published = [call for call in calls if call.startswith("lsregister -f ")]
+        self.assertEqual(len(published), 2)
+        self.assertIn("/build/App/Silent Snip.app", published[0])
+        self.assertIn("Silent Snip Workflow Prototype.app", published[1])
+        self.assertTrue(any(call.startswith("pluginkit -r ") and "/build/App/Silent Snip.app/Contents/PlugIns/SilentSnipAudio.appex" in call for call in calls))
+        added = [call for call in calls if call.startswith("pluginkit -a ")]
+        self.assertEqual(len(added), 1)
+        self.assertIn("SilentSnipWorkflowExtension.appex", added[0])
+
+    def test_copied_worker_frontend_pair_can_be_explicitly_registered(self):
+        result, calls = self.run_registration(combined=True, workflow=True, explicit=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any("/Copied/Workflow.app" in call and call.startswith("lsregister -f ") for call in calls))
+
+    def test_pair_package_failure_or_wrong_frontend_prevents_all_registration(self):
+        for options in [dict(package_failure=True), dict(wrong_frontend=True)]:
+            result, calls = self.run_registration(combined=True, workflow=True, **options)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls, [])
+
+    def test_retained_retired_au_registration_prevents_success(self):
+        result, calls = self.run_registration(combined=True, workflow=True, retired_registration=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("retired local Audio Unit registration remains", result.stderr)
+        self.assertFalse(any(call.startswith("pluginkit -a ") for call in calls))
+
+    def test_workflow_check_only_performs_no_registration(self):
+        result, calls = self.run_registration(combined=True, workflow=True, check_only=True, host_running=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls, [])
 

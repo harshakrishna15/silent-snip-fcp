@@ -17,6 +17,7 @@
 - (void)postObject:(NSString *)object name:(NSString *)name;
 - (void)receive:(NSNotification *)notification;
 - (void)receiveCapability:(NSNotification *)notification;
+- (void)receiveConnection:(NSNotification *)notification;
 - (void)poll;
 - (void)publish;
 - (void)activateHostForUserRequest:(void (^)(NSError *))completion;
@@ -165,10 +166,15 @@ static NSDictionary *cut(BOOL included) {
 }
 static NSMutableDictionary *response(SSOfflineClient *client, NSInteger revision, NSString *state, BOOL included) {
     BOOL review = [state isEqual:@"review"];
-    return [@{@"version": @1, @"request": client.requestID, @"revision": @(revision), @"state": state,
+    NSMutableDictionary *value = [@{@"version": @1, @"request": client.requestID, @"revision": @(revision), @"state": state,
         @"message": @"Status\nwith details", @"summary": @"One candidate", @"targetClipName": @"Narration",
         @"cuts": @[cut(included)], @"canApply": review && included ? @YES : @NO, @"canChangeSelection": @(review),
         @"canCancel": @YES, @"canHighlight": @NO, @"canRetryVerification": @NO} mutableCopy];
+    if ([client.launchedRequest.host isEqual:@"workflow-verify"]) {
+        NSURLComponents *parts = [NSURLComponents componentsWithURL:client.launchedRequest resolvingAgainstBaseURL:NO];
+        for (NSURLQueryItem *item in parts.queryItems) if ([item.name isEqual:@"gesture"]) value[@"workflowGesture"] = item.value;
+    }
+    return value;
 }
 static NSNotification *notification(NSDictionary *value, NSDictionary *userInfo) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
@@ -557,6 +563,133 @@ static void synchronousUIDetachCannotDispatch(void) {
     finish(c); groups += 1;
 }
 
+static NSMutableDictionary *snapshotResponse(SSOfflineClient *c, NSInteger revision) {
+    NSMutableDictionary *value = response(c, revision, @"review", YES);
+    value[@"canUpdateCuts"] = @YES; value[@"canHighlight"] = @YES;
+    return value;
+}
+static void updateCutsRetainsAndAcknowledgesSnapshot(void) {
+    SSOfflineClient *c = client(); start(c, settings()); deliver(c, snapshotResponse(c, 1));
+    require(c.canUpdateCuts && c.canHighlight, @"Snapshot review exposes explicit update and navigation capabilities");
+    NSUInteger launches = c.analysisLaunches;
+    [c markSettingsDirty]; [c markSettingsDirty];
+    require(c.canUpdateCuts && !c.canApply && !c.canHighlight && !c.canChangeSelection && !c.busy,
+        @"An edited draft retains snapshot update but invalidates every stale cut action");
+    require(commandCount(c, @"preview") == 1 && commandCount(c, @"recalculate") == 0 && commandCount(c, @"cancel") == 0,
+        @"Repeated typing only hides the stale overlay once, retaining measurements without implicit recalculation");
+    deliver(c, snapshotResponse(c, 2));
+    require(!c.canApply && c.canUpdateCuts && !c.canHighlight, @"Status polling cannot revive a locally dirty review");
+    NSMutableDictionary *invalid = [settings() mutableCopy]; invalid[@"minimumSilenceDuration"] = @YES;
+    require(![c updateCutsWithSettings:invalid gesture:NSUUID.UUID.UUIDString] && commandCount(c, @"recalculate") == 0,
+        @"Invalid update settings cannot dispatch a recalculation");
+    NSString *edit = NSUUID.UUID.UUIDString;
+    require([c updateCutsWithSettings:settings() gesture:edit] && c.busy && !c.canApply && !c.canUpdateCuts,
+        @"Only explicit Update Cuts submits the edited snapshot and consumes its actions");
+    NSDictionary *command = c.posts.lastObject[@"packet"];
+    require([command[@"command"] isEqual:@"recalculate"] && [command[@"settingsEdit"] isEqual:edit] &&
+        [command[@"expectedRevision"] isEqual:@2] && [command[@"settingsSequence"] isEqual:@1] &&
+        [command[@"localPreview"] isEqual:@YES] && [command[@"verifySettings"] isEqual:@YES] &&
+        [command[@"settings"][@"threshold"] isEqual:settings()[@"thresholdDBFS"]] &&
+        [command[@"output"] isEqual:@"gaps"], @"Recalculation pins immutable settings, output, edit identity and review revision");
+    require([c.updates.lastObject[@"updateCutsAvailable"] isEqual:@YES], @"UI can retain its pending native Update marker while actions are busy");
+    [c poll]; require(commandCount(c, @"recalculate") == 2 && c.analysisLaunches == launches,
+        @"Dropped update packets retry the same command without another Analyze URL or Share request");
+    deliver(c, snapshotResponse(c, 3)); require(c.busy && !c.canApply, @"An unrelated status cannot acknowledge this settings edit");
+    NSMutableDictionary *ack = snapshotResponse(c, 3); ack[@"settingsEdit"] = edit; deliver(c, ack);
+    require(!c.busy && c.canApply && c.canUpdateCuts && c.canHighlight,
+        @"The exact newer settings-edit acknowledgment restores current review authority");
+    [c markSettingsDirty]; [c updateCutsWithSettings:settings() gesture:NSUUID.UUID.UUIDString];
+    require([c.posts.lastObject[@"packet"][@"settingsSequence"] isEqual:@2], @"Later updates use monotonically increasing edit sequence numbers");
+    finish(c); groups += 1;
+}
+static void updateAndNavigationActivationRemainRevisionBound(void) {
+    SSOfflineClient *c = client(); start(c, settings()); deliver(c, snapshotResponse(c, 1)); [c markSettingsDirty];
+    c.deferActivation = YES;
+    [c updateCutsWithSettings:settings() gesture:NSUUID.UUID.UUIDString]; [c completeActivation:activationFailure()];
+    require(c.canUpdateCuts && !c.canApply && !c.busy && commandCount(c, @"recalculate") == 0,
+        @"Failed update activation retains the draft and snapshot with no command");
+    [c updateCutsWithSettings:settings() gesture:NSUUID.UUID.UUIDString]; deliver(c, snapshotResponse(c, 2)); [c completeActivation:nil];
+    require(commandCount(c, @"recalculate") == 0 && c.canUpdateCuts, @"A changed revision during activation requires another explicit update");
+    finish(c);
+    c = client(); start(c, settings()); deliver(c, snapshotResponse(c, 1));
+    require(![c highlightCut:@"missing"] && commandCount(c, @"highlight") == 0, @"An unknown cut cannot navigate");
+    require([c highlightCut:@"cut-1"] && c.busy && !c.canApply, @"Go to Cut blocks conflicting actions until navigation acknowledgment");
+    NSDictionary *command = c.posts.lastObject[@"packet"];
+    require([command[@"command"] isEqual:@"highlight"] && [command[@"cutID"] isEqual:@"cut-1"] && [command[@"expectedRevision"] isEqual:@1],
+        @"Navigation binds the exact reviewed cut and revision");
+    [c poll]; [c poll]; require(commandCount(c, @"highlight") == 1 && commandCount(c, @"apply") == 0,
+        @"Navigation sends once and polling cannot repeatedly move the playhead or apply edits");
+    deliver(c, snapshotResponse(c, 1)); require(c.busy, @"An old heartbeat does not acknowledge navigation");
+    deliver(c, response(c, 2, @"navigating", YES)); require(c.busy, @"Navigation progress retains the operation guard");
+    deliver(c, snapshotResponse(c, 3)); require(!c.busy && c.canApply && c.canHighlight, @"Navigation completion restores review and inclusion choices");
+    c.deferActivation = YES; [c highlightCut:@"cut-1"]; deliver(c, snapshotResponse(c, 4)); [c completeActivation:nil];
+    require(commandCount(c, @"highlight") == 1, @"A changed revision during activation cannot navigate a stale cut");
+    [c markSettingsDirty]; require(![c highlightCut:@"cut-1"], @"Dirty cuts remain unavailable for navigation");
+    finish(c); groups += 1;
+}
+static BOOL recover(SSOfflineClient *c, NSURL *result) {
+    return [c verifyExistingResultURL:result libraryURL:[NSURL fileURLWithPath:@"/Test/Cutdown Integration.fcpbundle"]
+        projectUID:@"project-A" projectName:@"Project & 20%" gesture:@"EA97943A-27BB-48BE-BB14-FB4F30314D52"];
+}
+static NSDictionary *recoveryConnection(void) {
+    return @{@"version": @1, @"view": @"2686A7A1-BC05-4885-82A2-C9EE8A096F45",
+        @"request": @"2A2937F3-93E5-4D3F-9CC9-26E591A337B6", @"output": @"remove",
+        @"gesture": @"EA97943A-27BB-48BE-BB14-FB4F30314D52",
+        @"settings": @{@"threshold": @-40, @"minimum": @0.5, @"before": @0.1, @"after": @0.1}};
+}
+static void explicitRecoveryAdoptsOnlyReadOnlyResult(void) {
+    SSOfflineClient *c = client(); NSURL *result = [NSURL fileURLWithPath:@"/Test/Result 20%/Silent Snip.fcpxml"];
+    require(!recover(c, [NSURL URLWithString:@"https://example.invalid/Silent%20Snip.fcpxml"]) &&
+        !recover(c, [NSURL fileURLWithPath:@"/Test/other.fcpxml"]) && c.analysisLaunches == 0,
+        @"Recovery rejects nonlocal or wrong-named files before launching");
+    [c receiveConnection:notification(recoveryConnection(), nil)]; require(!c.requestID, @"Unsolicited connection messages cannot adopt any job");
+    require(recover(c, result) && c.busy && !c.canCancel && c.analysisLaunches == 1,
+        @"Explicit recovery launches one pinned read-only request and waits for its saved identity");
+    NSURLComponents *parts = [NSURLComponents componentsWithURL:c.launchedRequest resolvingAgainstBaseURL:NO];
+    NSMutableDictionary *fields = [NSMutableDictionary new]; for (NSURLQueryItem *item in parts.queryItems) fields[item.name] = item.value;
+    require([parts.host isEqual:@"workflow-verify"] && fields.count == 6 && [fields[@"result"] isEqual:result.absoluteString] &&
+        [fields[@"project"] isEqual:@"project-A"] && fields[@"gesture"] && !fields[@"request"],
+        @"Recovery URL carries only the chosen result and verified native/project identity");
+    NSString *pending = c.requestID;
+    deliver(c, snapshotResponse(c, 5)); require([c.requestID isEqual:pending] && !c.canApply,
+        @"Ordinary review responses cannot substitute for explicit recovery adoption");
+    NSMutableDictionary *wrong = [recoveryConnection() mutableCopy]; wrong[@"view"] = NSUUID.UUID.UUIDString;
+    [c receiveConnection:notification(wrong, nil)]; require([c.requestID isEqual:pending], @"Another view cannot bind the selected result");
+    wrong = [recoveryConnection() mutableCopy]; wrong[@"gesture"] = NSUUID.UUID.UUIDString;
+    [c receiveConnection:notification(wrong, nil)]; require([c.requestID isEqual:pending], @"A delayed earlier recovery gesture cannot adopt the wrong saved result");
+    wrong = [recoveryConnection() mutableCopy]; wrong[@"settings"] = @{@"threshold": @YES};
+    [c receiveConnection:notification(wrong, nil)]; require([c.requestID isEqual:pending], @"Malformed restored settings cannot adopt a result");
+    [c receiveConnection:notification(recoveryConnection(), nil)];
+    require([c.requestID isEqual:recoveryConnection()[@"request"]] && [c.posts.lastObject[@"packet"][@"command"] isEqual:@"status"],
+        @"A matching reply adopts the saved request and immediately polls its status");
+    NSUInteger updates = c.updates.count;
+    NSMutableDictionary *stale = response(c, 99, @"completed", YES);
+    [stale removeObjectForKey:@"workflowGesture"]; deliver(c, stale);
+    stale[@"workflowGesture"] = NSUUID.UUID.UUIDString; deliver(c, stale);
+    require(c.busy && c.updates.count == updates, @"A delayed prior Apply/verification terminal cannot finish or poison fresh recovery");
+    deliver(c, snapshotResponse(c, 1));
+    require(!c.canApply && !c.canChangeSelection && !c.canUpdateCuts && !c.canHighlight &&
+        ![c sendApplyWithGesture:NSUUID.UUID.UUIDString] && ![c highlightCut:@"cut-1"],
+        @"An adopted verification result never gains timeline editing or stale cut authority");
+    deliver(c, response(c, 2, @"verifying", YES)); deliver(c, response(c, 3, @"completed", YES));
+    require(!c.busy && commandCount(c, @"apply") == 0 && c.analysisLaunches == 1 &&
+        [c.updates.lastObject[@"verificationOnly"] isEqual:@YES],
+        @"Restart recovery observes and labels verification without another Analyze or Apply/import");
+    finish(c);
+    c = client(); recover(c, result);
+    NSDictionary *error = @{@"version": @1, @"view": @"2686A7A1-BC05-4885-82A2-C9EE8A096F45", @"gesture": @"EA97943A-27BB-48BE-BB14-FB4F30314D52", @"error": @"Saved artifacts changed."};
+    [c receiveConnection:notification(error, nil)]; require(c.failures.count == 1 && !c.busy && commandCount(c, @"apply") == 0,
+        @"An explicit recovery connection error releases UI without inventing an edit"); finish(c);
+    c = client(); recover(c, result); c.clock = [c.clock dateByAddingTimeInterval:16]; [c poll];
+    [c receiveConnection:notification(recoveryConnection(), nil)];
+    require(c.failures.count == 1 && !c.busy && ![c.requestID isEqual:recoveryConnection()[@"request"]],
+        @"A late recovery connection cannot revive a timed-out operation"); finish(c);
+    c = client(); c.deferActivation = YES; recover(c, result); [c cancel]; [c completeActivation:nil];
+    require(c.analysisLaunches == 0 && commandCount(c, @"cancel") == 0 && !c.busy,
+        @"Cancellation before recovery dispatch consumes activation without sending a fabricated worker identity"); finish(c);
+    groups += 1;
+}
+
 int main(void) {
     @autoreleasepool {
         targetedLaunchAndURLBinding(); quietWindowPreparationUsesOnlyThePinnedHelper(); invalidPreflightNeverDispatches(); helperAmbiguityAndOldInstalledCopy();
@@ -565,6 +698,7 @@ int main(void) {
         delayedAnalyzeActivationIsCancelledSafely(); applyActivationIsRecoverableAndRevisionBound();
         retryActivationNeverCreatesAnEdit(); publicActivationPolicyRequiresExactForeground();
         synchronousUIDetachCannotDispatch();
+        updateCutsRetainsAndAcknowledgesSnapshot(); updateAndNavigationActivationRemainRevisionBound(); explicitRecoveryAdoptsOnlyReadOnlyResult();
         printf("Passed %lu review-client groups (%lu assertions); no real helper launch, DNC, timers, windows, or settings files.\n",
             (unsigned long)groups, (unsigned long)checks);
     }

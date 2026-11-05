@@ -276,12 +276,16 @@ public struct ReviewAnalysisResult: Sendable {
     }
 
     private func recalculate(_ job: Job, command: ReviewCommand) {
-        // This Workflow Extension milestone requires another explicit Analyze
-        // after settings edits. Never silently convert its provenance to AU
-        // settings or admit the legacy Update Cuts command on that route.
-        guard job.request.workflowOrigin == nil else { resend(job); return }
         let started = ProcessInfo.processInfo.systemUptime
         let local = command.localPreview == true
+        // Workflow settings belong to the project, not a detector instance.
+        // Only its explicit, native-authorized snapshot update is supported;
+        // the legacy AU automatic recalculation path must not adopt this job.
+        if let origin = job.request.workflowOrigin {
+            guard local, command.view == origin.view, command.verifySettings == true,
+                  let settings = try? command.settings?.analysisSettings(),
+                  (try? WorkflowReviewOrigin.validate(settings: settings)) != nil else { resend(job); return }
+        }
         guard active == command.request, !job.cancelled, !job.applyStarted,
               job.state == .review || job.state == .recalculating,
               !local || (job.state == .review && job.task == nil),
@@ -541,7 +545,7 @@ public struct ReviewAnalysisResult: Sendable {
             job.progress = nil
             job.message = "The review could not be displayed: \(error.localizedDescription)"
             let response = ReviewResponse(request: job.request.id, revision: job.revision,
-                state: "failed", message: job.message)
+                state: "failed", message: job.message, workflowGesture: job.request.workflowOrigin?.gesture)
             job.publication = try? ReviewPublication(response)
             if let publication = job.publication { try? deliver(publication) }
         }
@@ -567,7 +571,7 @@ public struct ReviewAnalysisResult: Sendable {
                 state: job.state.rawValue, message: job.message, progress: job.progress,
                 canCancel: job.state.canCancel,
                 canRetryVerification: verificationOperation != nil && job.state.canRetryVerification && canRetryVerification(job.request.id),
-                settingsEdit: job.settingsEdit, targetClipName: job.targetClipName)
+                settingsEdit: job.settingsEdit, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture)
         }
         let analysis = result.analyzed
         let review = analysis.review
@@ -597,7 +601,7 @@ public struct ReviewAnalysisResult: Sendable {
                 before: job.request.settings.beforeSpeechPadding, after: job.request.settings.afterSpeechPadding),
             output: job.request.outputMode.rawValue, provisional: job.state == .recalculating,
             canUpdateCuts: ready && result.canUpdateCuts && localPreviewOperation != nil,
-            usesAudioSnapshot: result.usesAudioSnapshot, targetClipName: job.targetClipName)
+            usesAudioSnapshot: result.usesAudioSnapshot, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {

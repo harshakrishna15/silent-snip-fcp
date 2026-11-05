@@ -80,6 +80,9 @@ import Foundation
     }
 
     private var verifications = PendingVerificationRegistry()
+    // A new Workflow recovery gesture first proves the SDK's currently open
+    // project with fresh XML, before navigating to the already imported result.
+    private var recoveryOrigins: [UUID: WorkflowReviewOrigin] = [:]
 
     public func canRetryVerification(_ id: UUID) -> Bool {
         verifications[id] != nil
@@ -116,6 +119,7 @@ import Foundation
         reviewSession = nil
         reviewRequestID = nil
         verifications.removeAll()
+        recoveryOrigins.removeAll()
         analysisCache.clear()
         directRenderHint = nil
     }
@@ -383,7 +387,7 @@ import Foundation
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
                 presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply creates a cleaned project copy with the retained processed sound preserved. The original project keeps its editable effects. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "),
-                canUpdateCuts: request.workflowOrigin == nil && (route == .source || renderedInOriginal))
+                canUpdateCuts: route == .source || renderedInOriginal)
         } catch {
             // A cancellation must not prevent bounded cleanup of a verified,
             // request-owned project after returning to the original timeline.
@@ -757,6 +761,25 @@ import Foundation
             jobID: request.id, capturedMedia: nil)
     }
 
+    public func loadVerification(_ verification: ReviewVerificationRequest) throws -> AnalyzeRequest {
+        guard let origin = verification.workflowOrigin else {
+            return try loadVerification(verification.result, view: verification.view)
+        }
+        let session = try FinalCutAXSession()
+        try session.bindWorkflow(origin, action: "verify")
+        let result = try ImportedResultVerification.load(outputURL: verification.result)
+        try result.validateWorkflowRecovery(origin)
+        // Adopt only presentation and the explicit recovery capability. This
+        // creates no analysis context and cannot make the saved plan applicable.
+        let request = AnalyzeRequest(id: result.request.id, settings: result.request.settings,
+            outputMode: result.request.outputMode, workflowOrigin: origin)
+        verifications.remember(request.id, at: verification.result)
+        recoveryOrigins[request.id] = origin
+        reviewSession = session
+        reviewRequestID = request.id
+        return request
+    }
+
     public func loadVerification(_ outputURL: URL, view: UUID) throws -> AnalyzeRequest {
         let session = try FinalCutAXSession()
         try session.rememberReviewSelection(session.selectionSnapshot())
@@ -785,6 +808,13 @@ import Foundation
         do {
             let current = try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil,
                 inheritingWorkflowFrom: reviewSession)
+            if let origin = recoveryOrigins[id] {
+                progress("Checking the project selected for result verification…", nil)
+                try await current.activate()
+                let url = try await current.exportProjectXML(to: parent.appendingPathComponent("Recovery-Origin-\(UUID().uuidString).fcpxmld"))
+                try origin.verify(projectData: Data(contentsOf: url))
+                recoveryOrigins.removeValue(forKey: id)
+            }
             guard result.replacementTarget != nil || current.projectName == result.originalProjectName || current.projectName == result.projectName else {
                 throw FinalCutCaptureError.unavailable("Open the original project or ‘\(result.projectName)’ before retrying verification.")
             }
@@ -808,7 +838,7 @@ import Foundation
             })
             let disposition = result.replacementTarget == nil ? "Original project unchanged." : "Project replaced in its original event. Recovery XML saved in the result folder."
             let settingsNotice = report.controllerSettingsPreserved == nil
-                ? "Analysis settings are saved with the result; the detector stays on the original recording."
+                ? "Analysis settings are saved with the result."
                 : "Silent Snip settings match."
             let message = "Verified ‘\(result.projectName)’: timeline and processed audio references match. \(settingsNotice) \(result.sourceMediaNotice) \(disposition)"
             try Data((message + "\n").utf8).write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)

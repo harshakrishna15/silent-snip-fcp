@@ -81,7 +81,7 @@ enum WorkflowReviewWindowIdentity {
 extension FinalCutAXSession {
     /// Called by the initial session before activation, focus changes or Share.
     /// A broadcast URL and UUID alone do not authorize even the capture path.
-    func bindWorkflow(_ origin: WorkflowReviewOrigin) throws {
+    func bindWorkflow(_ origin: WorkflowReviewOrigin, action: String = "analyze") throws {
         let hosts = NSRunningApplication.runningApplications(withBundleIdentifier: FinalCutAccessibility.bundleIdentifier)
             .filter { !$0.isTerminated }
         guard hosts.count == 1, hosts[0].processIdentifier == application.processIdentifier,
@@ -89,7 +89,7 @@ extension FinalCutAXSession {
         workflowOrigin = origin
         let windows = workflowReviewWindows()
         let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute)
-        let expectedID = "silentsnip.workflow.analyze.requested.\(origin.gesture.uuidString)"
+        let expectedID = "silentsnip.workflow.\(action).requested.\(origin.gesture.uuidString)"
         let window = windows.first
         let button = window.flatMap {
             find(in: $0, role: kAXButtonRole, identifier: expectedID, maxDepth: 24, maxNodes: 3000)
@@ -105,7 +105,8 @@ extension FinalCutAXSession {
             foregroundBundleIdentifier: foreground?.bundleIdentifier)
         guard observation.failureReason == nil, let window else {
             workflowOrigin = nil
-            throw FinalCutCaptureError.unavailable(observation.diagnostic)
+            throw FinalCutCaptureError.unavailable(action == "analyze" ? observation.diagnostic :
+                observation.diagnostic.replacingOccurrences(of: "Analyze", with: "Verify Existing Result"))
         }
         retainedWorkflowWindow = window
     }
@@ -163,11 +164,19 @@ extension FinalCutAXSession {
     }
 
     func canAuthorizeWorkflowApply(view: UUID, gesture: UUID) -> Bool {
+        canAuthorizeWorkflowAction(view: view, gesture: gesture, action: "apply")
+    }
+
+    func canAuthorizeWorkflowUpdate(view: UUID, edit: UUID) -> Bool {
+        canAuthorizeWorkflowAction(view: view, gesture: edit, action: "update")
+    }
+
+    private func canAuthorizeWorkflowAction(view: UUID, gesture: UUID, action: String) -> Bool {
         guard workflowReconnectFailure(view: view) == nil, let window = workflowReviewWindows().first,
               let button = find(in: window, role: kAXButtonRole,
-                identifier: "silentsnip.workflow.apply.requested.\(gesture.uuidString)", maxDepth: 24, maxNodes: 3000) else { return false }
+                identifier: "silentsnip.workflow.\(action).requested.\(gesture.uuidString)", maxDepth: 24, maxNodes: 3000) else { return false }
         return WorkflowReviewGesture.pending(identifier: string(button, kAXIdentifierAttribute),
-            enabled: (attribute(button, kAXEnabledAttribute) as? NSNumber)?.boolValue, gesture: gesture, action: "apply")
+            enabled: (attribute(button, kAXEnabledAttribute) as? NSNumber)?.boolValue, gesture: gesture, action: action)
     }
 
     func restoreWorkflowReview(bringToFront: Bool, document: TimelineDocument?, target: TimelineClip?) async -> String? {

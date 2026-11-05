@@ -5,15 +5,20 @@ cd "$(dirname "$0")/.."
 
 check_only=false
 app_path=''
+frontend_path=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --check-only) check_only=true; shift ;;
     --app)
       [[ $# -ge 2 && "$2" == /* ]] || { echo '--app requires an absolute app path.' >&2; exit 2; }
       app_path="$2"; shift 2 ;;
+    --frontend)
+      [[ $# -gt 1 && "$2" == /* ]] || { echo '--frontend requires an absolute app path.' >&2; exit 2; }
+      frontend_path="$2"; shift 2 ;;
     --help|-h)
-      echo 'Usage: Scripts/register-local.sh [--check-only] [--app /absolute/Silent Snip.app]'
-      echo 'Verifies and registers the combined app, or legacy developer builds if absent.'
+      echo 'Usage: Scripts/register-local.sh [--check-only] [--app /absolute/Silent Snip.app] [--frontend /absolute/Workflow.app]'
+      echo 'Verifies and registers the AU-free worker and separate Workflow frontend.'
+      echo 'Legacy developer Audio Unit builds remain supported when present.'
       echo 'No app copies, launches, deletions, or permission changes are performed.'
       exit 0 ;;
     *) echo 'Usage: Scripts/register-local.sh [--check-only] [--app /absolute/Silent Snip.app]' >&2; exit 2 ;;
@@ -33,6 +38,11 @@ else
   audio="$PWD/build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app"
 fi
 audio_extension="$audio/Contents/PlugIns/SilentSnipAudio.appex"
+workflow=false
+if [[ "$combined" == true && ! -e "$audio_extension" && ! -L "$audio_extension" ]]; then
+  workflow=true
+  if [[ -z "$frontend_path" ]]; then frontend_path="$PWD/build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app"; fi
+fi
 
 for tool in "$lsregister" "$pluginkit" /usr/bin/codesign /usr/libexec/PlistBuddy; do
   if [[ ! -x "$tool" ]]; then
@@ -65,12 +75,32 @@ else
   check_bundle "$helper" local.silentsnip.helper
   check_bundle "$audio" local.silentsnip.app
 fi
-check_bundle "$audio_extension" local.silentsnip.app.audio
-extension_point=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$audio_extension/Contents/Info.plist")
-factory_class=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$audio_extension/Contents/Info.plist")
-if [[ "$extension_point" != com.apple.AudioUnit-UI || "$factory_class" != SilentSnipAudioUnitFactory ]]; then
-  echo 'The audio build is missing the current custom effect window. Rebuild with build-audio-plugin.sh before registering.' >&2
-  exit 1
+if [[ "$workflow" == true ]]; then
+  check_bundle "$frontend_path" local.silentsnip.workflowprototype
+  workflow_extension="$frontend_path/Contents/PlugIns/SilentSnipWorkflowExtension.appex"
+  check_bundle "$workflow_extension" local.silentsnip.workflowprototype.extension
+  verification_dir=$(mktemp -d "${TMPDIR:-/tmp}/silent-snip-pair.XXXXXX")
+  trap 'rm -rf "$verification_dir"' EXIT
+  # Verify the same SDK capabilities and pinned worker contract used by the
+  # package checker before either registration database is changed.
+  python3 Scripts/check-workflow-prototype.py --app "$frontend_path" --worker "$helper" --output "$verification_dir/Verification.json"
+  retired_extensions=()
+  for retired_app in "$helper" "$PWD/build/App/Silent Snip.app" "$PWD/build/AudioPlugin/Build/Products/Debug/SilentSnipAudio.app"; do
+    retired_extension="$retired_app/Contents/PlugIns/SilentSnipAudio.appex"
+    if [[ -e "$retired_extension" || -L "$retired_extension" ]]; then
+      check_bundle "$retired_extension" local.silentsnip.app.audio
+    fi
+    retired_extensions+=("$retired_extension")
+  done
+else
+  [[ -z "$frontend_path" ]] || { echo '--frontend requires an AU-free worker.' >&2; exit 1; }
+  check_bundle "$audio_extension" local.silentsnip.app.audio
+  extension_point=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$audio_extension/Contents/Info.plist")
+  factory_class=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$audio_extension/Contents/Info.plist")
+  if [[ "$extension_point" != com.apple.AudioUnit-UI || "$factory_class" != SilentSnipAudioUnitFactory ]]; then
+    echo 'The audio build is missing the current custom effect window. Rebuild with build-audio-plugin.sh before registering.' >&2
+    exit 1
+  fi
 fi
 if [[ "$check_only" == true ]]; then
   echo 'All local build products and signatures passed. No registration changed.'
@@ -80,7 +110,7 @@ fi
 # Re-registering an active extension causes PlugInKit to terminate its process.
 # The host reports this as an unresponsive plug-in and disables its instances.
 if /usr/bin/pgrep -x 'Final Cut Pro' >/dev/null; then
-  echo 'Quit Final Cut Pro before registering the audio plug-in. Use --check-only for validation while Final Cut is open.' >&2
+  echo 'Quit Final Cut Pro before changing extension registrations. Use --check-only while Final Cut is open.' >&2
   exit 1
 else
   status=$?
@@ -120,19 +150,42 @@ for audio_candidate in "$PWD/build/Candidate/App/Silent Snip.app" "$PWD/build/Ca
 done
 "$lsregister" -f "$helper"
 if [[ "$audio" != "$helper" ]]; then "$lsregister" -f "$audio"; fi
-"$pluginkit" -a "$audio_extension"
+if [[ "$workflow" == true ]]; then
+  # Retire only known old local AU copies. Keep their bundles and all project
+  # data; never rewrite a library to remove saved effect instances.
+  for retired_extension in "${retired_extensions[@]}"; do
+    remove_candidate_registration "$pluginkit" -r "$retired_extension"
+  done
+  retired_registration=$("$pluginkit" -m -A -D -v -i local.silentsnip.app.audio) || exit 1
+  for retired_extension in "${retired_extensions[@]}"; do
+    if [[ "$retired_registration" == *"$retired_extension"* ]]; then
+      echo 'A retired local Audio Unit registration remains. Keep Final Cut closed and retry registration.' >&2; exit 1
+    fi
+  done
+  "$lsregister" -f "$frontend_path"
+  selected_extension="$workflow_extension"
+  selected_identity=local.silentsnip.workflowprototype.extension
+else
+  selected_extension="$audio_extension"
+  selected_identity=local.silentsnip.app.audio
+fi
+"$pluginkit" -a "$selected_extension"
 # Adding can return before discovery catches up. Do not report success merely
 # because the command exited zero: require the installed path in the registry.
 registration=''
 for attempt in 1 2 3 4 5; do
-  registration=$("$pluginkit" -m -A -D -v -i local.silentsnip.app.audio) || exit 1
-  if [[ "$registration" == *"$audio_extension"* ]]; then break; fi
+  registration=$("$pluginkit" -m -A -D -v -i "$selected_identity") || exit 1
+  if [[ "$registration" == *"$selected_extension"* ]]; then break; fi
   if [[ "$attempt" != 5 ]]; then /bin/sleep 1; fi
 done
-if [[ "$registration" != *"$audio_extension"* ]]; then
+if [[ "$registration" != *"$selected_extension"* ]]; then
   echo 'Silent Snip was not found at the installed path after registration. Keep Final Cut closed and retry Scripts/register-local.sh.' >&2
   exit 1
 fi
-echo 'Registered the Silent Snip app and Audio Unit from their existing paths.'
+if [[ "$workflow" == true ]]; then
+  echo 'Registered the Silent Snip worker and Workflow frontend from their existing paths.'
+else
+  echo 'Registered the Silent Snip app and legacy Audio Unit from their existing paths.'
+fi
 echo 'Keep these build products in place while testing them in Final Cut Pro.'
 printf '%s\n' "$registration"

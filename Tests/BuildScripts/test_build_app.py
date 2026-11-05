@@ -21,8 +21,10 @@ class AppBuildTests(unittest.TestCase):
         self.tools.mkdir()
         self.helper = self.root / "build/Candidate/SilentSnipHelper.app"
         self.bundle(self.helper, "local.silentsnip.helper.candidate", "SilentSnip")
-        self.extension = self.root / "build/Candidate/AudioPlugin/SilentSnipAudio.appex"
-        self.bundle(self.extension, "local.silentsnip.app.audio", "SilentSnipAudio")
+        self.frontend = self.root / "build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app"
+        self.bundle(self.frontend, "local.silentsnip.workflowprototype", "SilentSnipWorkflowPrototype")
+        self.extension = self.frontend / "Contents/PlugIns/SilentSnipWorkflowExtension.appex"
+        self.bundle(self.extension, "local.silentsnip.workflowprototype.extension", "SilentSnipWorkflowExtension")
         self.output = self.root / "build/App/Silent Snip.app"
         self.bundle(self.output, "local.silentsnip.app", "SilentSnip")
         (self.output / "old-marker").write_text("previous app")
@@ -32,6 +34,20 @@ class AppBuildTests(unittest.TestCase):
         script = (REPO / "Scripts/build-app.sh").read_text()
         script = script.replace("/usr/bin/pgrep", '"' + str(self.tools / "pgrep") + '"')
         (self.root / "Scripts/build-app.sh").write_text(script)
+        # Package verification has its own full checker tests. This fixture
+        # verifies the packaging script supplies the actual worker/frontend pair.
+        (self.root / "Scripts/check-workflow-prototype.py").write_text("""
+import argparse, json, pathlib, plistlib
+p = argparse.ArgumentParser()
+p.add_argument('--app', type=pathlib.Path); p.add_argument('--worker', type=pathlib.Path); p.add_argument('--output', type=pathlib.Path)
+a = p.parse_args()
+def info(path): return plistlib.loads((path/'Contents/Info.plist').read_bytes())
+assert info(a.app)['CFBundleIdentifier'] == 'local.silentsnip.workflowprototype'
+assert info(a.app/'Contents/PlugIns/SilentSnipWorkflowExtension.appex')['CFBundleIdentifier'] == 'local.silentsnip.workflowprototype.extension'
+assert info(a.worker)['CFBundleIdentifier'] == 'local.silentsnip.app'
+assert not (a.worker/'Contents/PlugIns/SilentSnipAudio.appex').exists()
+a.output.write_text(json.dumps({'verified': True}))
+""")
         for name, text in {
             "pgrep": '''#!/bin/bash
 if [[ "$RUNNING" == host && "$1" == -x ]]; then exit 0; fi
@@ -78,7 +94,7 @@ exec /bin/mv "$@"
         self.assertTrue((self.output / "old-marker").exists())
         self.assertEqual(self.archive.read_text(), "previous archive")
 
-    def test_release_archive_contains_one_app_with_extension_and_live_share_routes(self):
+    def test_release_archive_contains_au_free_worker_and_workflow_frontend_with_live_share_routes(self):
         result = self.run_build()
         self.assertEqual(result.returncode, 0, result.stderr)
         info = plistlib.loads((self.output / "Contents/Info.plist").read_bytes())
@@ -90,12 +106,13 @@ exec /bin/mv "$@"
         self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["silentsnip"])
         self.assertIn("com.apple.proapps.MediaAssetProtocol", info)
         self.assertTrue((self.output / "Contents/Resources/SilentSnip.sdef").exists())
-        self.assertTrue((self.output / "Contents/PlugIns/SilentSnipAudio.appex/Contents/MacOS/SilentSnipAudio").exists())
+        self.assertFalse((self.output / "Contents/PlugIns").exists())
         with zipfile.ZipFile(self.archive) as archive:
             names = [name for name in archive.namelist() if not name.startswith("__MACOSX/")]
-            self.assertTrue(all(name.startswith("Silent Snip.app/") for name in names))
-            self.assertFalse(any(".app/" in name[len("Silent Snip.app/"):] for name in names))
-            self.assertIn("Silent Snip.app/Contents/MacOS/SilentSnip", names)
+            self.assertTrue(all(name.startswith("Silent Snip/") for name in names))
+            self.assertIn("Silent Snip/Silent Snip.app/Contents/MacOS/SilentSnip", names)
+            self.assertIn("Silent Snip/Silent Snip Workflow Prototype.app/Contents/PlugIns/SilentSnipWorkflowExtension.appex/Contents/MacOS/SilentSnipWorkflowExtension", names)
+            self.assertFalse(any("SilentSnipAudio" in name for name in names))
         self.assertFalse((self.output / "old-marker").exists())
 
     def test_stage_is_inert_and_preserves_published_app_and_archive(self):
@@ -105,10 +122,17 @@ exec /bin/mv "$@"
         candidate = self.root / "build/Candidate/App/Silent Snip.app"
         info = plistlib.loads((candidate / "Contents/Info.plist").read_bytes())
         self.assertEqual(info["CFBundleIdentifier"], "local.silentsnip.app")
-        extension_info = plistlib.loads((candidate / "Contents/PlugIns/SilentSnipAudio.appex/Contents/Info.plist").read_bytes())
-        self.assertFalse(extension_info["SilentSnipContainingApp"]["enabled"])
+        self.assertFalse((candidate / "Contents/PlugIns").exists())
         for key in ("CFBundleURLTypes", "CFBundleDocumentTypes", "com.apple.proapps.MediaAssetProtocol", "SilentSnipWorkflowProtocolVersion"):
             self.assertNotIn(key, info)
+
+    def test_missing_frontend_prevents_publication_but_not_worker_staging(self):
+        shutil.rmtree(self.frontend)
+        self.assertNotEqual(self.run_build().returncode, 0)
+        self.assert_previous_preserved()
+        result = self.run_build("--stage", RUNNING="host")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_previous_preserved()
 
     def test_stale_reused_helper_cannot_advertise_the_new_workflow_protocol(self):
         path = self.helper / "Contents/Info.plist"
@@ -163,7 +187,7 @@ exec /bin/mv "$@"
         self.assertNotEqual(self.run_build().returncode, 0)
         self.assertTrue((outside / "old-marker").exists())
 
-    def test_wrong_extension_identity_is_rejected_before_publication(self):
+    def test_wrong_frontend_extension_identity_is_rejected_before_publication(self):
         (self.extension / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "other.extension"}))
         self.assertNotEqual(self.run_build().returncode, 0)
         self.assert_previous_preserved()

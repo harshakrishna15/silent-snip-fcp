@@ -20,6 +20,7 @@ EXTENSION_NAME = "SilentSnipWorkflowExtension.appex"
 EXPECTED_ENTITLEMENTS = {
     "com.apple.security.app-sandbox": True,
     "com.apple.security.automation.apple-events": True,
+    "com.apple.security.files.user-selected.read-only": True,
     "com.apple.security.scripting-targets": {
         "com.apple.FinalCut": ["com.apple.FinalCut.library.inspection"],
     },
@@ -238,8 +239,9 @@ def verify_app(app, run=subprocess.run):
     entitlements = plistlib.loads(raw[begin:])
     require(isinstance(entitlements, dict) and entitlements.get("com.apple.security.app-sandbox") is True and
             entitlements.get("com.apple.security.automation.apple-events") is True and
+            entitlements.get("com.apple.security.files.user-selected.read-only") is True and
             entitlements == EXPECTED_ENTITLEMENTS,
-            "Signed capabilities differ from sandboxed read-only Final Cut library inspection with Automation consent")
+            "Signed capabilities differ from sandboxed read-only Final Cut library inspection with Automation consent and read-only user-selected files")
     tool(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], run)
     return dict(verified=True, app=str(app), containingBundleIdentifier=APP_ID,
                 extensionBundleIdentifier=EXTENSION_ID, signedEntitlements=entitlements,
@@ -249,7 +251,7 @@ def verify_app(app, run=subprocess.run):
                 deepStrictSignatureVerified=True, installationPerformedByChecker=False,
                 registrationPerformedByChecker=False,
                 nativeFinalCutBehaviorEstablished=False, analysisOrCutsEstablished=False,
-                scope="Package verification only: SDK inspection stays read-only with macOS Automation consent; frontend requests can delegate review/apply to a compatible worker. This check performs no app execution, registration, installation, host observation, audio analysis or timeline edits")
+                scope="Package verification only: SDK inspection stays read-only with macOS Automation consent; recovery can select files with read-only user-selected access, and frontend requests can delegate review/apply to a compatible worker. This check performs no app execution, registration, installation, host observation, audio analysis or timeline edits")
 
 
 def verify_worker(app, run=subprocess.run):

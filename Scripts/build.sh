@@ -1,5 +1,5 @@
 #!/bin/bash
-# Developer convenience entry point: one app, then optional local registration.
+# Developer convenience entry point: worker/frontend pair and local registration.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 stage=false
@@ -10,9 +10,10 @@ for argument in "$@"; do
     --stage) stage=true ;;
     --help|-h)
       echo 'Usage: Scripts/build.sh [--release] [--stage]'
-      echo 'Builds one Silent Snip.app with a Debug executable and extension by default.'
-      echo '--release builds both components in Release; --stage keeps the published app and registrations unchanged.'
-      echo 'Normal builds require Final Cut and Silent Snip to be closed.'
+      echo 'Builds an AU-free Debug worker and Release Workflow frontend, then registers both.'
+      echo '--release builds the worker in Release; the Workflow frontend always uses Release.'
+      echo '--stage builds only an inert worker candidate; published apps, ZIP, and registrations stay unchanged.'
+      echo 'Normal builds require Final Cut and both Silent Snip apps to be closed.'
       exit 0 ;;
     *) printf 'Unknown argument: %s\n' "$argument" >&2; exit 2 ;;
   esac

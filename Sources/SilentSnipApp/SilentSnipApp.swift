@@ -85,7 +85,7 @@ import SilentSnipMac
             }
         }
         manager.onReceive = { _ in
-            try? IntegrationReport(state: "ready", message: "Share received. Select the clip carrying Silent Snip Audio and use Analyze to start a verified review.").save()
+            try? IntegrationReport(state: "ready", message: "Share received. Select a timeline clip and choose Analyze in Window → Extensions → Silent Snip to start a verified review.").save()
         }
         transport.onReconnect = { [weak self] view in
             guard let self, let id = interactive.reviewRequestID,
@@ -166,16 +166,16 @@ import SilentSnipMac
         let files = urls.filter(\.isFileURL)
         if !files.isEmpty { _ = ShareDestinationManager.shared.handleOpen(urls: files) }
         for url in urls where !url.isFileURL {
-            if url.host == "verify", let verification = try? ReviewVerificationRequest(url: url) {
+            if ["verify", "workflow-verify"].contains(url.host ?? ""), let verification = try? ReviewVerificationRequest(url: url) {
                 do {
                     guard !coordinator.isBusy else {
                         throw FinalCutCaptureError.unavailable("Wait for the current Silent Snip operation to finish before verifying another result.")
                     }
-                    let request = try interactive.loadVerification(verification.result, view: verification.view)
-                    transport.connect(view: verification.view, request: request)
+                    let request = try interactive.loadVerification(verification)
+                    transport.connect(view: verification.view, request: request, gesture: verification.workflowOrigin?.gesture)
                     coordinator.restoreVerification(request)
                 } catch {
-                    transport.connectionFailed(view: verification.view, message: error.localizedDescription)
+                    transport.connectionFailed(view: verification.view, message: error.localizedDescription, gesture: verification.workflowOrigin?.gesture)
                 }
                 continue
             }

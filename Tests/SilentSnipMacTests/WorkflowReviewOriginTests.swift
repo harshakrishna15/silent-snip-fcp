@@ -102,6 +102,12 @@ final class WorkflowReviewOriginTests: XCTestCase {
             enabled: false, gesture: gesture, action: "apply"))
         XCTAssertTrue(WorkflowReviewGesture.pending(identifier: "silentsnip.workflow.apply.requested.\(gesture.uuidString)",
             enabled: false, gesture: gesture, action: "apply"))
+        for action in ["update", "verify"] {
+            let marker = "silentsnip.workflow.\(action).requested.\(gesture.uuidString)"
+            XCTAssertTrue(WorkflowReviewGesture.pending(identifier: marker, enabled: false, gesture: gesture, action: action))
+            XCTAssertFalse(WorkflowReviewGesture.pending(identifier: marker, enabled: true, gesture: gesture, action: action))
+            XCTAssertFalse(WorkflowReviewGesture.pending(identifier: marker, enabled: false, gesture: UUID(), action: action))
+        }
     }
 
     func testAnalyzeDiagnosticsRetainEveryNativeAuthorizationCondition() {

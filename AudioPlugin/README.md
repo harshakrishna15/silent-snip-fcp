@@ -1,5 +1,7 @@
 # Silent Snip Audio: settings and actions in the effect window
 
+> Legacy interface retained for compatibility and regression tests. The current distribution uses **Window → Extensions → Silent Snip** and does not require an audio effect. See [the button workflow](../docs/workflow.md).
+
 Add **Silent Snip Audio** from the Effects browser and open its **Controls** window in Final Cut. The four detection settings and Output stay visible. Click **Analyze Audio** to capture current processed audio, review the proposed cuts, then click **Apply Cuts**. Configure the required Share destination once using [first-time setup](../docs/setup.md). Normal use initiates and confirms the native Share operations programmatically.
 
 After an eligible analysis, **Update Cuts** recalculates from the retained audio measurements without another Share. **Analyze Audio** remains visible beside it for fresh capture after changing clip volume, effects, or media. Typing, Return, field blur, Save Settings, and polling never start analysis. A draft disables Apply and hides the outdated overlay; click Update Cuts to submit it. Closing Controls with an unsubmitted draft requires fresh analysis when reopening.

@@ -129,6 +129,13 @@ static void unexpectedReviewBoundary(void) {
 - (BOOL)canApply { unexpectedReviewBoundary(); return NO; }
 - (BOOL)canChangeSelection { unexpectedReviewBoundary(); return NO; }
 - (BOOL)canCancel { unexpectedReviewBoundary(); return NO; }
+- (BOOL)canUpdateCuts { unexpectedReviewBoundary(); return NO; }
+- (BOOL)canHighlight { unexpectedReviewBoundary(); return NO; }
+- (void)markSettingsDirty { unexpectedReviewBoundary(); }
+- (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
+- (BOOL)highlightCut:(NSString *)cutID { unexpectedReviewBoundary(); return NO; }
+- (BOOL)verifyExistingResultURL:(NSURL *)url libraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID
+                   projectName:(NSString *)projectName gesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
 - (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName
                   settings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
 - (BOOL)sendApplyWithGesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
@@ -151,6 +158,7 @@ static void unexpectedWindowBoundary(void) {
 - (NSString *)state { unexpectedWindowBoundary(); return nil; }
 - (void)start { unexpectedWindowBoundary(); }
 - (void)stop { unexpectedWindowBoundary(); }
+- (void)updateProjectName:(NSString *)projectName { unexpectedWindowBoundary(); }
 @end
 
 @interface SSFakeWorkflowWindowClient : SSWorkflowWindowClient
@@ -192,6 +200,12 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic) NSUInteger retryCount;
 @property (nonatomic) BOOL failApplyActivationSynchronously;
 @property (nonatomic) NSUInteger applyCommandCount;
+@property (nonatomic) BOOL fakeCanUpdate;
+@property (nonatomic) BOOL fakeDirty;
+@property (nonatomic) NSUInteger dirtyCount;
+@property (nonatomic, copy) NSDictionary *updatePayload;
+@property (nonatomic, copy) NSDictionary *verifyPayload;
+@property (nonatomic, copy) NSString *highlightedCut;
 - (void)deliver:(NSDictionary *)response busy:(BOOL)busy canApply:(BOOL)canApply;
 @end
 @implementation SSFakeWorkflowReviewClient
@@ -205,6 +219,26 @@ static void unexpectedWindowBoundary(void) {
 - (BOOL)canApply { return self.fakeCanApply; }
 - (BOOL)canChangeSelection { return self.fakeCanChangeSelection; }
 - (BOOL)canCancel { return self.fakeCanCancel; }
+- (BOOL)canUpdateCuts { return self.fakeCanUpdate; }
+- (BOOL)canHighlight { return self.fakeCanChangeSelection && !self.fakeDirty && !self.fakeBusy; }
+- (void)markSettingsDirty {
+    self.fakeDirty = YES; self.dirtyCount += 1;
+    self.fakeCanApply = NO; self.fakeCanChangeSelection = NO;
+}
+- (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture {
+    self.updatePayload = @{@"settings":settings, @"gesture":gesture,
+        @"identifier":self.owner.updateButton.accessibilityIdentifier, @"disabled":@(!self.owner.updateButton.enabled)};
+    self.fakeBusy = YES; self.fakeCanApply = NO; self.fakeCanChangeSelection = NO;
+    return YES;
+}
+- (BOOL)highlightCut:(NSString *)cutID { self.highlightedCut = cutID; self.fakeBusy = YES; return YES; }
+- (BOOL)verifyExistingResultURL:(NSURL *)url libraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID
+                   projectName:(NSString *)projectName gesture:(NSString *)gesture {
+    self.verifyPayload = @{@"url":url, @"libraryURL":libraryURL, @"projectUID":projectUID,
+        @"projectName":projectName, @"gesture":gesture, @"identifier":self.owner.verifyButton.accessibilityIdentifier,
+        @"disabled":@(!self.owner.verifyButton.enabled)};
+    self.fakeBusy = YES; return YES;
+}
 - (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName
                   settings:(NSDictionary *)settings gesture:(NSString *)gesture {
     self.startCount += 1;
@@ -283,8 +317,13 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic, strong) NSMutableArray<SSPendingPermission *> *permissions;
 @property (nonatomic, strong) NSMutableArray<SSFakeWorkflowReviewClient *> *reviewClients;
 @property (nonatomic, strong) NSMutableArray<SSFakeWorkflowWindowClient *> *windowClients;
+@property (nonatomic, strong) NSMutableArray<dispatch_block_t> *verificationCompletions;
 @end
 @implementation SSTestWorkflowViewController
+- (void)scheduleVerificationCompletion:(dispatch_block_t)completion afterDelay:(NSTimeInterval)delay {
+    if (!self.verificationCompletions) self.verificationCompletions = [NSMutableArray new];
+    [self.verificationCompletions addObject:[completion copy]];
+}
 - (SSWorkflowWindowClient *)newWindowClient {
     if (!self.windowClients) self.windowClients = [NSMutableArray new];
     SSFakeWorkflowWindowClient *client = [[SSFakeWorkflowWindowClient alloc] initWithViewID:self.viewID];
@@ -807,6 +846,136 @@ static void applyRequiresReviewAndFreshGesture(void) {
     [controller applyCuts:controller.applyButton];
     check(client.applyGestures.count == 1, @"A second Apply action cannot duplicate an in-flight edit");
     closeController(controller);
+    groupCount += 1;
+}
+
+static void retainedUpdatesNavigationAndRecovery(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    client.fakeCanUpdate = YES;
+    [controller updateReviewControls];
+    check(!controller.updateButton.hidden && controller.updateButton.enabled && controller.navigateMenu.enabled,
+          @"Eligible review exposes explicit Update Cuts and cut navigation");
+    NSMenuItem *cut = controller.navigateMenu.itemArray.lastObject;
+    check([cut.representedObject isEqual:@"cut-1"] && cut.action == @selector(goToCut:),
+          @"Navigation menu uses exact reviewed cut IDs");
+    [controller goToCut:cut];
+    check([client.highlightedCut isEqual:@"cut-1"] && !controller.fields[0].enabled,
+          @"Go to Cut dispatches navigation and locks settings while busy");
+    [client deliver:reviewResponse(@"review", @"Navigation done") busy:NO canApply:YES];
+    controller.fields[0].stringValue = @"-42";
+    [controller settingsChanged:controller.fields[0]];
+    [controller settingsChanged:controller.fields[0]];
+    check(controller.reviewClient == client && client.dirtyCount == 2 && client.cancelCount == 0 &&
+          !controller.applyButton.enabled && !controller.navigateMenu.enabled && controller.updateButton.enabled,
+          @"Repeated drafts retain audio while disabling stale Apply and navigation without starting work");
+    [controller updateCuts:nil];
+    NSString *gesture = client.updatePayload[@"gesture"];
+    check([client.updatePayload[@"settings"][@"thresholdDBFS"] isEqual:@-42] &&
+          [client.updatePayload[@"identifier"] isEqual:[@"silentsnip.workflow.update.requested." stringByAppendingString:gesture]] &&
+          [client.updatePayload[@"disabled"] boolValue] && !controller.applyButton.enabled,
+          @"Only explicit Update submits the current draft with a disabled native gesture");
+    [client deliver:reviewResponse(@"review", @"Updated") busy:NO canApply:YES];
+    NSMutableDictionary *snapshot = [reviewResponse(@"review", @"Cuts use the last analyzed audio. Apply verifies current audio before editing. Use Analyze Audio Again after changing volume or effects. Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts.") mutableCopy];
+    snapshot[@"usesAudioSnapshot"] = @YES;
+    [client deliver:snapshot busy:NO canApply:YES];
+    check([controller.statusLabel.stringValue hasPrefix:@"Cuts updated."] && controller.detailsButton.hidden &&
+          controller.applyButton.enabled, @"A successful snapshot update is informational and retains Apply authority");
+    NSDictionary *context = [controller observedProjectContext];
+    NSUInteger generation = controller.contextGeneration;
+    NSURL *receipt = [NSURL fileURLWithPath:@"/Test/Result/Silent Snip.fcpxml"];
+    [controller verifyResultURL:receipt context:context generation:generation];
+    SSFakeWorkflowReviewClient *recovery = controller.reviewClients.lastObject;
+    gesture = recovery.verifyPayload[@"gesture"];
+    check(recovery != client && [recovery.verifyPayload[@"url"] isEqual:receipt] &&
+          [recovery.verifyPayload[@"projectUID"] isEqual:@"project-A"] &&
+          [recovery.verifyPayload[@"identifier"] isEqual:[@"silentsnip.workflow.verify.requested." stringByAppendingString:gesture]] &&
+          [recovery.verifyPayload[@"disabled"] boolValue] && recovery.startCount == 0,
+          @"Explicit receipt recovery pins the project and native gesture without Analyze or Apply");
+    recovery.fakeBusy = NO;
+    NSUInteger count = controller.reviewClients.count;
+    current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-A.fcpbundle", @"B");
+    [controller verifyResultURL:receipt context:context generation:generation];
+    check(controller.reviewClients.count == count, @"A stale file panel cannot dispatch recovery in a different project");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void runVerificationCompletion(SSTestWorkflowViewController *controller) {
+    check(controller.verificationCompletions.count > 0, @"A panel completion belongs to an explicitly scheduled settle");
+    dispatch_block_t block = controller.verificationCompletions.firstObject;
+    [controller.verificationCompletions removeObjectAtIndex:0];
+    block();
+}
+
+static void nativeChooserCompletionRetainsIdentityAndSettlesSDK(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Original title"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    NSUInteger generation = controller.contextGeneration;
+    NSDictionary *ticket = [controller beginVerificationPanel];
+    check(ticket != nil && controller.verificationPanelPending && !controller.verifyButton.enabled &&
+        !controller.analyzeButton.enabled, @"The native chooser pins one project and prevents duplicate presentation");
+    check([controller beginVerificationPanel] == nil, @"A pending native chooser cannot open another file sheet");
+    current.testTimeline.sequence = nil;
+    [current.testTimeline notifySequenceChanged];
+    check(controller.settingsLoaded && controller.contextGeneration == generation &&
+        [controller.projectUID isEqual:@"project-A"] && controller.settings.loads.count == 1,
+        @"A transient empty SDK sequence during the native sheet does not unload its pinned project settings");
+    NSURL *receipt = [NSURL fileURLWithPath:@"/Test/Result/Silent Snip.fcpxml"];
+    [controller completeVerificationPanelWithURL:receipt ticket:ticket];
+    check(controller.reviewClients.count == 0 && controller.verificationCompletions.count == 1,
+        @"Selecting a real file defers dispatch until the sheet completion unwinds");
+    runVerificationCompletion(controller);
+    check(controller.reviewClients.count == 0 && controller.verificationCompletions.count == 1 &&
+        controller.verificationPanelPending, @"A temporarily absent SDK project gets a bounded post-sheet settle");
+    current.testTimeline.sequence = sequence(@"project-A", @"/Test/Library-A.fcpbundle/", @"Refreshed title");
+    ((SSProxy *)((SSProxy *)current.testTimeline.sequence.container).container.container).name = @"Refreshed library label";
+    runVerificationCompletion(controller);
+    SSFakeWorkflowReviewClient *recovery = controller.reviewClients.lastObject;
+    check(!controller.verificationPanelPending && recovery != nil &&
+        [recovery.verifyPayload[@"projectUID"] isEqual:@"project-A"] &&
+        [recovery.verifyPayload[@"projectName"] isEqual:@"Refreshed title"] &&
+        [recovery.verifyPayload[@"url"] isEqual:receipt] && [recovery.verifyPayload[@"disabled"] boolValue],
+        @"Settled identity uses path and UID despite refreshed display labels and keeps the fresh native gesture disabled");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void nativeChooserRejectsChangedClosedCancelledAndMissingContexts(void) {
+    NSURL *receipt = [NSURL fileURLWithPath:@"/Test/Result/Silent Snip.fcpxml"];
+    for (NSUInteger mode = 0; mode < 4; mode++) {
+        SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Same title"));
+        SSTestWorkflowViewController *controller = openController(current);
+        completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+        NSDictionary *ticket = [controller beginVerificationPanel];
+        if (mode == 0) {
+            current.testTimeline.sequence = sequence(@"project-A", @"/Test/Library-B.fcpbundle", @"Same title");
+            [controller completeVerificationPanelWithURL:receipt ticket:ticket]; runVerificationCompletion(controller);
+            check(controller.reviewClients.count == 0 && [controller.statusDetails.stringValue containsString:@"project changed"],
+                @"A same-named project/UID in another library is rejected with an actionable panel completion message");
+        } else if (mode == 1) {
+            [controller completeVerificationPanelWithURL:receipt ticket:ticket];
+            [controller viewWillDisappear]; runVerificationCompletion(controller);
+            check(controller.reviewClients.count == 0 && !controller.verificationPanelPending,
+                @"Closing the Workflow view invalidates an already queued native sheet completion");
+        } else if (mode == 2) {
+            [controller completeVerificationPanelWithURL:nil ticket:ticket];
+            check(controller.reviewClients.count == 0 && !controller.verificationPanelPending &&
+                controller.verificationCompletions.count == 0 && controller.analyzeButton.enabled,
+                @"Cancelling the native chooser restores idle actions without dispatch or scheduled work");
+        } else {
+            current.testTimeline.sequence = nil;
+            [controller completeVerificationPanelWithURL:receipt ticket:ticket];
+            for (NSUInteger i = 0; i < 11; i++) runVerificationCompletion(controller);
+            check(controller.reviewClients.count == 0 && !controller.verificationPanelPending &&
+                controller.verificationCompletions.count == 0 && [controller.statusDetails.stringValue containsString:@"did not restore"],
+                @"Missing SDK identity stops after the bounded settle and reports why recovery did not start");
+        }
+        closeController(controller);
+    }
     groupCount += 1;
 }
 
@@ -1927,6 +2096,9 @@ int main(void) {
         windowLeaseTracksVisibleVerifiedHostWithoutProjectWork();
         analyzeDispatchPinsPayloadAndGesture();
         applyRequiresReviewAndFreshGesture();
+        retainedUpdatesNavigationAndRecovery();
+        nativeChooserCompletionRetainsIdentityAndSettlesSDK();
+        nativeChooserRejectsChangedClosedCancelledAndMissingContexts();
         editsInvalidateEveryReviewedSetting();
         projectSwitchDiscardsIdleReview();
         liveIdentityMismatchStopsAnalyzeAndApply();

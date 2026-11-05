@@ -35,6 +35,24 @@ static BOOL SSLocalURL(NSURL *url) {
         (!url.host.length || [url.host.lowercaseString isEqual:@"localhost"]) &&
         !url.query && !url.fragment && !url.user && !url.password && !url.port;
 }
+static BOOL SSProject(NSURL *libraryURL, NSString *projectUID, NSString *projectName) {
+    return SSLocalURL(libraryURL) && [libraryURL.pathExtension.lowercaseString isEqual:@"fcpbundle"] &&
+        SSText(libraryURL.path, 4096, NO) && SSText(projectUID, 4096, NO) &&
+        [projectUID stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length &&
+        SSText(projectName, 4096, NO) &&
+        [projectName stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length;
+}
+static BOOL SSSettings(NSDictionary *settings) {
+    if (![settings isKindOfClass:NSDictionary.class]) return NO;
+    NSArray *keys = @[@"thresholdDBFS", @"minimumSilenceDuration", @"beforeSpeechPadding", @"afterSpeechPadding"];
+    const double lower[] = {-80, 0.0001, 0, 0}, upper[] = {0, 10, 2, 2};
+    for (NSUInteger i = 0; i < keys.count; ++i) {
+        id value = settings[keys[i]];
+        if (![value isKindOfClass:NSNumber.class] || SSBoolean(value) || !isfinite([value doubleValue]) ||
+            [value doubleValue] < lower[i] || [value doubleValue] > upper[i]) return NO;
+    }
+    return [@[@"remove", @"gaps"] containsObject:settings[@"outputMode"]];
+}
 static NSURL *SSCanonicalAppURL(NSURL *url) {
     if (!SSLocalURL(url) || ![url.pathExtension isEqual:@"app"]) return nil;
     return url.URLByStandardizingPath.URLByResolvingSymlinksInPath;
@@ -63,6 +81,12 @@ static NSString *SSResponseName(NSString *request) {
 @property (nonatomic) BOOL activationPending;
 @property (nonatomic) NSUInteger activationToken;
 @property (nonatomic, copy) NSString *localMessage;
+@property (nonatomic) BOOL settingsDirty;
+@property (nonatomic) BOOL recoveryOnly;
+@property (nonatomic) BOOL recoveryPending;
+@property (nonatomic, copy) NSString *recoveryGesture;
+@property (nonatomic) NSUInteger settingsSequence;
+@property (nonatomic, copy) NSNumber *navigationRevision;
 @end
 
 @implementation SSWorkflowReviewClient
@@ -75,10 +99,10 @@ static NSString *SSResponseName(NSString *request) {
 - (BOOL)busy {
     if (!self.requestID || self.locallyFailed || self.connection.timedOut) return NO;
     return self.activationPending || self.capabilityNonce != nil || self.connection.awaitingResponse || self.connection.operationBusy ||
-        self.connection.applying || self.connection.pendingRetry != nil || self.cancelRequested;
+        self.connection.applying || self.connection.pendingRetry != nil || self.connection.pendingSettings != nil || self.navigationRevision != nil || self.cancelRequested;
 }
 - (BOOL)canApply {
-    if (!self.requestID || self.busy || self.connection.timedOut || self.locallyFailed || self.cancelRequested ||
+    if (self.settingsDirty || self.recoveryOnly || !self.requestID || self.busy || self.connection.timedOut || self.locallyFailed || self.cancelRequested ||
         self.connection.pendingSelection || self.connection.pendingRetry || self.connection.pendingApply ||
         !self.connection.revision || ![self.connection.state isEqual:SilentSnipReviewStateReview] ||
         ![self.response[@"canApply"] isEqual:@YES]) return NO;
@@ -86,12 +110,21 @@ static NSString *SSResponseName(NSString *request) {
     return NO;
 }
 - (BOOL)canChangeSelection {
-    return self.requestID && !self.busy && !self.locallyFailed && !self.connection.timedOut && !self.cancelRequested &&
+    return !self.settingsDirty && !self.recoveryOnly && self.requestID && !self.busy && !self.locallyFailed && !self.connection.timedOut && !self.cancelRequested &&
         !self.connection.pendingSelection && !self.connection.pendingRetry && !self.connection.pendingApply &&
         self.connection.revision && [self.connection.state isEqual:SilentSnipReviewStateReview] &&
         [self.response[@"canChangeSelection"] isEqual:@YES];
 }
+- (BOOL)canUpdateCuts {
+    return !self.recoveryOnly && self.requestID && !self.busy && !self.locallyFailed && !self.connection.timedOut &&
+        !self.cancelRequested && !self.connection.pendingSelection && self.connection.revision &&
+        [self.connection.state isEqual:SilentSnipReviewStateReview] && [self.response[@"canUpdateCuts"] isEqual:@YES];
+}
+- (BOOL)canHighlight {
+    return !self.settingsDirty && !self.recoveryOnly && self.canChangeSelection && [self.response[@"canHighlight"] isEqual:@YES];
+}
 - (BOOL)canCancel {
+    if (self.recoveryPending && self.analysisDispatched) return NO;
     return self.requestID && !self.cancelRequested && (self.activationPending || (!SilentSnipReviewStateIsTerminal(self.connection.state) &&
         (self.connection.awaitingResponse || self.capabilityNonce || [self.response[@"canCancel"] isEqual:@YES])));
 }
@@ -254,6 +287,9 @@ static NSString *SSResponseName(NSString *request) {
     NSDistributedNotificationCenter *center = NSDistributedNotificationCenter.defaultCenter;
     [center addObserver:self selector:@selector(receive:) name:SSResponseName(self.requestID) object:nil
         suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+    if (self.recoveryPending) [center addObserver:self selector:@selector(receiveConnection:)
+        name:[@"local.silentsnip.review.connected.v1." stringByAppendingString:self.viewID] object:nil
+        suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
     if (self.capabilityNonce) [center addObserver:self selector:@selector(receiveCapability:)
         name:[SSCapabilityName stringByAppendingFormat:@".%@", self.viewID] object:nil
         suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
@@ -281,6 +317,11 @@ static NSString *SSResponseName(NSString *request) {
     value[@"canApply"] = @(self.canApply);
     value[@"canChangeSelection"] = @(self.canChangeSelection);
     value[@"canCancel"] = @(self.canCancel);
+    value[@"canUpdateCuts"] = @(self.canUpdateCuts);
+    value[@"updateCutsAvailable"] = @(!self.recoveryOnly && !self.locallyFailed && !self.connection.timedOut &&
+        [self.response[@"canUpdateCuts"] isEqual:@YES]);
+    value[@"canHighlight"] = @(self.canHighlight);
+    value[@"verificationOnly"] = @(self.recoveryOnly);
     if (self.localMessage) value[@"message"] = self.localMessage;
     if (self.update) self.update(value);
 }
@@ -290,6 +331,8 @@ static NSString *SSResponseName(NSString *request) {
     self.connection.pendingApply = nil;
     self.connection.pendingSelection = nil;
     self.connection.pendingRetry = nil;
+    self.connection.pendingSettings = nil;
+    self.navigationRevision = nil;
     self.capabilityNonce = nil;
     self.activationPending = NO;
     self.activationToken += 1;
@@ -300,25 +343,25 @@ static NSString *SSResponseName(NSString *request) {
 - (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName
                   settings:(NSDictionary *)settings gesture:(NSString *)gesture {
     if (self.busy) { if (self.failure) self.failure(@"Wait for the current Silent Snip operation to finish."); return NO; }
-    if (!SSUUID(self.viewID) || !SSUUID(gesture) || !SSLocalURL(libraryURL) || libraryURL.port ||
-        ![libraryURL.pathExtension.lowercaseString isEqual:@"fcpbundle"] || !SSText(libraryURL.path, 4096, NO) ||
-        !SSText(projectUID, 4096, NO) || ![projectUID stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length ||
-        !SSText(projectName, 4096, NO) || ![projectName stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length ||
-        ![settings isKindOfClass:NSDictionary.class]) {
+    if (!SSUUID(self.viewID) || !SSUUID(gesture) || !SSProject(libraryURL, projectUID, projectName) || !SSSettings(settings)) {
         if (self.failure) self.failure(@"Select a verified Final Cut project and valid settings before Analyze."); return NO;
     }
-    NSArray *keys = @[@"thresholdDBFS", @"minimumSilenceDuration", @"beforeSpeechPadding", @"afterSpeechPadding"];
-    const double lower[] = {-80, 0.0001, 0, 0}, upper[] = {0, 10, 2, 2};
-    for (NSUInteger i = 0; i < keys.count; ++i) {
-        id value = settings[keys[i]];
-        if (![value isKindOfClass:NSNumber.class] || SSBoolean(value) || !isfinite([value doubleValue]) ||
-            [value doubleValue] < lower[i] || [value doubleValue] > upper[i]) {
-            if (self.failure) self.failure(@"One or more detection settings are outside their supported ranges."); return NO;
-        }
-    }
-    if (![@[@"remove", @"gaps"] containsObject:settings[@"outputMode"]]) {
-        if (self.failure) self.failure(@"Choose a supported output mode before Analyze."); return NO;
-    }
+    return [self beginRequestWithFields:@{@"view": self.viewID, @"gesture": gesture,
+        @"library": libraryURL.absoluteString, @"project": projectUID, @"projectName": projectName,
+        @"threshold": [settings[@"thresholdDBFS"] stringValue], @"minimum": [settings[@"minimumSilenceDuration"] stringValue],
+        @"before": [settings[@"beforeSpeechPadding"] stringValue], @"after": [settings[@"afterSpeechPadding"] stringValue],
+        @"output": settings[@"outputMode"]} route:@"workflow-analyze" recovery:NO];
+}
+- (BOOL)verifyExistingResultURL:(NSURL *)resultURL libraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID
+                  projectName:(NSString *)projectName gesture:(NSString *)gesture {
+    if (self.busy || !SSUUID(self.viewID) || !SSUUID(gesture) || !SSProject(libraryURL, projectUID, projectName) ||
+        !SSLocalURL(resultURL) || ![resultURL.lastPathComponent isEqual:@"Silent Snip.fcpxml"] ||
+        !SSText(resultURL.path, 16384, NO)) return NO;
+    return [self beginRequestWithFields:@{@"view": self.viewID, @"gesture": gesture,
+        @"library": libraryURL.absoluteString, @"project": projectUID, @"projectName": projectName,
+        @"result": resultURL.absoluteString} route:@"workflow-verify" recovery:YES];
+}
+- (BOOL)beginRequestWithFields:(NSDictionary *)payload route:(NSString *)route recovery:(BOOL)recovery {
     NSURL *helper = [self resolveHelperURL];
     if (!helper) { if (self.failure) self.failure(SSInstallMessage); return NO; }
     NSDictionary *info = [self helperInfoAtURL:helper];
@@ -332,13 +375,13 @@ static NSString *SSResponseName(NSString *request) {
     self.connection.lastResponse = [self now];
     self.capabilityNonce = info ? nil : NSUUID.UUID.UUIDString;
     self.capabilityStarted = self.capabilityNonce ? [self now] : nil;
-    NSURLComponents *components = [NSURLComponents componentsWithString:@"silentsnip://workflow-analyze"];
+    self.recoveryOnly = recovery;
+    self.recoveryPending = recovery;
+    self.recoveryGesture = recovery ? payload[@"gesture"] : nil;
+    NSURLComponents *components = [NSURLComponents componentsWithString:[@"silentsnip://" stringByAppendingString:route]];
     NSMutableArray *items = [NSMutableArray new];
-    NSDictionary *fields = @{@"request": self.requestID, @"view": self.viewID, @"gesture": gesture,
-        @"library": libraryURL.absoluteString, @"project": projectUID, @"projectName": projectName,
-        @"threshold": [settings[@"thresholdDBFS"] stringValue], @"minimum": [settings[@"minimumSilenceDuration"] stringValue],
-        @"before": [settings[@"beforeSpeechPadding"] stringValue], @"after": [settings[@"afterSpeechPadding"] stringValue],
-        @"output": settings[@"outputMode"]};
+    NSMutableDictionary *fields = [payload mutableCopy];
+    if (!recovery) fields[@"request"] = self.requestID;
     for (NSString *key in fields) [items addObject:[NSURLQueryItem queryItemWithName:key value:fields[key]]];
     components.queryItems = items;
     self.analysisURL = components.URL;
@@ -395,9 +438,39 @@ static NSString *SSResponseName(NSString *request) {
     self.connection.lastResponse = [self now];
     [self dispatchAnalysis]; // Consume the nonce before the one real URL dispatch.
 }
+- (void)receiveConnection:(NSNotification *)notification {
+    if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self receiveConnection:notification]; }); return; }
+    if (!self.recoveryPending || !self.analysisDispatched || self.capabilityNonce || self.locallyFailed || self.cancelRequested ||
+        notification.userInfo || ![notification.object isKindOfClass:NSString.class]) return;
+    NSData *data = [notification.object dataUsingEncoding:NSUTF8StringEncoding];
+    if (data.length > 4096) return;
+    id value = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![value isKindOfClass:NSDictionary.class] || !SSInteger(value[@"version"], 1) || ![value[@"view"] isEqual:self.viewID] ||
+        ![value[@"gesture"] isEqual:self.recoveryGesture]) return;
+    if (SSDisplayText(value[@"error"], 16384)) { [self fail:value[@"error"]]; return; }
+    if (!SSUUID(value[@"request"]) || ![value[@"settings"] isKindOfClass:NSDictionary.class] ||
+        ![@[@"remove", @"gaps"] containsObject:value[@"output"]]) return;
+    NSDictionary *wire = value[@"settings"];
+    NSDictionary *settings = @{@"thresholdDBFS": wire[@"threshold"] ?: NSNull.null,
+        @"minimumSilenceDuration": wire[@"minimum"] ?: NSNull.null,
+        @"beforeSpeechPadding": wire[@"before"] ?: NSNull.null,
+        @"afterSpeechPadding": wire[@"after"] ?: NSNull.null, @"outputMode": value[@"output"]};
+    if (!SSSettings(settings)) return;
+    [self endObserving];
+    self.recoveryPending = NO;
+    self.connection = [SilentSnipReviewConnection new];
+    self.connection.requestID = value[@"request"];
+    self.connection.awaitingResponse = YES;
+    self.connection.lastResponse = [self now];
+    [self beginObserving];
+    [self send:@{@"version": @1, @"request": self.requestID, @"command": @"status"} name:SSCommandName];
+    [self publish];
+}
 - (BOOL)validResponse:(NSDictionary *)value {
     if (![value isKindOfClass:NSDictionary.class] || !SSInteger(value[@"version"], 1) ||
-        ![value[@"request"] isEqual:self.requestID] || !SSDisplayText(value[@"message"], 16384)) return NO;
+        ![value[@"request"] isEqual:self.requestID] || !SSDisplayText(value[@"message"], 16384) ||
+        (value[@"workflowGesture"] && !SSUUID(value[@"workflowGesture"])) ||
+        (self.recoveryOnly && ![value[@"workflowGesture"] isEqual:self.recoveryGesture])) return NO;
     id revision = value[@"revision"];
     if (![revision isKindOfClass:NSNumber.class] || SSBoolean(revision) || !isfinite([revision doubleValue]) ||
         [revision longLongValue] < 0 || [revision doubleValue] != (double)[revision longLongValue]) return NO;
@@ -431,7 +504,7 @@ static NSString *SSResponseName(NSString *request) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self receive:notification]; });
         return;
     }
-    if (!self.requestID || !self.analysisDispatched || self.capabilityNonce || notification.userInfo || ![notification.object isKindOfClass:NSString.class]) return;
+    if (self.recoveryPending || !self.requestID || !self.analysisDispatched || self.capabilityNonce || notification.userInfo || ![notification.object isKindOfClass:NSString.class]) return;
     NSData *data = [notification.object dataUsingEncoding:NSUTF8StringEncoding];
     if (data.length > 262144) return;
     id value = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -441,6 +514,7 @@ static NSString *SSResponseName(NSString *request) {
     NSDictionary *accepted = [self.connection acceptNotification:notification];
     if (!accepted) return;
     self.response = accepted;
+    if (self.navigationRevision && [accepted[@"revision"] compare:self.navigationRevision] == NSOrderedDescending) self.navigationRevision = nil;
     if (!self.activationPending) self.localMessage = nil;
     if (self.connection.applying && ([accepted[@"state"] isEqual:@"applying"] || SilentSnipReviewStateIsTerminal(accepted[@"state"]))) {
         self.connection.applyAcknowledged = YES;
@@ -464,6 +538,7 @@ static NSString *SSResponseName(NSString *request) {
         return;
     }
     if ([self.connection hasTimedOutAt:[self now]]) { [self fail:@"Silent Snip stopped responding. Check Final Cut before starting another operation."]; return; }
+    if (self.recoveryPending) return;
     for (NSDictionary *command in self.connection.commandsToRetry) [self send:command name:SSCommandName];
     [self send:@{@"version": @1, @"request": self.requestID, @"command": @"status"} name:SSCommandName];
 }
@@ -483,6 +558,71 @@ static NSString *SSResponseName(NSString *request) {
     return NO;
 }
 - (BOOL)selectAll:(BOOL)included { return [self selection:@{@"command": included ? @"selectAll" : @"deselectAll"}]; }
+- (void)markSettingsDirty {
+    if (self.busy || self.recoveryOnly || self.settingsDirty || !self.requestID ||
+        ![self.connection.state isEqual:SilentSnipReviewStateReview]) return;
+    self.settingsDirty = YES;
+    self.connection.pendingSelection = nil;
+    NSDictionary *command = @{@"version": @1, @"request": self.requestID, @"command": @"preview", @"included": @NO,
+        @"localPreview": @YES, @"expectedRevision": self.connection.revision};
+    NSUInteger generation = self.generation;
+    [self publish];
+    if (generation == self.generation && self.settingsDirty && !self.locallyFailed)
+        [self send:command name:SSCommandName];
+}
+- (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture {
+    if (!self.canUpdateCuts || !SSUUID(gesture) || !SSSettings(settings)) return NO;
+    NSNumber *revision = self.connection.revision;
+    // Copy the values before asynchronous activation; callers may keep editing
+    // their own mutable dictionary while this immutable request is pending.
+    NSDictionary *values = [settings copy];
+    [self prepareHostForUserRequest:^(NSError *error) {
+        if (error || ![self.connection.revision isEqual:revision] || !self.canUpdateCuts) {
+            self.localMessage = error.localizedDescription ?: @"The review changed. Update cuts again from the current review.";
+            [self publish]; return;
+        }
+        self.settingsSequence += 1;
+        self.settingsDirty = NO;
+        self.connection.pendingSettings = @{@"version": @1, @"request": self.requestID, @"command": @"recalculate",
+            @"expectedRevision": revision, @"view": self.viewID, @"settingsEdit": gesture,
+            @"settingsSequence": @(self.settingsSequence), @"verifySettings": @YES, @"localPreview": @YES,
+            @"settings": @{@"threshold": values[@"thresholdDBFS"], @"minimum": values[@"minimumSilenceDuration"],
+                @"before": values[@"beforeSpeechPadding"], @"after": values[@"afterSpeechPadding"]}, @"output": values[@"outputMode"]};
+        self.connection.awaitingResponse = YES;
+        self.connection.lastResponse = [self now];
+        self.localMessage = @"Updating cuts from the last analyzed audio…";
+        NSUInteger generation = self.generation, token = self.activationToken;
+        NSDictionary *command = self.connection.pendingSettings;
+        [self publish];
+        if (generation == self.generation && token == self.activationToken && !self.cancelRequested &&
+            !self.locallyFailed && self.connection.pendingSettings == command) [self send:command name:SSCommandName];
+    }];
+    return YES;
+}
+- (BOOL)highlightCut:(NSString *)cutID {
+    if (!self.canHighlight) return NO;
+    BOOL known = NO;
+    for (NSDictionary *cut in self.response[@"cuts"]) if ([cut[@"id"] isEqual:cutID]) known = YES;
+    if (!known) return NO;
+    NSNumber *revision = self.connection.revision;
+    [self prepareHostForUserRequest:^(NSError *error) {
+        if (error || ![self.connection.revision isEqual:revision] || !self.canHighlight) {
+            self.localMessage = error.localizedDescription ?: @"The review changed. Select the cut again.";
+            [self publish]; return;
+        }
+        self.navigationRevision = revision;
+        self.connection.lastResponse = [self now];
+        NSUInteger generation = self.generation, token = self.activationToken;
+        NSDictionary *command = @{@"version": @1, @"request": self.requestID, @"command": @"highlight",
+            @"cutID": cutID, @"expectedRevision": revision, @"view": self.viewID};
+        [self publish];
+        // Navigation is deliberately sent once: a dropped reply must not
+        // repeatedly move the playhead as polling continues.
+        if (generation == self.generation && token == self.activationToken && !self.cancelRequested &&
+            !self.locallyFailed && self.navigationRevision == revision) [self send:command name:SSCommandName];
+    }];
+    return YES;
+}
 - (BOOL)sendApplyWithGesture:(NSString *)gesture {
     if (!SSUUID(gesture) || !self.canApply) return NO;
     NSNumber *revision = self.connection.revision;
@@ -548,6 +688,8 @@ static NSString *SSResponseName(NSString *request) {
     self.connection.pendingSelection = nil;
     self.connection.pendingRetry = nil;
     self.connection.pendingApply = nil;
+    self.connection.pendingSettings = nil;
+    self.navigationRevision = nil;
     self.capabilityNonce = nil;
     if (!self.analysisDispatched) {
         self.generation += 1;
@@ -571,6 +713,8 @@ static NSString *SSResponseName(NSString *request) {
     self.helperURL = nil; self.analysisURL = nil; self.capabilityNonce = nil; self.capabilityStarted = nil;
     self.helperLaunched = NO; self.cancelRequested = NO; self.locallyFailed = NO;
     self.analysisDispatched = NO;
+    self.settingsDirty = NO; self.recoveryOnly = NO; self.recoveryPending = NO;
+    self.settingsSequence = 0; self.navigationRevision = nil; self.recoveryGesture = nil;
     self.activationPending = NO; self.activationToken += 1; self.localMessage = nil;
 }
 - (void)dealloc {

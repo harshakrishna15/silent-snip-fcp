@@ -315,7 +315,7 @@ extension FinalCutAXSession {
     }
 
     func canAuthorizePreview(view: UUID, edit: UUID) -> Bool {
-        guard workflowOrigin == nil else { return false }
+        if workflowOrigin != nil { return canAuthorizeWorkflowUpdate(view: view, edit: edit) }
         guard canReconnectReview(view: view), let window = focusedReviewWindow(),
               let button = find(in: window, role: kAXButtonRole,
                   identifier: "silentsnip.preview.requested.\(edit.uuidString)", maxDepth: 16, maxNodes: 250) else { return false }

@@ -208,6 +208,23 @@ enum ImportedSettingsRecovery {
 
     func markComplete() { complete = true }
 
+    /// Recovery may begin on the saved source or its existing cleaned result.
+    /// Equal names in another library, event or project confer no authority.
+    func validateWorkflowRecovery(_ origin: WorkflowReviewOrigin) throws {
+        let destination = try XMLReplacementTarget(projectData: expected)
+        guard origin.libraryURL.standardizedFileURL.path == destination.libraryURL.standardizedFileURL.path else {
+            throw FinalCutCaptureError.changedProject
+        }
+        if origin.projectName == destination.projectName,
+           origin.projectUID == destination.originalProjectUID || origin.projectUID == hostProjectUID { return }
+        let beforeURL = outputURL.deletingLastPathComponent().appendingPathComponent("Before-Cuts.fcpxml")
+        if let before = try? Data(contentsOf: beforeURL), (try? origin.verify(projectData: before)) != nil { return }
+        if let original = request.workflowOrigin,
+           origin.libraryURL == original.libraryURL, origin.projectName == original.projectName,
+           origin.projectUID == original.projectUID { return }
+        throw FinalCutCaptureError.unavailable("Open the original project or its existing cleaned result before verifying this file.")
+    }
+
     private func verifyDestination(_ data: Data) throws {
         if let replacementTarget {
             try replacementTarget.verifyDestination(data)

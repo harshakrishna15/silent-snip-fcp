@@ -2,11 +2,13 @@
 
 Remove quiet pauses from clips with audio in Final Cut Pro, with control over which cuts to keep.
 
-Silent Snip combines a passthrough audio effect with a background macOS helper. The effect provides the Controls window; the helper analyzes the selected clip and creates a cleaned copy of the full project.
+Silent Snip opens from **Window → Extensions → Silent Snip** in Final Cut Pro. Select a supported clip, set detection, Analyze, review, and Apply. You do not add Silent Snip to the clip. A background worker captures audio and creates a cleaned copy of the full project.
 
-This branch also includes a separate [Workflow Extension frontend](docs/workflow-extension-prototype.md). Frontend **16** removes the library name from the header while retaining project title/playhead and SDK identity; native header/settings, package/install, and all **12** scoped preservation checks passed. Historical frontend **15** removes routine window prose and normal informational Details; package/install, native empty/18-cut review, and verified Apply checks passed. Worker 54, AU29, and the worker ZIP are unchanged, with the permanent **320-point** cut pane retained. Historical frontend **14** / worker **54** passed native review and verified Apply. The helper restored the outer window to **615 × 736 points** after open, reopen, Final Cut restart, and Zoom enlargement. Resize handles and Zoom remain available; this is helper size restoration, requiring the helper and its existing Accessibility grant, rather than a native OS resize lock. Corrections pause during processing. The generated UI fixture opened a verified **44.6-second** result. Frontend **13** remains historical: its layout/Apply checks passed, but manual outer size did not persist. Recorded frontend **8** / worker **53** runs passed native removal and gap output with processed PCM directly in the **audio-only primary storyline**. Removal produced 59.7 seconds with two primary PCM clips; gap mode produced 60.7 seconds with two primary PCM clips and one real one-second gap. All **2,865,600 retained frames** matched the captured mix exactly, with **48,000 positive-zero frames** added in gap mode. Helper processing took **33.87 / 33.27 seconds**, excluding frontend/startup latency and human review; the three-second goal remains unmet.
+Worker **55** / Workflow frontend **17** adds the three remaining review features: **Update Cuts**, **Go to Cut**, and **Verify Existing Result…**. Detection and output settings persist per project. The default package contains the worker and Workflow frontend, with no Silent Snip Audio effect embedded. Current implementation and verification status are recorded in the [Workflow Extension report](docs/workflow-extension-prototype.md); the three features passed scoped native tests, including a verified 44.6-second result, restart recovery, and an AU-free installed smoke run.
 
-This layout applies to fresh results only when no video occurs anywhere in the timeline, including disabled or connected video. Video keeps its existing primary storyline. Original projects/live effects and older cleaned results are preserved. Those audio proofs used frontend 8 / worker 53. Worker 54 changes window sizing/lifecycle only; audio processing and AU29 are unchanged. Its new UI/Apply pass adds no PCM comparison. Native proof remains fixture-specific, and earlier worker-52/51 results are separately versioned.
+**Update Cuts** reuses retained measurements for eligible source-audio or verified direct-render clips, matching the former effect's eligibility. **Go to Cut** moves the playhead without another Share. **Verify Existing Result…** resumes checks after a restart without importing the result again or requiring a detector on a clip. Changing clip volume, effects, source media, or timeline content requires a fresh **Analyze Audio**.
+
+Historical frontend-8 / worker-53 removal and gap runs placed processed PCM directly in the **audio-only primary storyline**. All **2,865,600 retained frames** matched their captured mix exactly; gap mode added **48,000 positive-zero frames**. This layout applies to fresh results only when no video occurs anywhere in the timeline, including disabled or connected video. Video keeps its existing primary storyline. These fixture results do not establish every effect's compatibility or the three-second throughput target. Later frontend-14 through frontend-16 UI checks are versioned separately in the report.
 
 The build 40 changes prioritize identical retained sound: Apply captures the complete native project mix, including connected Music, Effects, and custom roles, and cuts that continuous lossless PCM instead of restarting live effects at each join. Original video edits stay in the cleaned project. The untouched original project retains its editable audio effects; the cleaned copy uses rendered sound and does not retain a live processing chain on its audio.
 
@@ -18,24 +20,24 @@ The build 40 changes prioritize identical retained sound: Apply captures the com
 
 Earlier general-project builds added linked camera clips, full-project copies, a guarded direct-render path, overlapping source validation, and viewport-based preview drawing. Their native Analyze → Apply passes and 64–69% lower fresh-reanalysis timing against the recorded audio baseline are historical results, with a different editable-effects output route. See [those verification notes](docs/general-project-performance.md).
 
-The manual review update adds **Update Cuts** from retained audio and **Go to Cut** without another Share. Nine native setting updates took 82–124 ms in the helper (94 ms median); fresh audio analysis remains separate and Apply verifies current audio. See [timings and verification limits](docs/general-project-performance.md#manual-review-without-repeated-share).
+The historical audio-effect manual review update added **Update Cuts** from retained audio and **Go to Cut** without another Share. Nine native setting updates took 82–124 ms in the helper (94 ms median); fresh audio analysis remains separate and Apply verifies current audio. See [timings and verification limits](docs/general-project-performance.md#manual-review-without-repeated-share).
 
 Builds 37–39 improved source decoding, validation overlap, and guarded native menu readiness. Their five-minute runs took about 19–23 seconds of helper Analyze plus verified Apply time using the earlier editable-effects output. On the same 652 MB linked-camera fixture, build 46 took 34.39 seconds and build 47 took 28.93 seconds. Build 45's 29.72-second small audio-only run is a separate workload. The three-second target remains unmet; individual host runs do not establish a general speedup. The [workflow throughput report](docs/workflow-throughput.md) separates these measurements and their verification boundaries.
 
 ## How it works
 
-Installed worker 54 retains the sound-preserving flow introduced in build 40, adding window sizing/lifecycle without changing that processing route. The effect Controls route below has historical build-47 validation; the [Workflow frontend](docs/workflow-extension-prototype.md) has the separately scoped native review/Apply and size-restoration pass described above. Earlier worker-53 PCM proof remains versioned. Other effects and project layouts retain the limits below.
+The Workflow window uses the existing sound-preserving worker, Share destination, and verified XML Apply path.
 
-1. Select one normal-speed clip with audio in the primary storyline and add **Silent Snip Audio**.
-2. Open **Controls**, adjust silence detection, and click **Analyze Audio**.
-3. Controls returns to the front when analysis finishes. Review the proposed cuts and choose which to include. Changing detection settings or output mode marks the old results as out of date. Click **Update Cuts** manually to recalculate from the last analyzed audio on supported direct clips. **Analyze Audio** remains visible for refreshing volume or effect changes. Apply verifies fresh processed audio before using a locally updated preview.
-4. Click **Apply Cuts** to capture the current full native mix, check the reviewed cuts, and create a cleaned copy in the original event. It retains the original video edits and uses the continuous processed PCM with only the selected ranges removed. Original camera audio is explicitly disabled so it cannot play twice.
+1. Select one normal-speed clip with audio in the primary storyline and open **Window → Extensions → Silent Snip**.
+2. Adjust silence detection and output, then click **Analyze Audio**.
+3. Review the proposed cuts and choose which to include. After detection or output changes, click **Update Cuts** when available to recalculate from retained measurements. Use **Go to Cut** to inspect a boundary. Use **Analyze Audio** after changing volume, effects, source media, or timeline content.
+4. Click **Apply Cuts** to capture the current full native mix, check the reviewed cuts, and create a cleaned copy in the original event. It retains the original video edits and uses continuous processed PCM with the selected ranges removed. Original camera audio is disabled so it cannot play twice.
 
 The original project and source media stay unchanged. Silent Snip also saves the original project's recovery XML before importing the result.
 
-Open the original project to change live sound-processing effects and analyze again. The cleaned copy contains the captured sound, including effect tails, rather than editable effect instances. Silent Snip's passthrough detector stays on the original recording; its analysis settings are saved with the result. Current exact-sample evidence covers native **24-bit stereo 48 kHz WAV exports**, not universal bit identity with Final Cut's live floating-point engine or every plugin.
+Open the original project to change live sound-processing effects and analyze again. The cleaned copy contains the captured sound, including effect tails, rather than editable effect instances. Detection settings are saved with the result; the Workflow route needs no Silent Snip effect on the recording. Current exact-sample evidence covers native **24-bit stereo 48 kHz WAV exports**, not universal bit identity with Final Cut's live floating-point engine or every plugin.
 
-Final Cut's native Share panels remain visible during automation; no window covers them. Keep Final Cut in front while Silent Snip operates it. Detection settings are available in both Controls and the Audio Inspector so Final Cut can persist them.
+Final Cut's native Share panels remain visible during automation; no window covers them. Keep Final Cut in front while Silent Snip operates it. Detection settings and output are saved per project in the Workflow frontend, keyed by library and project identity.
 
 See the [full workflow and recovery guide](docs/workflow.md) for detection settings, preview controls, and recovery steps.
 
@@ -56,41 +58,39 @@ Targets must be normal-speed direct asset clips with enabled audio in the primar
 
 ## Requirements
 
-- **Apple Silicon Mac** — the audio plug-in targets `arm64`.
+- **Apple Silicon Mac** — the worker and Workflow frontend target `arm64`.
 - **macOS 14 or later** — the deployment target; Xcode and Final Cut may require a newer version.
 - **Final Cut Pro in English** — automation currently matches English interface labels.
 
 Recorded builds used Xcode 27.0 / Swift 6.4. Current development checks use Final Cut Pro 12.4 on macOS 27.2; historical reports used earlier macOS releases and Final Cut Pro 12.3. Other combinations have not been verified here.
 
-A prebuilt app needs no Xcode, repository, or Terminal. Building from source requires full Xcode with first-launch setup completed. The ordinary app/audio plug-in build has no external Swift packages or separate plug-in SDKs; the optional Workflow frontend requires Apple’s Workflow Extensions SDK as documented in its guide. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
+The prebuilt apps need no Xcode, repository, or Terminal. Building from source requires full Xcode with first-launch setup completed and Apple’s Workflow Extensions SDK as documented in the [frontend guide](docs/workflow-extension-prototype.md). There are no external Swift package dependencies. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
 
 ## Install
 
 Start with **Silent Snip.zip**. You do not need the repository, Xcode, Terminal, or a separate installer.
 
-1. **Quit Final Cut Pro and Silent Snip** before replacing an earlier copy.
-2. **Extract the ZIP** and drag **Silent Snip.app** into Applications. Choose **Replace** if prompted. Keep one main app copy there.
-3. **Open Silent Snip once.** A scissors icon appears in the menu bar. Its menu shows access status and provides saved results and Quit.
-4. **Grant control access.** Open **System Settings → Privacy & Security → Device Control and Data Access** (called **Accessibility** on earlier macOS versions). Enable **Silent Snip**. If it is missing, click **+** and select the app you copied into Applications.
-5. **Set up Final Cut Share.** In **Final Cut Pro → Settings → Destinations**, add **Export File**, name it **Silent Snip**, and choose **Audio Only → WAV**. Under **Action → Other…**, select that same **Silent Snip.app** in Applications.
-6. **Add the effect.** In Final Cut’s Effects browser, add **Silent Snip Audio** to a normal-speed clip with audio. Open **Controls**, adjust detection, and choose **Analyze Audio**. Review the ranges before choosing **Apply Cuts**.
+1. **Quit Final Cut Pro and both Silent Snip apps** before replacing an earlier copy.
+2. **Extract the ZIP** and copy **Silent Snip.app** and **Silent Snip Workflow Prototype.app** into the same Applications folder. Keep one active copy of each.
+3. **Open both apps once.** Silent Snip provides the scissors menu bar icon. The Workflow frontend shows instructions; choose **Done**.
+4. **Grant worker control access.** In **System Settings → Privacy & Security → Device Control and Data Access** (called **Accessibility** on earlier macOS versions), enable the copied **Silent Snip.app**.
+5. **Set up Final Cut Share.** In **Final Cut Pro → Settings → Destinations**, add **Export File**, name it **Silent Snip**, choose **Audio Only → WAV**, and set **Action → Other…** to that same **Silent Snip.app**. Existing users keep the same worker identity and Share action.
+6. In Final Cut, choose **Window → Extensions → Silent Snip**. Use **Connect to Final Cut Pro** if shown and approve the frontend's Automation request. Select a supported clip, Analyze, review, then Apply.
 
-**Upgrading from an older version:** this release uses a fresh app identity. Grant access to **Silent Snip**, remove obsolete app permission entries, and reselect the new app as the Share action. Old settings are not migrated; old files are left on disk.
-
-See [setup and troubleshooting](docs/setup.md) for detailed steps, migration, and complete removal. The Audio Unit’s **Controls** window is the main interface; the menu bar app stays running in the background.
+The default worker contains no Audio Unit. Existing projects and saved effect instances are not rewritten by installing the new apps. See [setup and migration](docs/setup.md) for details.
 
 <details>
 <summary>Build from source</summary>
 
-With full Xcode installed, quit Final Cut and Silent Snip, then run:
+With full Xcode and Apple’s Workflow Extensions SDK installed, quit Final Cut and both Silent Snip apps, then run:
 
 ```sh
 Scripts/build-app.sh
 ```
 
-This produces **`build/App/Silent Snip.app`** and **`dist/Silent Snip.zip`**, with both components in Release. The app includes the background executable, sandboxed Audio Unit, and Share definitions. Local builds are ad hoc signed; packaging does not bypass macOS security checks.
+This produces **`build/App/Silent Snip.app`**, **`build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app`**, and **`dist/Silent Snip.zip`**. The ZIP contains both apps under a `Silent Snip` folder. The worker retains its background executable and Share definitions; the separate frontend hosts the sandboxed Workflow interface. No Audio Unit is embedded. Both builds use Release by default. Local builds are ad hoc signed; packaging does not bypass macOS security checks.
 
-For development, `Scripts/build.sh` builds a Debug app and registers it in place. Add `--release` for Release, or `--stage` to create an inert candidate without changing the published app, ZIP, or registrations. `Scripts/register-local.sh --check-only` checks the combined build without changing registrations. Keep registered build products in place. See [developer setup](docs/setup.md#build-from-source).
+For development, `Scripts/build.sh` builds a Debug worker plus the Release frontend and registers the pair in place. Add `--release` for a Release worker, or `--stage` to create only an inert worker candidate without changing the published apps, ZIP, or registrations. `Scripts/register-local.sh --check-only` checks the pair without changing registrations. Keep registered build products in place. See [developer setup](docs/setup.md#build-from-source).
 
 </details>
 
@@ -108,13 +108,13 @@ Build 40's retained **Processed Audio** is result media, not disposable analysis
 
 ## Uninstall
 
-Quit Final Cut and Silent Snip, then move the copied **Silent Snip.app** to Trash. Settings and saved results are kept. Remove its Final Cut Share destination and macOS control-access entry as described in [complete removal](docs/setup.md#uninstall).
+Quit Final Cut and both Silent Snip apps, then move **Silent Snip.app** and **Silent Snip Workflow Prototype.app** to Trash. Settings and saved results are kept. Remove its Final Cut Share destination and macOS control-access entry as described in [complete removal](docs/setup.md#uninstall).
 
 Developer builds can be removed with `Scripts/uninstall-local.sh`. Use `--dry-run` to preview or `--remove-data` to erase this account's saved settings, results, and recovery XML. This script only removes app bundles inside the checkout; protected data may require manual removal in Finder.
 
 ## Tests
 
-Offline tests cover the Swift code, Audio Unit rendering and Controls, and build scripts. They do not edit Final Cut projects.
+Offline tests cover Swift processing, the Workflow controller and clients, and build scripts. Legacy Audio Unit harnesses remain available for compatibility checks. They do not edit Final Cut projects.
 
 <details>
 <summary>Run the offline tests</summary>
@@ -127,8 +127,9 @@ CLANG_MODULE_CACHE_PATH="$PWD/build/module-cache" \
 SWIFTPM_MODULECACHE_OVERRIDE="$PWD/build/module-cache" \
 swift test --disable-sandbox --scratch-path build/swift --cache-path build/swift-cache -c release
 
-AudioPlugin/test-audio.sh
-AudioPlugin/test-factory.sh
+WorkflowPrototype/Tests/run-controller-tests.sh
+WorkflowPrototype/Tests/run-review-client-tests.sh
+WorkflowPrototype/Tests/run-window-client-tests.sh
 python3 -B -m unittest discover -s Tests/BuildScripts -p 'test_*.py'
 ```
 
@@ -140,9 +141,11 @@ Audio decoding requires access to macOS media services. Xcode builds may also ne
 
 Follow [integration-test setup](docs/setup.md#integration-test-library) and [AGENTS.md](AGENTS.md) before testing.
 
-## Verified in this repository copy
+## Verification status
 
-Frontend **16** header cleanup passed **33 controller groups / 5,304 assertions**, native visible/AX header and saved-settings checks, package/install checks, and all **12** scoped preservation checks. The **615 × 736-point** window, **320-point** pane, worker54/AU29/ZIP, and SDK settings/verification identity are unchanged. Original project/clip, settings, Gate/Limiter, and **75.933-second** playhead were restored; the minimal window remains open. No new Analyze/Apply, PCM, startup, or throughput run was performed. Evidence is under `build/WorkflowPrototype/Window16`; frontend-15 processing proof remains historical.
+Worker **55** / frontend **17** implementation adds the three features and AU-free pair packaging. The three review features passed scoped native validation; see the [current evidence record](docs/workflow-extension-prototype.md). The results below belong to their named historical revisions.
+
+Historical frontend **16** header cleanup passed **33 controller groups / 5,304 assertions**, native visible/AX header and saved-settings checks, package/install checks, and all **12** scoped preservation checks. The **615 × 736-point** window, **320-point** pane, worker54/AU29/ZIP, and SDK settings/verification identity are unchanged. Original project/clip, settings, Gate/Limiter, and **75.933-second** playhead were restored; the minimal window remains open. No new Analyze/Apply, PCM, startup, or throughput run was performed. Evidence is under `build/WorkflowPrototype/Window16`; frontend-15 processing proof remains historical.
 
 Historical frontend **15** copy cleanup passed **33 controller groups / 5,304 assertions**, package/install/signature checks, and native empty/18-cut review plus verified Apply at **615 × 736 points** with the **320-point** table retained. The generated result is **44.6 seconds**, with no import differences, verified source media, and **19 primary PCM clips / no gaps**. All **12** scoped preservation checks passed; worker54/AU29/ZIP are unchanged. One-cut, error/warning, and completed-label presentation retain offline coverage only. The original project/clip, Gate/Limiter, and **75.933-second** playhead were restored; the minimal window remains open. Evidence is under `build/WorkflowPrototype/Window15`. No new PCM comparison or performance claim is made.
 
@@ -184,13 +187,14 @@ These are historical results, not checks rerun for every commit. See [XML replac
 
 | Guide | Covers |
 | --- | --- |
-| [Single-app design and verification](docs/single-app-plan.md) | Architecture, migration, and current verification |
+| [Workflow frontend and verification](docs/workflow-extension-prototype.md) | Current button interface, package, and versioned native evidence |
+| [Historical single-app design](docs/single-app-plan.md) | Earlier Audio Unit architecture and migration |
 | [Setup and troubleshooting](docs/setup.md) | Installation, permissions, Share destination, and test library |
 | [Workflow and recovery](docs/workflow.md) | Detection settings, review, Apply, and settings recovery |
 | [Analysis and caching](docs/analysis-speed.md) | Source versus processed audio and measurement reuse |
 | [Visible Share prototype](docs/quiet-share-prototype.md) | Automated native Share, testing inside Final Cut, and verification limits |
 | [Integration evidence](docs/xml-replacement.md) | Manual replacement results and remaining verification |
-| [Audio plug-in](AudioPlugin/README.md) | Implementation and [Controls/helper protocol](AudioPlugin/REVIEW_PROTOCOL.md) |
+| [Legacy audio plug-in](AudioPlugin/README.md) | Earlier effect implementation and shared [review protocol](AudioPlugin/REVIEW_PROTOCOL.md) |
 
 <details>
 <summary>Source layout</summary>
@@ -201,7 +205,8 @@ These are historical results, not checks rerun for every commit. See [XML replac
 | `Sources/SilentSnipMac` | Audio analysis, Final Cut integration, XML, verification, and preview |
 | `Sources/SilentSnipApp` | Containing app executable and background workflow |
 | `Sources/SilentSnipVerify` | Offline developer verifier; does not import projects |
-| `AudioPlugin` | Passthrough Audio Unit and Controls window |
+| `WorkflowPrototype` | Default Workflow frontend, project settings, and review clients |
+| `AudioPlugin` | Legacy Audio Unit sources and shared review connection code |
 | `Tests` | Swift fixtures, regression tests, and build-script tests |
 | `Scripts` | Build, registration, and generated-media utilities |
 

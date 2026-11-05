@@ -162,6 +162,18 @@ final class XMLProjectApplyTests: XCTestCase {
         XCTAssertEqual(loaded.request.id, request.id)
         XCTAssertEqual(loaded.expected, verification.expected)
         XCTAssertFalse(loaded.complete)
+        let recovery = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(), libraryURL: origin.libraryURL,
+            projectUID: origin.projectUID, projectName: origin.projectName)
+        XCTAssertNoThrow(try loaded.validateWorkflowRecovery(recovery))
+        let resultIdentity = try XMLReplacementTarget(projectData: loaded.expected)
+        XCTAssertNoThrow(try loaded.validateWorkflowRecovery(WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: origin.libraryURL, projectUID: resultIdentity.originalProjectUID, projectName: resultIdentity.projectName)))
+        for (library, uid, name) in [(origin.libraryURL, "unrelated-UID", origin.projectName),
+            (origin.libraryURL.deletingLastPathComponent().appendingPathComponent("Other.fcpbundle"), origin.projectUID, origin.projectName),
+            (origin.libraryURL, origin.projectUID, "Another project")] {
+            XCTAssertThrowsError(try loaded.validateWorkflowRecovery(WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+                libraryURL: library, projectUID: uid, projectName: name)))
+        }
     }
 
     func testCreatesSeparateEditableProjectAndRecoveryWithoutChangingInput() throws {

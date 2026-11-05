@@ -39,6 +39,13 @@ static void unexpectedBoundary(void) {
 - (BOOL)canApply { unexpectedBoundary(); return NO; }
 - (BOOL)canChangeSelection { unexpectedBoundary(); return NO; }
 - (BOOL)canCancel { unexpectedBoundary(); return NO; }
+- (BOOL)canUpdateCuts { unexpectedBoundary(); return NO; }
+- (BOOL)canHighlight { unexpectedBoundary(); return NO; }
+- (void)markSettingsDirty { unexpectedBoundary(); }
+- (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
+- (BOOL)highlightCut:(NSString *)cutID { unexpectedBoundary(); return NO; }
+- (BOOL)verifyExistingResultURL:(NSURL *)resultURL libraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID
+                  projectName:(NSString *)projectName gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
 - (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName settings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
 - (BOOL)sendApplyWithGesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
 - (BOOL)setCut:(NSString *)cutID included:(BOOL)included { unexpectedBoundary(); return NO; }

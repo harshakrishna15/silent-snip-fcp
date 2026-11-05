@@ -8,6 +8,11 @@ static BOOL SSWindowInteger(id value, NSInteger expected) {
     return [value isKindOfClass:NSNumber.class] && CFGetTypeID((__bridge CFTypeRef)value) != CFBooleanGetTypeID() &&
         isfinite([value doubleValue]) && [value doubleValue] == (double)expected;
 }
+static BOOL SSWindowText(id value) {
+    return [value isKindOfClass:NSString.class] && [value length] > 0 &&
+        [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= 512 &&
+        [value rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound;
+}
 
 @interface SSWorkflowWindowClient ()
 @property (nonatomic, copy) NSString *viewID;
@@ -22,6 +27,9 @@ static BOOL SSWindowInteger(id value, NSInteger expected) {
 @property (nonatomic) NSTimeInterval lastReply;
 @property (nonatomic) NSTimeInterval nextAttach;
 @property (nonatomic) NSUInteger attachFailures;
+@property (nonatomic, copy) NSString *projectName;
+@property (nonatomic, copy) NSString *contextID;
+@property (nonatomic, copy) NSDictionary *lastPresentation;
 @end
 
 @implementation SSWorkflowWindowClient
@@ -54,11 +62,24 @@ static BOOL SSWindowInteger(id value, NSInteger expected) {
 - (void)postObject:(NSString *)object name:(NSString *)name {
     [NSDistributedNotificationCenter.defaultCenter postNotificationName:name object:object userInfo:nil deliverImmediately:YES];
 }
+- (void)updateProjectName:(NSString *)projectName {
+    self.projectName = SSWindowText(projectName) ? projectName : nil;
+    self.contextID = self.projectName ? NSUUID.UUID.UUIDString : nil;
+    self.lastPresentation = nil;
+    [self tick];
+}
 - (void)send:(NSString *)command {
     if (!self.nonce) return;
-    NSDictionary *value = @{@"version":@1, @"command":command, @"view":self.viewID, @"nonce":self.nonce};
+    NSMutableDictionary *value = [@{@"version":@1, @"command":command, @"view":self.viewID, @"nonce":self.nonce} mutableCopy];
+    if (![command isEqual:@"detach"]) {
+        value[@"layout"] = @"compact";
+        if (self.projectName && self.contextID) {
+            value[@"project"] = self.projectName;
+            value[@"context"] = self.contextID;
+        }
+    }
     NSData *data = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
-    if (data.length <= 1024) [self postObject:[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] name:SSWindowCommand];
+    if (data.length <= 2048) [self postObject:[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] name:SSWindowCommand];
 }
 - (void)start {
     if (self.active) return;
@@ -105,10 +126,10 @@ static BOOL SSWindowInteger(id value, NSInteger expected) {
     if (![value isKindOfClass:NSDictionary.class]) return;
     NSSet *keys = [NSSet setWithArray:[value allKeys]];
     NSSet *required = [NSSet setWithArray:@[@"version",@"protocol",@"command",@"view",@"nonce",@"accepted",@"state",@"width",@"height",@"corrections"]];
-    NSMutableSet *allowed = [required mutableCopy]; [allowed addObject:@"axCode"];
+    NSMutableSet *allowed = [required mutableCopy]; [allowed addObjectsFromArray:@[@"axCode", @"presentation"]];
     if (![required isSubsetOfSet:keys] || ![keys isSubsetOfSet:allowed] ||
         !SSWindowInteger(value[@"version"],1) || !SSWindowInteger(value[@"protocol"],1) ||
-        !SSWindowInteger(value[@"width"],615) || !SSWindowInteger(value[@"height"],736) ||
+        !SSWindowInteger(value[@"width"],615) || !(SSWindowInteger(value[@"height"],704) || SSWindowInteger(value[@"height"],736)) ||
         ![value[@"view"] isEqual:self.viewID] || ![value[@"nonce"] isEqual:self.nonce] ||
         ![@[@"attach",@"renew"] containsObject:value[@"command"]] ||
         ![value[@"accepted"] isKindOfClass:NSNumber.class] ||
@@ -134,6 +155,24 @@ static BOOL SSWindowInteger(id value, NSInteger expected) {
         self.attachFailures = 0;
         self.nextAttach = 0;
     }
+    if (self.acknowledged) [self receivePresentation:value[@"presentation"]];
+}
+- (void)receivePresentation:(id)value {
+    if (!self.contextID || ![value isKindOfClass:NSDictionary.class] ||
+        ![[NSSet setWithArray:[value allKeys]] isEqualToSet:[NSSet setWithArray:@[@"context",@"project",@"selection",@"clipName",@"nativeTitleMatches"]]] ||
+        ![value[@"context"] isEqual:self.contextID] ||
+        ![@[@"single",@"none",@"multiple",@"unavailable",@"paused"] containsObject:value[@"selection"]] ||
+        ![value[@"nativeTitleMatches"] isKindOfClass:NSNumber.class] ||
+        CFGetTypeID((__bridge CFTypeRef)value[@"nativeTitleMatches"]) != CFBooleanGetTypeID()) return;
+    BOOL single = [value[@"selection"] isEqual:@"single"];
+    BOOL noProject = value[@"project"] == NSNull.null;
+    if ((!noProject && ![value[@"project"] isEqual:self.projectName]) ||
+        (single && (noProject || !SSWindowText(value[@"clipName"]))) ||
+        (!single && value[@"clipName"] != NSNull.null) ||
+        (noProject && ![@[@"paused",@"unavailable"] containsObject:value[@"selection"]])) return;
+    if ([value isEqual:self.lastPresentation]) return;
+    self.lastPresentation = value;
+    if (self.presentationHandler) self.presentationHandler(value);
 }
 - (void)stop {
     if (!self.active) return;
@@ -148,6 +187,7 @@ static BOOL SSWindowInteger(id value, NSInteger expected) {
     [self endObserving];
     self.launcher = nil;
     self.nonce = nil;
+    self.lastPresentation = nil;
     self.lastState = @"stopped";
 }
 - (void)dealloc {

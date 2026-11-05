@@ -187,17 +187,32 @@ class WorkflowPrototypePackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "point or principal"):
                 self.verify()
 
-    def test_signed_entitlements_must_be_exact_inspection_and_automation_consent(self):
+    def test_signed_entitlements_accept_only_read_only_user_selected_files_for_recovery(self):
+        configured = plistlib.loads((SCRIPT.parents[1] / "WorkflowPrototype/Extension/Sandbox.entitlements").read_bytes())
+        self.assertEqual(configured, MODULE.EXPECTED_ENTITLEMENTS)
+        self.assertIs(configured["com.apple.security.files.user-selected.read-only"], True)
+        report = self.verify()
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["signedEntitlements"], configured)
+
+    def test_signed_entitlements_must_be_exact_inspection_automation_and_user_selected_read(self):
         missing_consent = copy.deepcopy(MODULE.EXPECTED_ENTITLEMENTS)
         missing_consent.pop("com.apple.security.automation.apple-events")
+        missing_selected_read = copy.deepcopy(MODULE.EXPECTED_ENTITLEMENTS)
+        missing_selected_read.pop("com.apple.security.files.user-selected.read-only")
         variants = [
             {},
             missing_consent,
+            missing_selected_read,
             {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.network.client": True},
             {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.app-sandbox": 1},
             {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.automation.apple-events": 1},
             {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.accessibility": True},
-            {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.files.user-selected.read-only": True},
+            {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.files.user-selected.read-only": False},
+            {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.files.user-selected.read-only": 1},
+            {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.files.user-selected.read-write": True},
+            {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.files.downloads.read-only": True},
+            {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.temporary-exception.files.absolute-path.read-only": ["/"]},
             {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.application-groups": ["group.unrelated"]},
             {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.temporary-exception.apple-events": ["*"]},
             {**MODULE.EXPECTED_ENTITLEMENTS, "com.apple.security.scripting-targets": {

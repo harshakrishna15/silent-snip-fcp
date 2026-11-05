@@ -52,7 +52,7 @@ import SilentSnipMac
     private func updateState() {
         let busy = isBusy()
         stateItem.title = busy ? "Working in Final Cut Pro…"
-            : FinalCutAccessibility.isTrusted ? "Ready — use Controls in Final Cut Pro" : "Control access required in System Settings"
+            : FinalCutAccessibility.isTrusted ? "Ready — Window → Extensions → Silent Snip" : "Control access required in System Settings"
         // Let an active capture, import, or verification finish before quitting.
         quitItem.isEnabled = !busy
         clearCacheItem.isEnabled = !busy

@@ -117,10 +117,15 @@
 @property (nonatomic, strong) NSURL *libraryURL;
 @property (nonatomic, strong) NSString *projectUID;
 @property (nonatomic) NSUInteger contextGeneration;
+@property (nonatomic) BOOL verificationPanelPending;
+@property (nonatomic) NSUInteger verificationPanelToken;
 @property (nonatomic) BOOL settingsLoaded;
 @property (nonatomic, copy) NSString *viewID;
 @property (nonatomic, strong) SSWorkflowReviewClient *reviewClient;
 @property (nonatomic, strong) NSButton *analyzeButton;
+@property (nonatomic, strong) NSButton *updateButton;
+@property (nonatomic, strong) NSButton *verifyButton;
+@property (nonatomic, strong) NSPopUpButton *navigateMenu;
 @property (nonatomic, strong) NSButton *applyButton;
 @property (nonatomic, strong) NSButton *cancelButton;
 @property (nonatomic, strong) NSButton *retryButton;
@@ -303,6 +308,13 @@
     self.statusDetails.hidden = YES;
     self.analyzeButton = [NSButton buttonWithTitle:@"Analyze Audio" target:self action:@selector(analyzeAudio:)];
     self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
+    self.updateButton = [NSButton buttonWithTitle:@"Update Cuts" target:self action:@selector(updateCuts:)];
+    self.updateButton.accessibilityIdentifier = @"silentsnip.workflow.update";
+    self.verifyButton = [NSButton buttonWithTitle:@"Verify Existing Result…" target:self action:@selector(verifyExistingResult:)];
+    self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
+    self.verifyButton.bezelStyle = NSBezelStyleInline;
+    [self.settingsPanel addArrangedSubview:self.verifyButton];
+    self.settingsPanel.spacing = 4;
     self.applyButton = [NSButton buttonWithTitle:@"Apply Cuts" target:self action:@selector(applyCuts:)];
     self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
     self.cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancelReview:)];
@@ -313,7 +325,7 @@
     self.retryButton.hidden = YES;
     NSView *actionSpring = [NSView new];
     [actionSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *actions = [NSStackView stackViewWithViews:@[actionSpring, self.analyzeButton, self.applyButton, self.retryButton, self.cancelButton]];
+    NSStackView *actions = [NSStackView stackViewWithViews:@[actionSpring, self.analyzeButton, self.updateButton, self.applyButton, self.retryButton, self.cancelButton]];
     [actions setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
     actions.spacing = 8;
     NSStackView *status = [NSStackView stackViewWithViews:@[self.statusLabel, self.detailsButton]];
@@ -344,13 +356,17 @@
     self.reviewSummary.lineBreakMode = NSLineBreakByTruncatingTail;
     self.allButton = [NSButton buttonWithTitle:@"Select All" target:self action:@selector(selectAllCuts:)];
     self.noneButton = [NSButton buttonWithTitle:@"Deselect All" target:self action:@selector(deselectAllCuts:)];
+    self.navigateMenu = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
+    [self.navigateMenu addItemWithTitle:@"Go to Cut"];
+    self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
+    self.navigateMenu.controlSize = NSControlSizeSmall;
     for (NSButton *button in @[self.allButton, self.noneButton]) {
         button.controlSize = NSControlSizeSmall;
         button.font = [NSFont systemFontOfSize:11];
     }
     NSView *reviewSpring = [NSView new];
     [reviewSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[[self label:@"Cut review" size:14 weight:NSFontWeightSemibold], reviewSpring, self.allButton, self.noneButton]];
+    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[[self label:@"Cut review" size:14 weight:NSFontWeightSemibold], reviewSpring, self.navigateMenu, self.allButton, self.noneButton]];
     reviewActions.spacing = 6;
     self.cutList = [SSWorkflowDocument stackViewWithViews:@[]];
     self.cutList.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -553,11 +569,12 @@
 }
 
 - (void)setControlsEnabled:(BOOL)enabled {
-    enabled = enabled && !self.reviewClient.busy && ![self.reviewResponse[@"canRetryVerification"] boolValue];
+    enabled = enabled && !self.verificationPanelPending && !self.reviewClient.busy && ![self.reviewResponse[@"canRetryVerification"] boolValue];
     for (NSTextField *field in self.fields) field.enabled = enabled;
     self.output.enabled = enabled;
     self.saveButton.enabled = enabled;
     self.analyzeButton.enabled = enabled && !self.reviewClient.busy;
+    self.verifyButton.enabled = enabled;
 }
 
 - (SSWorkflowWindowClient *)newWindowClient {
@@ -660,6 +677,8 @@
 
 - (void)viewWillDisappear {
     self.viewVisible = NO;
+    self.verificationPanelPending = NO;
+    self.verificationPanelToken += 1;
     [self stopWindowClient];
     [self clearCompletionMessage];
     [self invalidateReview];
@@ -700,6 +719,10 @@
 }
 
 - (void)refreshProject {
+    // The host can temporarily omit its active sequence while an extension's
+    // file sheet owns presentation. Its pinned identity is checked again after
+    // dismissal; these transient notifications must not unload its settings.
+    if (self.verificationPanelPending) return;
     // The worker can temporarily open an isolated analysis project or the
     // verified result. Keep its request bound until that operation settles.
     if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
@@ -746,6 +769,7 @@
 }
 
 - (void)refreshPlayhead {
+    if (self.verificationPanelPending) return;
     if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
     if (!self.timeline || !self.timeline.activeSequence) {
         self.playheadLabel.stringValue = @"Playhead —";
@@ -780,8 +804,8 @@
 
 - (BOOL)observedProjectMatchesSettings {
     NSDictionary *context = [self observedProjectContext];
-    return [context[@"projectUID"] isEqual:self.projectUID] &&
-        [context[@"libraryURL"] isEqual:self.libraryURL];
+    if (!self.libraryURL || !self.projectUID.length) return NO;
+    return [self projectContext:context hasSameIdentityAs:@{@"projectUID": self.projectUID, @"libraryURL": self.libraryURL}];
 }
 
 - (void)invalidateReview {
@@ -804,6 +828,10 @@
     self.analyzeButton.title = @"Analyze Audio";
     self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
     self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
+    self.updateButton.accessibilityIdentifier = @"silentsnip.workflow.update";
+    self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
+    [self.navigateMenu removeAllItems];
+    [self.navigateMenu addItemWithTitle:@"Go to Cut"];
     [self updateReviewControls];
 }
 
@@ -811,6 +839,12 @@
     if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
     [self clearCompletionMessage];
     BOOL hadReview = self.reviewClient != nil;
+    if (self.reviewClient.canUpdateCuts) {
+        [self.reviewClient markSettingsDirty];
+        [self updateReviewControls];
+        [self setStatusMessage:@"Settings changed—click Update Cuts."];
+        return;
+    }
     [self invalidateReview];
     self.analyzeButton.enabled = self.settingsLoaded;
     if (hadReview) [self setStatusMessage:@"Analyze again to update cuts."];
@@ -823,6 +857,11 @@
     self.cancelButton.enabled = self.reviewClient.canCancel;
     self.allButton.enabled = self.reviewClient.canChangeSelection;
     self.noneButton.enabled = self.reviewClient.canChangeSelection;
+    self.navigateMenu.enabled = self.reviewClient.canHighlight;
+    BOOL pendingUpdate = self.reviewClient.busy &&
+        [self.updateButton.accessibilityIdentifier hasPrefix:@"silentsnip.workflow.update.requested."];
+    self.updateButton.hidden = !self.reviewClient.canUpdateCuts && !pendingUpdate;
+    self.updateButton.enabled = self.settingsLoaded && self.reviewClient.canUpdateCuts && !self.reviewClient.busy;
     self.retryButton.hidden = ![self.reviewResponse[@"canRetryVerification"] boolValue];
     self.applyButton.hidden = !self.retryButton.hidden;
     self.cancelButton.hidden = NO;
@@ -850,6 +889,15 @@
     BOOL completed = [@[@"completed", @"complete"] containsObject:state] && !recovery;
     NSString *normalReview = @"Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts.";
     BOOL snapshot = [response[@"usesAudioSnapshot"] boolValue];
+    NSString *snapshotNotice = @"Cuts use the last analyzed audio. Apply verifies current audio before editing. Use Analyze Audio Again after changing volume or effects.";
+    if (!recovery && snapshot && [state isEqual:@"review"] &&
+        [message isEqual:[NSString stringWithFormat:@"%@ %@", snapshotNotice, normalReview]]) {
+        [self setStatusMessage:@"Cuts updated. Apply verifies current audio; Analyze again after changing volume or effects."];
+        self.statusDetails.stringValue = message;
+        self.statusDetails.toolTip = message;
+        self.statusLabel.toolTip = message;
+        return;
+    }
     if (completed || (!recovery && !snapshot && [state isEqual:@"review"] && [message hasPrefix:normalReview])) {
         NSString *remaining = message;
         if (!completed) {
@@ -868,7 +916,7 @@
             for (NSString *text in boilerplate) remaining = [remaining stringByReplacingOccurrencesOfString:text withString:@""];
             remaining = [remaining stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         }
-        [self setStatusMessage:completed ? @"Cuts applied." : remaining requiresAttention:!completed && remaining.length > 0];
+        [self setStatusMessage:completed ? ([response[@"verificationOnly"] boolValue] ? @"Result verified." : @"Cuts applied.") : remaining requiresAttention:!completed && remaining.length > 0];
         self.statusDetails.stringValue = message;
         self.statusDetails.toolTip = message;
         self.statusLabel.toolTip = message;
@@ -879,12 +927,24 @@
 
 - (void)receiveReview:(NSDictionary *)response {
     self.reviewResponse = response;
+    if (!self.reviewClient.busy) {
+        self.updateButton.accessibilityIdentifier = @"silentsnip.workflow.update";
+        self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
+    }
     NSArray *cuts = response[@"cuts"] ?: @[];
     if (![cuts isEqual:self.reviewCuts]) {
         self.reviewCuts = cuts;
+        [self.navigateMenu removeAllItems];
+        [self.navigateMenu addItemWithTitle:@"Go to Cut"];
         for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
         for (NSUInteger index = 0; index < cuts.count; ++index) {
             NSDictionary *cut = cuts[index];
+            NSMenuItem *navigation = [[NSMenuItem alloc] initWithTitle:
+                [NSString stringWithFormat:@"%lu: %@ – %@", (unsigned long)index + 1, cut[@"start"], cut[@"end"]]
+                action:@selector(goToCut:) keyEquivalent:@""];
+            navigation.target = self;
+            navigation.representedObject = cut[@"id"];
+            [self.navigateMenu.menu addItem:navigation];
             NSString *title = [NSString stringWithFormat:@"%@ – %@  (%@)", cut[@"start"], cut[@"end"], cut[@"duration"]];
             SSWorkflowCutRow *row = [[SSWorkflowCutRow alloc] initWithFrame:NSZeroRect];
             row.cell = [SSWorkflowCutCell new];
@@ -921,7 +981,7 @@
     NSString *state = response[@"state"];
     if ([@[@"completed", @"complete", @"failed", @"cancelled", @"unavailable"] containsObject:state]) {
         self.completionMessage = [@[@"completed", @"complete"] containsObject:state] &&
-            ![response[@"canRetryVerification"] boolValue] ? @"Cuts applied." : response[@"message"];
+            ![response[@"canRetryVerification"] boolValue] ? ([response[@"verificationOnly"] boolValue] ? @"Result verified." : @"Cuts applied.") : response[@"message"];
         // The response has no explicit result identity. Only the request's
         // pinned project can own its notice; a delayed response must not bind
         // verification to whichever project the user has since opened.
@@ -980,6 +1040,154 @@
     [self.reviewClient sendApplyWithGesture:gesture];
     [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
     [self updateReviewControls];
+}
+
+- (void)updateCuts:(id)sender {
+    if (!self.settingsLoaded || !self.reviewClient.canUpdateCuts || self.reviewClient.busy) return;
+    if (![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
+    NSDictionary *values = [self currentSettingsValues];
+    if (!values) return;
+    NSString *gesture = NSUUID.UUID.UUIDString;
+    self.updateButton.accessibilityIdentifier = [@"silentsnip.workflow.update.requested." stringByAppendingString:gesture];
+    self.updateButton.enabled = NO;
+    if (![self.reviewClient updateCutsWithSettings:values gesture:gesture]) {
+        self.updateButton.accessibilityIdentifier = @"silentsnip.workflow.update";
+        [self setStatusMessage:@"The review changed. Analyze again to refresh cuts." requiresAttention:YES];
+    }
+    [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
+    [self updateReviewControls];
+}
+
+- (void)goToCut:(NSMenuItem *)sender {
+    if (!self.reviewClient.canHighlight || ![self observedProjectMatchesSettings]) return;
+    [self.reviewClient highlightCut:sender.representedObject];
+    [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
+    [self updateReviewControls];
+}
+
+// Keep panel selection separate from dispatch so stale panels cannot act on a
+// newly opened project and the native gesture exists only for an explicit action.
+- (void)verifyResultURL:(NSURL *)url context:(NSDictionary *)context generation:(NSUInteger)generation {
+    if (!self.viewVisible || !self.timeline) return;
+    NSDictionary *current = [self observedProjectContext];
+    if (generation != self.contextGeneration || !self.settingsLoaded || self.reviewClient.busy ||
+        ![self observedProjectMatchesSettings] || ![self projectContext:context hasSameIdentityAs:current]) {
+        [self setStatusMessage:@"The open project changed. Choose Verify Existing Result again from the intended project." requiresAttention:YES];
+        return;
+    }
+    [self clearCompletionMessage];
+    [self invalidateReview];
+    NSUInteger reviewGeneration = self.reviewGeneration;
+    __weak SSWorkflowViewController *weakSelf = self;
+    self.reviewClient = [self newReviewClientWithUpdate:^(NSDictionary *response) {
+        SSWorkflowViewController *owner = weakSelf;
+        if (owner && reviewGeneration == owner.reviewGeneration && owner.timeline) [owner receiveReview:response];
+    } failure:^(NSString *message) {
+        SSWorkflowViewController *owner = weakSelf;
+        if (!owner || reviewGeneration != owner.reviewGeneration || !owner.timeline) return;
+        [owner invalidateReview];
+        [owner setControlsEnabled:owner.settingsLoaded];
+        [owner setStatusMessage:message requiresAttention:YES];
+    }];
+    NSString *gesture = NSUUID.UUID.UUIDString;
+    self.verifyButton.accessibilityIdentifier = [@"silentsnip.workflow.verify.requested." stringByAppendingString:gesture];
+    [self setControlsEnabled:NO];
+    [self setStatusMessage:@"Checking the existing result…"];
+    if (![self.reviewClient verifyExistingResultURL:url libraryURL:self.libraryURL projectUID:self.projectUID
+        projectName:current[@"projectName"] gesture:gesture]) {
+        [self invalidateReview];
+        [self setControlsEnabled:self.settingsLoaded];
+        [self setStatusMessage:@"Choose Silent Snip.fcpxml from a saved result folder." requiresAttention:YES];
+    }
+    [self updateReviewControls];
+}
+
+// Compare only durable SDK identity. Display names are allowed to refresh
+// while the native chooser is open; trailing directory slashes are immaterial.
+- (BOOL)projectContext:(NSDictionary *)context hasSameIdentityAs:(NSDictionary *)other {
+    NSURL *first = context[@"libraryURL"], *second = other[@"libraryURL"];
+    return [first isKindOfClass:NSURL.class] && first.isFileURL &&
+        [second isKindOfClass:NSURL.class] && second.isFileURL &&
+        [context[@"projectUID"] isKindOfClass:NSString.class] && [context[@"projectUID"] length] &&
+        [context[@"projectUID"] isEqual:other[@"projectUID"]] &&
+        [first.standardizedURL.path isEqual:second.standardizedURL.path];
+}
+
+// These two boundaries let the harness model the real file-sheet completion
+// and delayed SDK restoration without opening a panel or running host events.
+- (NSDictionary *)beginVerificationPanel {
+    if (!self.settingsLoaded || self.verificationPanelPending || self.reviewClient.busy ||
+        [self.reviewResponse[@"canRetryVerification"] boolValue] || ![self observedProjectMatchesSettings]) return nil;
+    NSDictionary *context = [self observedProjectContext];
+    if (!context) return nil;
+    self.verificationPanelPending = YES;
+    self.verificationPanelToken += 1;
+    [self setControlsEnabled:NO];
+    return @{@"context": context, @"generation": @(self.contextGeneration), @"token": @(self.verificationPanelToken)};
+}
+
+- (void)scheduleVerificationCompletion:(dispatch_block_t)completion afterDelay:(NSTimeInterval)delay {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), completion);
+}
+
+- (void)settleVerificationPanelURL:(NSURL *)url ticket:(NSDictionary *)ticket attemptsRemaining:(NSUInteger)attempts {
+    if ([ticket[@"token"] unsignedIntegerValue] != self.verificationPanelToken || !self.verificationPanelPending) return;
+    if (!self.viewVisible || !self.timeline) {
+        self.verificationPanelPending = NO;
+        return;
+    }
+    NSDictionary *current = [self observedProjectContext];
+    if (!current && attempts > 0 && [ticket[@"generation"] unsignedIntegerValue] == self.contextGeneration) {
+        __weak SSWorkflowViewController *weakSelf = self;
+        [self scheduleVerificationCompletion:^{
+            [weakSelf settleVerificationPanelURL:url ticket:ticket attemptsRemaining:attempts - 1];
+        } afterDelay:0.05];
+        return;
+    }
+    self.verificationPanelPending = NO;
+    [self setControlsEnabled:self.settingsLoaded];
+    if (!current) {
+        [self setStatusMessage:@"Final Cut did not restore the open project after closing the file chooser. Reopen Verify Existing Result to try again." requiresAttention:YES];
+        return;
+    }
+    if ([ticket[@"generation"] unsignedIntegerValue] != self.contextGeneration ||
+        ![self projectContext:ticket[@"context"] hasSameIdentityAs:current]) {
+        [self refreshProject];
+        [self setStatusMessage:@"The open project changed while choosing the result. Choose Verify Existing Result again from the intended project." requiresAttention:YES];
+        return;
+    }
+    [self verifyResultURL:url context:ticket[@"context"] generation:[ticket[@"generation"] unsignedIntegerValue]];
+}
+
+- (void)completeVerificationPanelWithURL:(NSURL *)url ticket:(NSDictionary *)ticket {
+    if ([ticket[@"token"] unsignedIntegerValue] != self.verificationPanelToken || !self.verificationPanelPending) return;
+    if (!url) {
+        self.verificationPanelPending = NO;
+        [self setControlsEnabled:self.settingsLoaded];
+        [self refreshProject];
+        return;
+    }
+    // The sheet is still unwinding during its completion callback. Defer one
+    // main-loop turn so native focus and the SDK can return before dispatch;
+    // transient missing SDK identity gets a bounded half-second settle.
+    __weak SSWorkflowViewController *weakSelf = self;
+    [self scheduleVerificationCompletion:^{
+        [weakSelf settleVerificationPanelURL:url ticket:ticket attemptsRemaining:10];
+    } afterDelay:0];
+}
+
+- (void)verifyExistingResult:(id)sender {
+    NSDictionary *ticket = [self beginVerificationPanel];
+    if (!ticket) return;
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.message = @"Choose Silent Snip.fcpxml from the saved result folder. Verification checks the existing project without importing again.";
+    panel.canChooseDirectories = NO;
+    panel.allowsMultipleSelection = NO;
+    __weak SSWorkflowViewController *weakSelf = self;
+    [panel beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response) {
+        NSURL *selected = response == NSModalResponseOK ? panel.URL : nil;
+        [weakSelf completeVerificationPanelWithURL:selected ticket:ticket];
+    }];
 }
 
 - (void)cancelReview:(id)sender {

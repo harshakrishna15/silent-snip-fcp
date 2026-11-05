@@ -11,6 +11,20 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL canApply;
 @property (nonatomic, readonly) BOOL canChangeSelection;
 @property (nonatomic, readonly) BOOL canCancel;
+@property (nonatomic, readonly) BOOL canUpdateCuts;
+@property (nonatomic, readonly) BOOL canHighlight;
+/// Editing invalidates Apply/navigation and hides the stale timeline overlay,
+/// retaining reusable measurements until explicit Update Cuts.
+- (void)markSettingsDirty;
+- (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture;
+- (BOOL)highlightCut:(NSString *)cutID;
+/// Explicit read-only recovery; accepts only Silent Snip.fcpxml. This client
+/// never gains Apply authority from an adopted verification result.
+- (BOOL)verifyExistingResultURL:(NSURL *)resultURL
+                   libraryURL:(NSURL *)libraryURL
+                   projectUID:(NSString *)projectUID
+                  projectName:(NSString *)projectName
+                      gesture:(NSString *)gesture;
 
 - (instancetype)initWithViewID:(NSString *)viewID
                        update:(void (^)(NSDictionary *response))update

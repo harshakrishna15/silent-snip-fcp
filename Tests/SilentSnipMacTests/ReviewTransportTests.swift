@@ -2,6 +2,50 @@ import XCTest
 @testable import SilentSnipMac
 
 final class ReviewTransportTests: XCTestCase {
+    func testWorkflowSavedResultRequestBindsFreshNativeGestureAndSDKIdentity() throws {
+        let view = UUID(), gesture = UUID()
+        let fields = ["view": view.uuidString, "gesture": gesture.uuidString,
+            "library": "file:///tmp/Cutdown%20Integration.fcpbundle", "project": "source-UID",
+            "projectName": "Source project", "result": "file:///tmp/Result/Silent%20Snip.fcpxml"]
+        func url(_ fields: [String: String]) -> URL {
+            var url = URLComponents(); url.scheme = "silentsnip"; url.host = "workflow-verify"
+            url.queryItems = fields.map { URLQueryItem(name: $0.key, value: $0.value) }
+            return url.url!
+        }
+        let request = try ReviewVerificationRequest(url: url(fields))
+        XCTAssertEqual(request.view, view)
+        XCTAssertEqual(request.workflowOrigin?.gesture, gesture)
+        XCTAssertEqual(request.workflowOrigin?.projectUID, "source-UID")
+        XCTAssertEqual(request.result.path, "/tmp/Result/Silent Snip.fcpxml")
+        for key in fields.keys {
+            var missing = fields; missing.removeValue(forKey: key)
+            XCTAssertThrowsError(try ReviewVerificationRequest(url: url(missing)))
+        }
+        for (key, value) in [("gesture", "invalid"), ("view", "invalid"), ("project", ""),
+            ("library", "file://remote/Cutdown.fcpbundle"), ("result", "file://remote/Silent%20Snip.fcpxml"),
+            ("result", "file:///tmp/Silent%20Snip.fcpxml?query=1"), ("unexpected", "value")] {
+            var invalid = fields; invalid[key] = value
+            XCTAssertThrowsError(try ReviewVerificationRequest(url: url(invalid)))
+        }
+        var duplicate = URLComponents(url: url(fields), resolvingAgainstBaseURL: false)!
+        duplicate.queryItems?.append(.init(name: "gesture", value: gesture.uuidString))
+        XCTAssertThrowsError(try ReviewVerificationRequest(url: duplicate.url!))
+    }
+    func testWorkflowResponseGestureRoundTripsAndLegacyRepliesStayCompatible() throws {
+        let gesture = UUID()
+        let response = ReviewResponse(request: UUID(), revision: 2, state: "verifying", message: "Checking saved result",
+            workflowGesture: gesture)
+        let wire = try ReviewWire.encode(response)
+        let packet = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(wire.utf8)) as? [String: Any])
+        XCTAssertEqual(packet["workflowGesture"] as? String, gesture.uuidString)
+        XCTAssertEqual(try JSONDecoder().decode(ReviewResponse.self, from: Data(wire.utf8)), response)
+        let legacy = ReviewResponse(request: UUID(), revision: 1, state: "completed", message: "Done")
+        let legacyWire = try ReviewWire.encode(legacy)
+        let legacyPacket = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(legacyWire.utf8)) as? [String: Any])
+        XCTAssertNil(legacyPacket["workflowGesture"])
+        XCTAssertNil(try JSONDecoder().decode(ReviewResponse.self, from: Data(legacyWire.utf8)).workflowGesture)
+    }
+
     func testSettingsPreviewRequiresViewOrderingTokenValidSettingsAndOutput() throws {
         let request = UUID(), view = UUID(), edit = UUID()
         let settings = ReviewWireSettings(threshold: -35, minimum: 0.5, before: 0.1, after: 0.2)
@@ -34,6 +78,12 @@ final class ReviewTransportTests: XCTestCase {
         XCTAssertEqual(packet["request"] as? String, request.id.uuidString)
         XCTAssertEqual(packet["output"] as? String, "gaps")
         XCTAssertEqual((packet["settings"] as? [String: Double])?["minimum"], 8)
+        XCTAssertNil(packet["gesture"])
+        let recoveryGesture = UUID()
+        let recovery = try ReviewWire.encode(ReviewReconnectReply(view: view, request: request, gesture: recoveryGesture))
+        let recoveryPacket = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(recovery.utf8)) as? [String: Any])
+        XCTAssertEqual(recoveryPacket["gesture"] as? String, recoveryGesture.uuidString)
+        XCTAssertEqual(recoveryPacket["request"] as? String, request.id.uuidString)
     }
 
     func testSavedResultURLRejectsAmbiguousOrNonlocalDestinations() throws {

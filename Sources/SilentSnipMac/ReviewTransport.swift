@@ -154,13 +154,17 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     public let canUpdateCuts: Bool?
     public let usesAudioSnapshot: Bool?
     public let targetClipName: String?
+    /// A Workflow-origin operation keeps its native action identity on every
+    /// publication. Recovery reuses a saved request ID, so revisions alone do
+    /// not distinguish late packets from its previous Apply/verification.
+    public let workflowGesture: UUID?
 
     public init(request: UUID, revision: Int, state: String, message: String,
                 progress: Double? = nil,
                 summary: String? = nil, cuts: [ReviewCutResponse] = [], canApply: Bool = false,
                 canChangeSelection: Bool = false, canCancel: Bool = false, canHighlight: Bool = false, previewVisible: Bool? = nil, canRetryVerification: Bool? = nil,
                 settingsEdit: UUID? = nil, settings: ReviewWireSettings? = nil, output: String? = nil, provisional: Bool? = nil,
-                canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil, targetClipName: String? = nil) {
+                canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil, targetClipName: String? = nil, workflowGesture: UUID? = nil) {
         version = ReviewWire.version; self.request = request; self.revision = revision
         self.state = state; self.message = message; self.progress = progress
         self.summary = summary; self.cuts = cuts
@@ -170,7 +174,7 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
         self.canRetryVerification = canRetryVerification
         self.settingsEdit = settingsEdit; self.settings = settings; self.output = output; self.provisional = provisional
         self.canUpdateCuts = canUpdateCuts; self.usesAudioSnapshot = usesAudioSnapshot
-        self.targetClipName = targetClipName
+        self.targetClipName = targetClipName; self.workflowGesture = workflowGesture
     }
 }
 
@@ -207,8 +211,10 @@ struct ReviewReconnectReply: Encodable {
     let request: UUID
     let settings: ReviewWireSettings
     let output: String
-    init(view: UUID, request: AnalyzeRequest) {
+    let gesture: UUID?
+    init(view: UUID, request: AnalyzeRequest, gesture: UUID? = nil) {
         self.view = view; self.request = request.id; self.output = request.outputMode.rawValue
+        self.gesture = gesture
         let s = request.settings
         settings = ReviewWireSettings(threshold: s.thresholdDBFS, minimum: s.minimumSilenceDuration,
             before: s.beforeSpeechPadding, after: s.afterSpeechPadding)
@@ -251,14 +257,14 @@ struct ReviewReconnectReply: Encodable {
             object: publication.object, userInfo: nil, deliverImmediately: true)
     }
 
-    public func connect(view: UUID, request: AnalyzeRequest) {
-        guard let object = try? ReviewWire.encode(ReviewReconnectReply(view: view, request: request)) else { return }
+    public func connect(view: UUID, request: AnalyzeRequest, gesture: UUID? = nil) {
+        guard let object = try? ReviewWire.encode(ReviewReconnectReply(view: view, request: request, gesture: gesture)) else { return }
         sendConnection(view: view, object: object)
     }
 
-    public func connectionFailed(view: UUID, message: String) {
-        struct Failure: Encodable { let version = 1; let view: UUID; let error: String }
-        guard let object = try? ReviewWire.encode(Failure(view: view, error: message)) else { return }
+    public func connectionFailed(view: UUID, message: String, gesture: UUID? = nil) {
+        struct Failure: Encodable { let version = 1; let view: UUID; let error: String; let gesture: UUID? }
+        guard let object = try? ReviewWire.encode(Failure(view: view, error: message, gesture: gesture)) else { return }
         sendConnection(view: view, object: object)
     }
 

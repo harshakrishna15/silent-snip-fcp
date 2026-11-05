@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -254,13 +255,42 @@ exec /bin/rm "$@"
         self.assert_protected_files()
 
     def test_running_apps_or_unreadable_process_list_block_all_changes(self):
-        for app in ["Final Cut Pro", "SilentSnip", "SilentSnipAudio", "SilentSnipAudio"]:
+        for app in ["Final Cut Pro", "SilentSnip", "SilentSnipAudio", "SilentSnipWorkflowPrototype", "SilentSnipWorkflowExtension"]:
             result = self.run_uninstall("--remove-data", RUNNING_APP=app)
             self.assertNotEqual(result.returncode, 0)
         result = self.run_uninstall(PROCESS_STATUS="2")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(), [])
         self.assertTrue(all(path.exists() for path in self.apps + self.data))
+
+    def test_au_free_worker_and_workflow_frontend_are_removed_without_project_or_media_changes(self):
+        worker = self.bundle("build/App/Silent Snip.app", AUDIO)
+        shutil.rmtree(worker / "Contents/PlugIns")
+        frontend = self.bundle("build/WorkflowPrototype/Products/Workflow.app", "local.silentsnip.workflowprototype")
+        extension = self.bundle(str(frontend.relative_to(self.root)) + "/Contents/PlugIns/SilentSnipWorkflowExtension.appex", "local.silentsnip.workflowprototype.extension")
+        settings = self.library / "Application Support/Silent Snip Workflow Prototype/Project-Settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text("saved per-project settings")
+        result = self.run_uninstall()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(worker.exists())
+        self.assertFalse(frontend.exists())
+        self.assertTrue(settings.exists())
+        self.assertTrue(any(str(extension) in call and call.startswith("pluginkit -r ") for call in self.calls()))
+        self.assert_protected_files()
+        result = self.run_uninstall("--remove-data")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(settings.exists())
+        self.assert_protected_files()
+
+    def test_unexpected_workflow_extension_identity_blocks_all_changes(self):
+        frontend = self.bundle("build/WorkflowPrototype/Products/Workflow.app", "local.silentsnip.workflowprototype")
+        self.bundle(str(frontend.relative_to(self.root)) + "/Contents/PlugIns/SilentSnipWorkflowExtension.appex", "other.extension")
+        result = self.run_uninstall()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls(), [])
+        self.assertTrue(frontend.exists())
+        self.assert_protected_files()
 
     def test_unexpected_extension_identity_blocks_before_any_changes(self):
         plist = self.apps[2] / "Contents/PlugIns/SilentSnipAudio.appex/Contents/Info.plist"

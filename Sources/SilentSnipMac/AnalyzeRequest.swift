@@ -59,7 +59,7 @@ public struct AnalyzeRequest: Equatable, Sendable {
 
     public enum RequestError: LocalizedError {
         case invalidURL
-        public var errorDescription: String? { "The Silent Snip analysis request is invalid. Analyze again from the effect’s Inspector controls." }
+        public var errorDescription: String? { "The Silent Snip analysis request is invalid. Analyze again from Window → Extensions → Silent Snip." }
     }
 }
 
@@ -75,21 +75,43 @@ public enum SilentSnipOutputMode: String, Sendable {
     }
 }
 
-/// Explicit recovery chosen in Controls; contains a local result, never media.
+/// Explicit recovery chosen in a native view; contains a local result, never media.
 public struct ReviewVerificationRequest {
     public let view: UUID
     public let result: URL
+    public let workflowOrigin: WorkflowReviewOrigin?
     public init(url: URL) throws {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              parts.scheme == "silentsnip", parts.host == "verify", parts.path.isEmpty,
-              parts.fragment == nil, parts.user == nil, parts.password == nil, parts.port == nil,
-              parts.queryItems?.count == 2,
-              let viewText = parts.queryItems?.first(where: { $0.name == "view" })?.value,
-              let view = UUID(uuidString: viewText),
-              let path = parts.queryItems?.first(where: { $0.name == "result" })?.value,
+              parts.scheme == "silentsnip", ["verify", "workflow-verify"].contains(parts.host ?? ""), parts.path.isEmpty,
+              parts.fragment == nil, parts.user == nil, parts.password == nil, parts.port == nil else {
+            throw AnalyzeRequest.RequestError.invalidURL
+        }
+        let workflow = parts.host == "workflow-verify"
+        let allowed: Set<String> = workflow ? ["view", "gesture", "library", "project", "projectName", "result"] : ["view", "result"]
+        var values: [String: String] = [:]
+        for item in parts.queryItems ?? [] {
+            guard allowed.contains(item.name), values[item.name] == nil, let value = item.value else {
+                throw AnalyzeRequest.RequestError.invalidURL
+            }
+            values[item.name] = value
+        }
+        guard values.count == allowed.count,
+              let view = values["view"].flatMap(UUID.init(uuidString:)),
+              let path = values["result"],
               let result = URL(string: path), result.isFileURL,
               result.host == nil || result.host == "" || result.host == "localhost",
+              result.path.hasPrefix("/"), result.query == nil, result.fragment == nil,
+              result.user == nil, result.password == nil, result.port == nil,
               result.lastPathComponent == "Silent Snip.fcpxml" else { throw AnalyzeRequest.RequestError.invalidURL }
+        if workflow {
+            guard let gesture = values["gesture"].flatMap(UUID.init(uuidString:)),
+                  let library = values["library"].flatMap(URL.init(string:)),
+                  let project = values["project"], let name = values["projectName"] else {
+                throw AnalyzeRequest.RequestError.invalidURL
+            }
+            workflowOrigin = try WorkflowReviewOrigin(view: view, gesture: gesture, libraryURL: library,
+                projectUID: project, projectName: name)
+        } else { workflowOrigin = nil }
         self.view = view; self.result = result
     }
 }
