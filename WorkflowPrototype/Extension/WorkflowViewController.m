@@ -45,6 +45,7 @@
 @property (nonatomic, copy) NSArray<NSDictionary *> *reviewCuts;
 @property (nonatomic, copy) NSDictionary *reviewResponse;
 @property (nonatomic, copy) NSString *completionMessage;
+@property (nonatomic, copy) NSDictionary *completionContext;
 @property (nonatomic) NSUInteger reviewGeneration;
 @end
 
@@ -277,6 +278,7 @@
 }
 
 - (void)viewWillDisappear {
+    [self clearCompletionMessage];
     [self invalidateReview];
     [self.timeline removeTimelineObserver:self];
     self.timeline = nil;
@@ -319,6 +321,8 @@
     // verified result. Keep its request bound until that operation settles.
     if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
     NSDictionary *context = [self observedProjectContext];
+    if (self.completionMessage && (![context[@"projectUID"] isEqual:self.completionContext[@"projectUID"]] ||
+        ![context[@"libraryURL"] isEqual:self.completionContext[@"libraryURL"]])) [self clearCompletionMessage];
     self.projectLabel.stringValue = context[@"projectName"] ?: @"Open a project in Final Cut Pro";
     self.libraryLabel.stringValue = context[@"libraryName"] ?: @"";
     [self refreshPlayhead];
@@ -414,7 +418,7 @@
 
 - (void)settingsChanged:(id)sender {
     if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
-    self.completionMessage = nil;
+    [self clearCompletionMessage];
     BOOL hadReview = self.reviewClient != nil;
     [self invalidateReview];
     self.analyzeButton.enabled = self.settingsLoaded;
@@ -471,10 +475,20 @@
     NSString *state = response[@"state"];
     if ([@[@"completed", @"complete", @"failed", @"cancelled", @"unavailable"] containsObject:state]) {
         self.completionMessage = response[@"message"];
+        // The response has no explicit result identity. Only the request's
+        // pinned project can own its notice; a delayed response must not bind
+        // verification to whichever project the user has since opened.
+        self.completionContext = self.libraryURL && self.projectUID ?
+            @{@"libraryURL": self.libraryURL, @"projectUID": self.projectUID} : nil;
         // Apply can open its verified project copy; bind the settings UI to the
         // SDK's new active project only after the worker has finished.
         [self refreshProject];
     }
+}
+
+- (void)clearCompletionMessage {
+    self.completionMessage = nil;
+    self.completionContext = nil;
 }
 
 - (SSWorkflowReviewClient *)newReviewClientWithUpdate:(void (^)(NSDictionary *))update
@@ -487,7 +501,7 @@
     if (![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
     NSDictionary *values = [self currentSettingsValues];
     if (!values) return;
-    self.completionMessage = nil;
+    [self clearCompletionMessage];
     [self invalidateReview];
     NSUInteger generation = self.reviewGeneration;
     __weak SSWorkflowViewController *weakSelf = self;
@@ -517,7 +531,7 @@
     self.applyButton.accessibilityIdentifier = [@"silentsnip.workflow.apply.requested." stringByAppendingString:gesture];
     self.applyButton.enabled = NO;
     [self.reviewClient sendApplyWithGesture:gesture];
-    [self setControlsEnabled:NO];
+    [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
     [self updateReviewControls];
 }
 

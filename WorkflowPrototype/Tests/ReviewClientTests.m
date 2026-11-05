@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #import "../Extension/WorkflowReviewClient.h"
 #import <stdio.h>
 #import <stdlib.h>
@@ -17,6 +18,21 @@
 - (void)receive:(NSNotification *)notification;
 - (void)receiveCapability:(NSNotification *)notification;
 - (void)poll;
+- (void)publish;
+- (void)activateHostForUserRequest:(void (^)(NSError *))completion;
+- (NSArray<NSRunningApplication *> *)runningHostApplications;
+- (NSRunningApplication *)frontmostApplication;
+- (BOOL)requestActivationOfHost:(NSRunningApplication *)host;
+- (NSTimeInterval)activationUptime;
+- (void)scheduleActivationCheck:(void (^)(void))check;
+@end
+
+@interface SSFakeHost : NSObject
+@property (nonatomic, copy) NSString *bundleIdentifier;
+@property (nonatomic) pid_t processIdentifier;
+@property (nonatomic, getter=isTerminated) BOOL terminated;
+@end
+@implementation SSFakeHost
 @end
 
 @interface SSOfflineClient : SSWorkflowReviewClient
@@ -34,7 +50,21 @@
 @property (nonatomic) NSUInteger analysisLaunches;
 @property (nonatomic) NSUInteger pollingStarts;
 @property (nonatomic) BOOL attached;
+@property (nonatomic) NSUInteger activationRequests;
+@property (nonatomic) BOOL deferActivation;
+@property (nonatomic) BOOL useDefaultActivationPolicy;
+@property (nonatomic, strong) NSError *activationError;
+@property (nonatomic, strong) NSMutableArray<void (^)(NSError *)> *activationCompletions;
+@property (nonatomic, copy) NSArray *fakeHosts;
+@property (nonatomic, strong) SSFakeHost *fakeFront;
+@property (nonatomic) NSTimeInterval fakeUptime;
+@property (nonatomic) BOOL activationAccepted;
+@property (nonatomic) NSUInteger hostActivationRequests;
+@property (nonatomic, strong) NSMutableArray<void (^)(void)> *scheduledActivationChecks;
+@property (nonatomic, copy) void (^afterPublish)(void);
 - (instancetype)initForTests;
+- (void)completeActivation:(NSError *)error;
+- (void)runActivationCheck;
 @end
 
 @implementation SSOfflineClient
@@ -47,10 +77,33 @@
         _updates = updates; _failures = failures;
         _events = [NSMutableArray new]; _posts = [NSMutableArray new];
         _infos = [NSMutableDictionary new]; _clock = NSDate.date;
+        _activationCompletions = [NSMutableArray new]; _scheduledActivationChecks = [NSMutableArray new];
+        _activationAccepted = YES;
     }
     return self;
 }
 - (NSDate *)now { return self.clock; }
+- (void)activateHostForUserRequest:(void (^)(NSError *))completion {
+    self.activationRequests += 1; [self.events addObject:@"activate"];
+    if (self.useDefaultActivationPolicy) { [super activateHostForUserRequest:completion]; return; }
+    if (self.deferActivation) [self.activationCompletions addObject:[completion copy]];
+    else completion(self.activationError);
+}
+- (void)completeActivation:(NSError *)error {
+    void (^completion)(NSError *) = self.activationCompletions.firstObject;
+    [self.activationCompletions removeObjectAtIndex:0];
+    completion(error);
+}
+- (NSArray<NSRunningApplication *> *)runningHostApplications { return (id)self.fakeHosts; }
+- (NSRunningApplication *)frontmostApplication { return (id)self.fakeFront; }
+- (BOOL)requestActivationOfHost:(NSRunningApplication *)host { self.hostActivationRequests += 1; return self.activationAccepted; }
+- (NSTimeInterval)activationUptime { return self.fakeUptime; }
+- (void)scheduleActivationCheck:(void (^)(void))check { [self.scheduledActivationChecks addObject:[check copy]]; }
+- (void)runActivationCheck {
+    void (^check)(void) = self.scheduledActivationChecks.firstObject;
+    [self.scheduledActivationChecks removeObjectAtIndex:0];
+    check();
+}
 - (NSArray<NSURL *> *)registeredHelperURLs { return self.apps; }
 - (NSURL *)siblingHelperURL { return self.sibling; }
 - (NSDictionary *)helperInfoAtURL:(NSURL *)url {
@@ -70,6 +123,7 @@
 - (void)beginObserving { self.attached = YES; [self.events addObject:@"observe"]; }
 - (void)endObserving { self.attached = NO; [self.events addObject:@"detach"]; }
 - (void)startPolling { self.pollingStarts += 1; }
+- (void)publish { [super publish]; if (self.afterPublish) self.afterPublish(); }
 - (void)postObject:(NSString *)object name:(NSString *)name {
     id packet = [NSJSONSerialization JSONObjectWithData:[object dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     [self.posts addObject:@{@"name": name, @"packet": packet ?: NSNull.null}];
@@ -140,6 +194,8 @@ static void targetedLaunchAndURLBinding(void) {
     require([c.launchedHelper isEqual:c.sibling] && c.analysisLaunches == 1 && c.helperLaunches == 0,
         @"The registered installed sibling wins over a supported repo build copy");
     require([c.events indexOfObject:@"observe"] < [c.events indexOfObject:@"analysis"], @"Observers attach before the one analysis dispatch");
+    require(c.activationRequests == 2 && [c.events indexOfObject:@"activate"] < [c.events indexOfObject:@"analysis"],
+        @"Analyze activates the host after preflight and again immediately before its one URL dispatch");
     NSURLComponents *parts = [NSURLComponents componentsWithURL:c.launchedRequest resolvingAgainstBaseURL:NO];
     NSMutableDictionary *fields = [NSMutableDictionary new];
     for (NSURLQueryItem *item in parts.queryItems) fields[item.name] = item.value;
@@ -162,21 +218,23 @@ static void invalidPreflightNeverDispatches(void) {
     for (id protocol in @[@0, @2, @YES, @"1", NSNull.null]) {
         SSOfflineClient *c = client(); NSMutableDictionary *info = [helperInfo() mutableCopy];
         info[@"SilentSnipWorkflowProtocolVersion"] = protocol; c.infos[c.sibling.path] = info;
-        require(!start(c, settings()) && c.analysisLaunches == 0 && c.helperLaunches == 0 && c.failures.count == 1,
+        require(!start(c, settings()) && c.analysisLaunches == 0 && c.helperLaunches == 0 && c.activationRequests == 0 && c.failures.count == 1,
             @"Old, boolean, string, and unsupported readable protocol values fail before launch");
         finish(c);
     }
     for (NSString *key in @[@"CFBundleExecutable", @"CFBundleURLTypes", @"com.apple.proapps.MediaAssetProtocol"]) {
         SSOfflineClient *c = client(); NSMutableDictionary *info = [helperInfo() mutableCopy]; [info removeObjectForKey:key]; c.infos[c.sibling.path] = info;
-        require(!start(c, settings()) && c.analysisLaunches == 0, @"Missing executable or active routes cannot authorize launch"); finish(c);
+        require(!start(c, settings()) && c.analysisLaunches == 0 && c.activationRequests == 0, @"Missing executable or active routes cannot activate or launch"); finish(c);
     }
     for (id bad in @[@-81, @YES, @(INFINITY), @(NAN), @"-40"]) {
         SSOfflineClient *c = client(); NSMutableDictionary *value = [settings() mutableCopy]; value[@"thresholdDBFS"] = bad;
-        require(!start(c, value) && c.analysisLaunches == 0 && !c.requestID, @"Invalid settings cannot become an unanswered worker request"); finish(c);
+        require(!start(c, value) && c.analysisLaunches == 0 && c.activationRequests == 0 && !c.requestID,
+            @"Invalid settings cannot activate an app or become an unanswered worker request"); finish(c);
     }
     SSOfflineClient *c = client();
     require(![c startWithLibraryURL:[NSURL URLWithString:@"https://example.invalid/Cutdown.fcpbundle"] projectUID:@"p"
         projectName:@"P" settings:settings() gesture:@"EA97943A-27BB-48BE-BB14-FB4F30314D52"], @"A nonlocal library cannot start Analyze");
+    require(c.activationRequests == 0, @"Invalid project input never requests host activation");
     finish(c); groups += 1;
 }
 
@@ -292,11 +350,171 @@ static void timeoutCannotReviveReview(void) {
     finish(c); groups += 1;
 }
 
+static NSError *activationFailure(void) {
+    return [NSError errorWithDomain:@"OfflineActivation" code:1
+        userInfo:@{NSLocalizedDescriptionKey: @"Bring Final Cut Pro to the front, then try again."}];
+}
+static void delayedAnalyzeActivationIsCancelledSafely(void) {
+    SSOfflineClient *c = client(); c.deferActivation = YES;
+    require(start(c, settings()) && c.busy && c.canCancel && c.activationRequests == 1,
+        @"A validated Analyze becomes busy while asynchronous host activation is pending");
+    [c poll]; deliver(c, response(c, 1, @"review", YES));
+    require(c.posts.count == 0 && c.helperLaunches == 0 && c.analysisLaunches == 0 && !c.canApply,
+        @"Pending activation sends no status/edit/start and cannot accept a review before URL dispatch");
+    [c cancel]; [c completeActivation:nil];
+    require(c.activationRequests == 1 && c.analysisLaunches == 0 && c.helperLaunches == 0 && !c.busy,
+        @"Cancel before the first activation completes cannot reactivate or launch a helper");
+    finish(c);
+
+    c = client(); c.deferActivation = YES; start(c, settings()); [c completeActivation:activationFailure()];
+    require(c.failures.count == 1 && c.activationRequests == 1 && c.analysisLaunches == 0 && c.helperLaunches == 0,
+        @"Failed initial activation prevents both helper startup and analysis URL dispatch");
+    finish(c);
+
+    c = client(); c.deferActivation = YES; start(c, settings()); [c completeActivation:nil];
+    require(c.activationRequests == 2 && c.analysisLaunches == 0 && c.busy,
+        @"Successful preflight activation still requires a successful dispatch-time activation");
+    [c completeActivation:activationFailure()];
+    require(c.analysisLaunches == 0 && c.failures.count == 1, @"Failed final activation cannot dispatch an Analyze URL");
+    finish(c);
+
+    c = client(); c.deferActivation = YES; c.infos[c.sibling.path] = NSNull.null;
+    start(c, settings()); [c completeActivation:nil];
+    require(c.helperLaunches == 1 && c.analysisLaunches == 0, @"Only successful activation permits pinned helper capability startup");
+    NSDictionary *reply = capabilityReply(c); [c receiveCapability:notification(reply, nil)];
+    require(c.activationRequests == 2 && c.analysisLaunches == 0 && c.busy,
+        @"A fresh capability reply waits for dispatch-time foreground confirmation");
+    NSUInteger posts = c.posts.count; [c poll];
+    require(c.posts.count == posts, @"Polling is silent during dispatch-time activation");
+    [c cancel]; [c completeActivation:nil]; [c receiveCapability:notification(reply, nil)];
+    require(c.activationRequests == 2 && c.analysisLaunches == 0 && commandCount(c, @"cancel") == 0,
+        @"Cancellation consumes a pending capability dispatch without reactivation or an invented worker command");
+    finish(c);
+
+    c = client(); c.deferActivation = YES; start(c, settings()); [c completeActivation:nil];
+    [c detach]; [c completeActivation:nil];
+    require(c.analysisLaunches == 0 && !c.requestID && !c.busy, @"Detach invalidates a delayed successful final activation");
+    finish(c); groups += 1;
+}
+
+static void applyActivationIsRecoverableAndRevisionBound(void) {
+    SSOfflineClient *c = client(); start(c, settings()); deliver(c, response(c, 1, @"review", YES));
+    c.deferActivation = YES; NSUInteger activations = c.activationRequests;
+    require(![c sendApplyWithGesture:@"invalid"] && c.activationRequests == activations,
+        @"Invalid Apply gestures fail before requesting activation");
+    require([c sendApplyWithGesture:NSUUID.UUID.UUIDString] && c.busy && !c.canApply && !c.canChangeSelection,
+        @"Pending Apply activation disables edit controls without creating an outbound Apply packet");
+    NSUInteger posts = c.posts.count; [c poll];
+    require(c.posts.count == posts && commandCount(c, @"apply") == 0, @"The timer cannot retry or poll a not-yet-dispatched Apply");
+    [c completeActivation:activationFailure()];
+    require(c.failures.count == 0 && !c.busy && c.canApply && c.canChangeSelection && commandCount(c, @"apply") == 0 &&
+        [c.updates.lastObject[@"message"] containsString:@"Bring Final Cut"],
+        @"Activation failure leaves the exact review usable with a recoverable message and no edit");
+    NSString *gesture = NSUUID.UUID.UUIDString; [c sendApplyWithGesture:gesture]; [c completeActivation:nil];
+    require(commandCount(c, @"apply") == 1 && [c.posts.lastObject[@"packet"][@"applyGesture"] isEqual:gesture],
+        @"A new explicit click can successfully activate and dispatch the retained plan once");
+    finish(c);
+
+    c = client(); start(c, settings()); deliver(c, response(c, 1, @"review", YES)); c.deferActivation = YES;
+    [c sendApplyWithGesture:NSUUID.UUID.UUIDString]; deliver(c, response(c, 2, @"review", YES)); [c completeActivation:nil];
+    require(commandCount(c, @"apply") == 0 && c.canApply && !c.busy,
+        @"A changed revision during activation requires a fresh explicit Apply instead of dispatching stale authority");
+    [c sendApplyWithGesture:NSUUID.UUID.UUIDString]; [c cancel]; [c completeActivation:nil];
+    require(commandCount(c, @"apply") == 0 && commandCount(c, @"cancel") == 1 && !c.canApply,
+        @"Cancel invalidates a delayed Apply activation and sends only cancellation of the existing owned request");
+    finish(c); groups += 1;
+}
+
+static void retryActivationNeverCreatesAnEdit(void) {
+    SSOfflineClient *c = client(); start(c, settings()); deliver(c, response(c, 1, @"review", YES));
+    NSUInteger activations = c.activationRequests;
+    require(![c retryVerification] && c.activationRequests == activations,
+        @"An ineligible verification retry cannot activate an application");
+    [c sendApplyWithGesture:NSUUID.UUID.UUIDString];
+    NSMutableDictionary *failed = response(c, 2, @"failed", YES); failed[@"canRetryVerification"] = @YES; deliver(c, failed);
+    c.deferActivation = YES;
+    require([c retryVerification] && c.busy && c.canCancel, @"Explicit retry waits for activation and can be cancelled before dispatch");
+    NSUInteger posts = c.posts.count; [c poll];
+    require(c.posts.count == posts && commandCount(c, @"retryVerification") == 0,
+        @"Pending verification activation does not send retry/status commands");
+    [c completeActivation:activationFailure()];
+    require(!c.busy && c.failures.count == 0 && [c.updates.lastObject[@"canRetryVerification"] isEqual:@YES] &&
+        commandCount(c, @"retryVerification") == 0, @"Activation failure preserves the explicit verification recovery option");
+    [c retryVerification]; [c cancel]; [c completeActivation:nil];
+    require(!c.busy && commandCount(c, @"retryVerification") == 0 && commandCount(c, @"cancel") == 0,
+        @"Cancel before retry dispatch preserves the terminal result without an invented edit or cancellation");
+    [c retryVerification]; [c completeActivation:nil];
+    require(commandCount(c, @"retryVerification") == 1 && commandCount(c, @"apply") == 1 &&
+        [c.posts.lastObject[@"packet"][@"expectedRevision"] isEqual:@2],
+        @"Only a later explicit successfully activated retry sends the exact retained verification revision");
+    finish(c); groups += 1;
+}
+
+static SSFakeHost *fakeHost(NSString *identifier, pid_t pid) {
+    SSFakeHost *host = [SSFakeHost new]; host.bundleIdentifier = identifier; host.processIdentifier = pid; return host;
+}
+static void publicActivationPolicyRequiresExactForeground(void) {
+    SSOfflineClient *c = client(); c.useDefaultActivationPolicy = YES;
+    SSFakeHost *host = fakeHost(@"com.apple.FinalCut", 123); c.fakeHosts = @[host];
+    c.fakeFront = fakeHost(@"com.openai.codex", 456);
+    require(start(c, settings()) && c.hostActivationRequests == 1 && c.analysisLaunches == 0 && c.busy,
+        @"AppKit accepting an activation request does not prove Final Cut is frontmost");
+    c.fakeFront = fakeHost(@"com.openai.codex", 123); [c runActivationCheck];
+    require(c.analysisLaunches == 0 && c.busy, @"Even the pinned PID cannot pass foreground observation with another bundle identity");
+    c.fakeFront = host; [c runActivationCheck];
+    require(c.analysisLaunches == 1 && c.hostActivationRequests == 2 && c.scheduledActivationChecks.count == 0,
+        @"Only exact host PID and identity becoming frontmost permits Analyze, including its final activation check");
+    finish(c);
+
+    c = client(); c.useDefaultActivationPolicy = YES; c.fakeHosts = @[host, fakeHost(@"com.apple.FinalCut", 124)];
+    start(c, settings());
+    require(c.hostActivationRequests == 0 && c.analysisLaunches == 0 && c.failures.count == 1,
+        @"Ambiguous running Final Cut processes fail before activation or dispatch");
+    finish(c);
+
+    c = client(); c.useDefaultActivationPolicy = YES; c.fakeHosts = @[host]; c.fakeFront = fakeHost(@"com.openai.codex", 456);
+    start(c, settings()); c.fakeUptime = 2.01; [c runActivationCheck];
+    require(c.analysisLaunches == 0 && c.failures.count == 1 && c.scheduledActivationChecks.count == 0,
+        @"A different foreground application fails closed at the bounded deadline without another activation request");
+    finish(c);
+
+    c = client(); c.useDefaultActivationPolicy = YES; c.fakeHosts = @[host]; c.fakeFront = host; c.activationAccepted = NO;
+    start(c, settings());
+    require(c.analysisLaunches == 0 && c.failures.count == 1, @"A denied public activation request never dispatches analysis");
+    finish(c); groups += 1;
+}
+
+static void synchronousUIDetachCannotDispatch(void) {
+    SSOfflineClient *c = client();
+    __weak SSOfflineClient *weak = c;
+    c.afterPublish = ^{ SSOfflineClient *owner = weak; owner.afterPublish = nil; [owner detach]; };
+    start(c, settings());
+    require(c.activationRequests == 0 && c.analysisLaunches == 0 && c.helperLaunches == 0 && !c.requestID,
+        @"A view detaching during the activating-status update prevents the activation request itself");
+    finish(c);
+
+    c = client(); start(c, settings()); deliver(c, response(c, 1, @"review", YES));
+    weak = c;
+    c.afterPublish = ^{
+        SSOfflineClient *owner = weak;
+        if (![owner.updates.lastObject[@"message"] isEqual:@"Activating Final Cut Pro…"]) {
+            owner.afterPublish = nil; [owner detach];
+        }
+    };
+    [c sendApplyWithGesture:NSUUID.UUID.UUIDString];
+    require(commandCount(c, @"apply") == 0 && !c.requestID,
+        @"A view detaching during the final Apply-status update cannot send a stale or nil edit packet");
+    finish(c); groups += 1;
+}
+
 int main(void) {
     @autoreleasepool {
         targetedLaunchAndURLBinding(); invalidPreflightNeverDispatches(); helperAmbiguityAndOldInstalledCopy();
         malformedResponsesDoNotReachUI(); selectionNeedsExactNewAcknowledgment(); applyRetriesOnlyTheOwnedCommand();
         retryVerificationDoesNotApplyAgain(); freshCapabilityNonceBeforeAnyAnalysis(); timeoutCannotReviveReview();
+        delayedAnalyzeActivationIsCancelledSafely(); applyActivationIsRecoverableAndRevisionBound();
+        retryActivationNeverCreatesAnEdit(); publicActivationPolicyRequiresExactForeground();
+        synchronousUIDetachCannotDispatch();
         printf("Passed %lu review-client groups (%lu assertions); no real helper launch, DNC, timers, windows, or settings files.\n",
             (unsigned long)groups, (unsigned long)checks);
     }

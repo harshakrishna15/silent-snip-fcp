@@ -9,6 +9,7 @@
 static NSString * const SSCommandName = @"local.silentsnip.review.command.v1";
 static NSString * const SSCapabilityName = @"local.silentsnip.workflow.capabilities.v1";
 static NSString * const SSHelperID = @"local.silentsnip.app";
+static NSString * const SSHostID = @"com.apple.FinalCut";
 static NSString * const SSInstallMessage = @"Install the updated Silent Snip app that supports the Workflow Extension, then Analyze again.";
 
 static BOOL SSBoolean(id value) {
@@ -59,6 +60,9 @@ static NSString *SSResponseName(NSString *request) {
 @property (nonatomic) BOOL observing;
 @property (nonatomic) BOOL analysisDispatched;
 @property (nonatomic) NSUInteger generation;
+@property (nonatomic) BOOL activationPending;
+@property (nonatomic) NSUInteger activationToken;
+@property (nonatomic, copy) NSString *localMessage;
 @end
 
 @implementation SSWorkflowReviewClient
@@ -70,7 +74,7 @@ static NSString *SSResponseName(NSString *request) {
 - (NSString *)requestID { return self.connection.requestID; }
 - (BOOL)busy {
     if (!self.requestID || self.locallyFailed || self.connection.timedOut) return NO;
-    return self.capabilityNonce != nil || self.connection.awaitingResponse || self.connection.operationBusy ||
+    return self.activationPending || self.capabilityNonce != nil || self.connection.awaitingResponse || self.connection.operationBusy ||
         self.connection.applying || self.connection.pendingRetry != nil || self.cancelRequested;
 }
 - (BOOL)canApply {
@@ -88,13 +92,68 @@ static NSString *SSResponseName(NSString *request) {
         [self.response[@"canChangeSelection"] isEqual:@YES];
 }
 - (BOOL)canCancel {
-    return self.requestID && !self.cancelRequested && !SilentSnipReviewStateIsTerminal(self.connection.state) &&
-        (self.connection.awaitingResponse || self.capabilityNonce || [self.response[@"canCancel"] isEqual:@YES]);
+    return self.requestID && !self.cancelRequested && (self.activationPending || (!SilentSnipReviewStateIsTerminal(self.connection.state) &&
+        (self.connection.awaitingResponse || self.capabilityNonce || [self.response[@"canCancel"] isEqual:@YES])));
 }
 
 // Dependency boundaries also permit offline tests to use no Launch Services,
 // distributed notifications, timers, or filesystem settings.
 - (NSDate *)now { return NSDate.date; }
+- (NSArray<NSRunningApplication *> *)runningHostApplications {
+    return [NSRunningApplication runningApplicationsWithBundleIdentifier:SSHostID];
+}
+- (NSRunningApplication *)frontmostApplication { return NSWorkspace.sharedWorkspace.frontmostApplication; }
+- (BOOL)requestActivationOfHost:(NSRunningApplication *)host {
+    return [host activateFromApplication:NSRunningApplication.currentApplication options:0];
+}
+- (NSTimeInterval)activationUptime { return NSProcessInfo.processInfo.systemUptime; }
+- (void)scheduleActivationCheck:(void (^)(void))check {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), check);
+}
+- (NSError *)hostActivationError {
+    return [NSError errorWithDomain:@"SilentSnipWorkflow" code:2 userInfo:@{NSLocalizedDescriptionKey:
+        @"Final Cut Pro could not become active. Bring Final Cut Pro to the front, then try the action again."}];
+}
+- (void)observeHostActivation:(NSRunningApplication *)host deadline:(NSTimeInterval)deadline
+                  generation:(NSUInteger)generation token:(NSUInteger)token completion:(void (^)(NSError *))completion {
+    if (generation != self.generation || token != self.activationToken || !self.activationPending) return;
+    NSArray<NSRunningApplication *> *hosts = [self runningHostApplications];
+    if (host.terminated || hosts.count != 1 || hosts.firstObject.processIdentifier != host.processIdentifier ||
+        ![hosts.firstObject.bundleIdentifier isEqual:SSHostID]) { completion([self hostActivationError]); return; }
+    NSRunningApplication *front = [self frontmostApplication];
+    if (front.processIdentifier == host.processIdentifier && [front.bundleIdentifier isEqual:SSHostID]) { completion(nil); return; }
+    if ([self activationUptime] >= deadline) { completion([self hostActivationError]); return; }
+    __weak SSWorkflowReviewClient *weakSelf = self;
+    [self scheduleActivationCheck:^{
+        [weakSelf observeHostActivation:host deadline:deadline generation:generation token:token completion:completion];
+    }];
+}
+// A request returning YES only means AppKit accepted it. Observe the exact
+// pinned host PID becoming frontmost before any worker edit/start command.
+- (void)activateHostForUserRequest:(void (^)(NSError *))completion {
+    NSArray<NSRunningApplication *> *hosts = [self runningHostApplications];
+    NSRunningApplication *host = hosts.count == 1 ? hosts.firstObject : nil;
+    if (!host || host.terminated || host.processIdentifier <= 0 || ![host.bundleIdentifier isEqual:SSHostID] ||
+        ![self requestActivationOfHost:host]) { completion([self hostActivationError]); return; }
+    [self observeHostActivation:host deadline:[self activationUptime] + 2.0
+        generation:self.generation token:self.activationToken completion:completion];
+}
+- (void)prepareHostForUserRequest:(void (^)(NSError *))completion {
+    self.activationPending = YES;
+    self.activationToken += 1;
+    NSUInteger generation = self.generation, token = self.activationToken;
+    self.localMessage = @"Activating Final Cut Pro…";
+    [self publish];
+    if (generation != self.generation || token != self.activationToken || !self.activationPending ||
+        !self.requestID || self.cancelRequested || self.locallyFailed) return;
+    [self activateHostForUserRequest:^(NSError *error) {
+        if (generation != self.generation || token != self.activationToken || !self.activationPending || !self.requestID ||
+            self.cancelRequested || self.locallyFailed) return;
+        self.activationPending = NO;
+        self.localMessage = nil;
+        completion(error);
+    }];
+}
 - (NSArray<NSURL *> *)registeredHelperURLs { return [NSWorkspace.sharedWorkspace URLsForApplicationsWithBundleIdentifier:SSHelperID]; }
 - (NSURL *)siblingHelperURL {
     NSURL *extension = NSBundle.mainBundle.bundleURL;
@@ -213,6 +272,7 @@ static NSString *SSResponseName(NSString *request) {
     value[@"canApply"] = @(self.canApply);
     value[@"canChangeSelection"] = @(self.canChangeSelection);
     value[@"canCancel"] = @(self.canCancel);
+    if (self.localMessage) value[@"message"] = self.localMessage;
     if (self.update) self.update(value);
 }
 - (void)fail:(NSString *)message {
@@ -222,6 +282,8 @@ static NSString *SSResponseName(NSString *request) {
     self.connection.pendingSelection = nil;
     self.connection.pendingRetry = nil;
     self.capabilityNonce = nil;
+    self.activationPending = NO;
+    self.activationToken += 1;
     [self.timer invalidate]; self.timer = nil;
     if (self.failure) self.failure(message);
 }
@@ -273,28 +335,38 @@ static NSString *SSResponseName(NSString *request) {
     self.analysisURL = components.URL;
     [self beginObserving];
     [self startPolling];
-    [self publish];
     NSUInteger generation = self.generation;
-    if (self.capabilityNonce) {
-        [self openHelperAtURL:helper completion:^(NSError *error) {
-            if (generation != self.generation || !self.requestID) return;
-            if (error) { [self fail:error.localizedDescription]; return; }
-            self.helperLaunched = YES;
+    [self prepareHostForUserRequest:^(NSError *activationError) {
+        if (activationError) { [self fail:activationError.localizedDescription]; return; }
+        if (self.capabilityNonce) {
             self.capabilityStarted = [self now];
-            [self poll];
-        }];
-    } else [self dispatchAnalysis];
+            [self openHelperAtURL:helper completion:^(NSError *error) {
+                if (generation != self.generation || !self.requestID || self.cancelRequested || self.locallyFailed) return;
+                if (error) { [self fail:error.localizedDescription]; return; }
+                self.helperLaunched = YES;
+                self.capabilityStarted = [self now];
+                [self poll];
+            }];
+        } else [self dispatchAnalysis];
+    }];
     return YES;
 }
 - (void)dispatchAnalysis {
-    if (self.locallyFailed || self.cancelRequested || self.analysisDispatched || !self.requestID || !self.analysisURL) return;
+    if (self.locallyFailed || self.cancelRequested || self.activationPending || self.analysisDispatched || !self.requestID || !self.analysisURL) return;
     NSDictionary *info = [self helperInfoAtURL:self.helperURL];
     if (info && ![self verifiedHelperInfo:info]) { [self fail:SSInstallMessage]; return; }
-    NSUInteger generation = self.generation;
-    self.analysisDispatched = YES; // An uncertain OS launch is never retried.
-    [self openAnalysisURL:self.analysisURL helper:self.helperURL completion:^(NSError *error) {
-        if (generation != self.generation || !self.requestID) return;
-        if (error) [self fail:error.localizedDescription];
+    [self prepareHostForUserRequest:^(NSError *activationError) {
+        if (activationError) { [self fail:activationError.localizedDescription]; return; }
+        NSDictionary *currentInfo = [self helperInfoAtURL:self.helperURL];
+        if (currentInfo && ![self verifiedHelperInfo:currentInfo]) { [self fail:SSInstallMessage]; return; }
+        NSUInteger generation = self.generation;
+        self.connection.lastResponse = [self now];
+        self.analysisDispatched = YES; // An uncertain OS launch is never retried.
+        [self openAnalysisURL:self.analysisURL helper:self.helperURL completion:^(NSError *error) {
+            if (generation != self.generation || !self.requestID) return;
+            if (error) [self fail:error.localizedDescription];
+        }];
+        if (generation == self.generation && self.requestID && !self.locallyFailed) [self publish];
     }];
 }
 - (void)receiveCapability:(NSNotification *)notification {
@@ -350,7 +422,7 @@ static NSString *SSResponseName(NSString *request) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self receive:notification]; });
         return;
     }
-    if (!self.requestID || self.capabilityNonce || notification.userInfo || ![notification.object isKindOfClass:NSString.class]) return;
+    if (!self.requestID || !self.analysisDispatched || self.capabilityNonce || notification.userInfo || ![notification.object isKindOfClass:NSString.class]) return;
     NSData *data = [notification.object dataUsingEncoding:NSUTF8StringEncoding];
     if (data.length > 262144) return;
     id value = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -360,6 +432,7 @@ static NSString *SSResponseName(NSString *request) {
     NSDictionary *accepted = [self.connection acceptNotification:notification];
     if (!accepted) return;
     self.response = accepted;
+    if (!self.activationPending) self.localMessage = nil;
     if (self.connection.applying && ([accepted[@"state"] isEqual:@"applying"] || SilentSnipReviewStateIsTerminal(accepted[@"state"]))) {
         self.connection.applyAcknowledged = YES;
         self.connection.pendingApply = nil;
@@ -373,7 +446,7 @@ static NSString *SSResponseName(NSString *request) {
     [self publish];
 }
 - (void)poll {
-    if (!self.requestID || self.locallyFailed) return;
+    if (!self.requestID || self.locallyFailed || self.activationPending) return;
     if (self.capabilityNonce) {
         if (self.capabilityStarted && [[self now] timeIntervalSinceDate:self.capabilityStarted] > (self.helperLaunched ? 5 : 15)) {
             [self fail:SSInstallMessage]; return;
@@ -403,29 +476,65 @@ static NSString *SSResponseName(NSString *request) {
 - (BOOL)selectAll:(BOOL)included { return [self selection:@{@"command": included ? @"selectAll" : @"deselectAll"}]; }
 - (BOOL)sendApplyWithGesture:(NSString *)gesture {
     if (!SSUUID(gesture) || !self.canApply) return NO;
-    self.connection.applying = YES;
-    self.connection.applyAcknowledged = NO;
-    self.connection.applyRevision = self.connection.revision;
-    self.connection.lastResponse = [self now];
-    self.connection.pendingApply = @{@"version": @1, @"request": self.requestID, @"command": @"apply",
-        @"expectedRevision": self.connection.revision, @"view": self.viewID, @"applyGesture": gesture};
-    [self publish];
-    [self send:self.connection.pendingApply name:SSCommandName];
+    NSNumber *revision = self.connection.revision;
+    [self prepareHostForUserRequest:^(NSError *error) {
+        if (error || ![self.connection.revision isEqual:revision] || !self.canApply) {
+            self.localMessage = error.localizedDescription ?: @"The review changed before Apply. Review the current cuts, then try again.";
+            [self publish];
+            return;
+        }
+        self.connection.applying = YES;
+        self.connection.applyAcknowledged = NO;
+        self.connection.applyRevision = revision;
+        self.connection.lastResponse = [self now];
+        self.connection.pendingApply = @{@"version": @1, @"request": self.requestID, @"command": @"apply",
+            @"expectedRevision": revision, @"view": self.viewID, @"applyGesture": gesture};
+        NSUInteger generation = self.generation, token = self.activationToken;
+        NSDictionary *command = self.connection.pendingApply;
+        [self publish];
+        if (generation == self.generation && token == self.activationToken && !self.cancelRequested &&
+            !self.locallyFailed && !self.connection.timedOut && self.connection.pendingApply == command)
+            [self send:command name:SSCommandName];
+    }];
+    return YES;
+}
+- (BOOL)canRetryVerification {
+    if (!self.requestID || self.busy || self.locallyFailed || self.connection.timedOut || !self.connection.revision ||
+        !SilentSnipReviewStateCanRetry(self.connection.state) || ![self.response[@"canRetryVerification"] isEqual:@YES]) return NO;
     return YES;
 }
 - (BOOL)retryVerification {
-    if (!self.requestID || self.busy || self.locallyFailed || self.connection.timedOut || !self.connection.revision ||
-        !SilentSnipReviewStateCanRetry(self.connection.state) || ![self.response[@"canRetryVerification"] isEqual:@YES]) return NO;
-    self.connection.pendingRetry = @{@"version": @1, @"request": self.requestID, @"command": @"retryVerification",
-        @"expectedRevision": self.connection.revision};
-    self.connection.lastResponse = [self now];
-    [self startPolling];
-    [self publish];
-    [self send:self.connection.pendingRetry name:SSCommandName];
+    if (![self canRetryVerification]) return NO;
+    NSNumber *revision = self.connection.revision;
+    [self prepareHostForUserRequest:^(NSError *error) {
+        if (error || ![self.connection.revision isEqual:revision] || ![self canRetryVerification]) {
+            self.localMessage = error.localizedDescription ?: @"The verification result changed. Check the current result before retrying.";
+            [self publish];
+            return;
+        }
+        self.connection.pendingRetry = @{@"version": @1, @"request": self.requestID, @"command": @"retryVerification",
+            @"expectedRevision": revision};
+        self.connection.lastResponse = [self now];
+        [self startPolling];
+        NSUInteger generation = self.generation, token = self.activationToken;
+        NSDictionary *command = self.connection.pendingRetry;
+        [self publish];
+        if (generation == self.generation && token == self.activationToken && !self.cancelRequested &&
+            !self.locallyFailed && !self.connection.timedOut && self.connection.pendingRetry == command)
+            [self send:command name:SSCommandName];
+    }];
     return YES;
 }
 - (void)cancel {
-    if (!self.requestID || self.cancelRequested || SilentSnipReviewStateIsTerminal(self.connection.state)) return;
+    if (!self.requestID || self.cancelRequested || (SilentSnipReviewStateIsTerminal(self.connection.state) && !self.activationPending)) return;
+    self.activationToken += 1;
+    self.activationPending = NO;
+    self.localMessage = nil;
+    if (SilentSnipReviewStateIsTerminal(self.connection.state)) {
+        self.localMessage = @"Cancelled before verification retry started.";
+        [self publish];
+        return;
+    }
     self.cancelRequested = YES;
     self.connection.pendingSelection = nil;
     self.connection.pendingRetry = nil;
@@ -453,6 +562,7 @@ static NSString *SSResponseName(NSString *request) {
     self.helperURL = nil; self.analysisURL = nil; self.capabilityNonce = nil; self.capabilityStarted = nil;
     self.helperLaunched = NO; self.cancelRequested = NO; self.locallyFailed = NO;
     self.analysisDispatched = NO;
+    self.activationPending = NO; self.activationToken += 1; self.localMessage = nil;
 }
 - (void)dealloc {
     [_timer invalidate];

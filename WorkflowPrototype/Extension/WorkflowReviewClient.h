@@ -23,6 +23,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// YES means a validated connection attempt began; launch/capability failures
 /// arrive through failure. Observers attach before dispatch. Unreadable helper
 /// metadata requires a fresh availability reply before the analysis URL.
+/// Explicit Analyze/Apply/Retry actions wait for the exact Final Cut process
+/// to become frontmost. Apply/Retry activation failure preserves the review and
+/// reports a recoverable message through update, without sending a command.
 - (BOOL)startWithLibraryURL:(NSURL *)libraryURL
                 projectUID:(NSString *)projectUID
                projectName:(NSString *)projectName

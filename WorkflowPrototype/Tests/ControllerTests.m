@@ -160,6 +160,8 @@ static void unexpectedReviewBoundary(void) {
 @property (nonatomic) NSUInteger cancelCount;
 @property (nonatomic) NSUInteger detachCount;
 @property (nonatomic) NSUInteger retryCount;
+@property (nonatomic) BOOL failApplyActivationSynchronously;
+@property (nonatomic) NSUInteger applyCommandCount;
 - (void)deliver:(NSDictionary *)response busy:(BOOL)busy canApply:(BOOL)canApply;
 @end
 @implementation SSFakeWorkflowReviewClient
@@ -189,6 +191,14 @@ static void unexpectedReviewBoundary(void) {
     [self.applyGestures addObject:gesture];
     self.applyIdentifierAtDispatch = self.owner.applyButton.accessibilityIdentifier;
     self.applyDisabledAtDispatch = !self.owner.applyButton.enabled;
+    if (self.failApplyActivationSynchronously) {
+        NSMutableDictionary *response = [self.lastResponse mutableCopy];
+        response[@"message"] = @"Activate Final Cut Pro, then choose Apply again.";
+        self.lastResponse = response;
+        self.testUpdate(response);
+        return NO;
+    }
+    self.applyCommandCount += 1;
     self.fakeBusy = YES;
     self.fakeCanApply = NO;
     self.fakeCanChangeSelection = NO;
@@ -781,8 +791,9 @@ static void busyWorkerDefersTemporarySDKBinding(void) {
           controller.reviewClient == nil && !controller.applyButton.enabled,
           @"Only terminal worker completion binds the SDK result project and drops the old review");
     completeLoad(controller.settings.loads[1], values(-50, NO), nil);
-    check([controller.statusLabel.stringValue isEqual:@"Verified result opened"] && controller.analyzeButton.enabled,
-          @"The result's settings load retains the verified completion status and restores analysis");
+    check([controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."] && controller.analyzeButton.enabled &&
+          !controller.completionMessage,
+          @"The result's settings load restores analysis without attaching a source-scoped notice to a new SDK identity");
     closeController(controller);
     groupCount += 1;
 }
@@ -879,8 +890,9 @@ static void retryableResultRetainsRecoveryUntilVerified(void) {
           @"Successful verification settles recovery, then loads the actual result project's own settings");
     completeLoad(controller.settings.loads[1], values(-32, NO), nil);
     check(controller.analyzeButton.enabled && controller.saveButton.enabled && controller.fields[0].enabled &&
-          [controller.fields[0].stringValue isEqual:@"-32"] && [controller.statusLabel.stringValue isEqual:@"Existing result verified"],
-          @"Only the result's settings completion restores editing and preserves the verification outcome");
+          [controller.fields[0].stringValue isEqual:@"-32"] && [controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."] &&
+          !controller.completionMessage,
+          @"Only the result's own settings completion restores editing without borrowing the source project's terminal notice");
     closeController(controller);
     groupCount += 1;
 }
@@ -949,6 +961,110 @@ static void pendingSaveCannotReplaceWorkerProgressOrRecovery(void) {
     check([controller.statusLabel.stringValue isEqual:@"Result pending verification; use Retry"] && controller.retryButton.enabled &&
           !controller.analyzeButton.enabled && !controller.saveButton.enabled && !controller.fields[0].enabled,
           @"Even a delayed Save error cannot replace recovery guidance or unlock a retryable result's settings");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void synchronousApplyActivationFailureKeepsReviewUsable(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    NSArray *cuts = controller.reviewCuts;
+    client.failApplyActivationSynchronously = YES;
+    [controller applyCuts:controller.applyButton];
+    check(client.applyGestures.count == 1 && client.applyCommandCount == 0 && !client.busy,
+          @"An immediate Apply activation failure sends no worker Apply command and releases local pending state");
+    check(controller.reviewClient == client && client.detachCount == 0 && [controller.reviewCuts isEqual:cuts] &&
+          controller.applyButton.enabled && controller.analyzeButton.enabled && controller.saveButton.enabled &&
+          controller.fields[0].enabled && controller.output.enabled,
+          @"A synchronous recoverable failure preserves the plan and leaves Apply and settings usable after the action returns");
+    check([controller.statusLabel.stringValue isEqual:@"Activate Final Cut Pro, then choose Apply again."],
+          @"The recoverable activation guidance survives the remainder of the Apply action");
+    NSString *failedGesture = client.applyGestures.lastObject;
+    client.failApplyActivationSynchronously = NO;
+    [controller applyCuts:controller.applyButton];
+    check(client.applyGestures.count == 2 && client.applyCommandCount == 1 && client.busy && !controller.applyButton.enabled &&
+          ![client.applyGestures.lastObject isEqual:failedGesture],
+          @"A later explicit Apply can retry the same review with a fresh gesture and dispatch only once");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void terminalNoticeStaysWithItsPinnedProject(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    [controller applyCuts:controller.applyButton];
+    current.testTimeline.sequence = sequence(@"verified-result", @"/Test/Library-A.fcpbundle", @"Cleaned A");
+    [current.testTimeline notifySequenceChanged];
+    [client deliver:reviewResponse(@"completed", @"Verified Cleaned A") busy:NO canApply:NO];
+    completeLoad(controller.settings.loads[1], values(-47, NO), nil);
+    check([controller.projectUID isEqual:@"verified-result"] && [controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."] &&
+          !controller.completionMessage && !controller.completionContext,
+          @"Automatic result rebinding clears a source-scoped notice because the response has no verified result identity");
+    [current.testTimeline notifySequenceChanged];
+    check(controller.settings.loads.count == 2 && [controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."],
+          @"Duplicate callbacks for the result preserve its current settings status without reviving a source notice");
+
+    current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-A.fcpbundle", @"B");
+    [current.testTimeline notifySequenceChanged];
+    check(!controller.completionMessage && !controller.completionContext && !controller.reviewClient && !controller.applyButton.enabled,
+          @"Changing project UID in the same library clears the prior verification notice and all review authority");
+    completeLoad(controller.settings.loads[2], values(-32, YES), nil);
+    check([controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."] &&
+          [controller.reviewSummary.stringValue isEqual:@"Select one timeline clip with audio, then Analyze."],
+          @"The new project's own loaded status replaces the old result notice before another Analyze");
+    client.testUpdate(reviewResponse(@"completed", @"Late verified Cleaned A"));
+    check(!controller.completionMessage && [controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."],
+          @"A queued terminal callback cannot restore a cleared notice after rebinding");
+
+    client = beginReview(controller);
+    [controller applyCuts:controller.applyButton];
+    [client deliver:reviewResponse(@"completed", @"Verified B in Library A") busy:NO canApply:NO];
+    check([controller.completionContext[@"projectUID"] isEqual:@"project-B"], @"A same-context terminal result also receives a scoped notice");
+    current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-B.fcpbundle", @"B");
+    [current.testTimeline notifySequenceChanged];
+    completeLoad(controller.settings.loads[3], values(-40, NO), nil);
+    check(!controller.completionMessage && !controller.completionContext &&
+          [controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."],
+          @"A reused project UID in another library cannot inherit the prior library's terminal notice");
+
+    client = beginReview(controller);
+    [controller applyCuts:controller.applyButton];
+    [client deliver:reviewResponse(@"completed", @"Verified B in Library B") busy:NO canApply:NO];
+    [controller viewWillDisappear];
+    check(!controller.completionMessage && !controller.completionContext, @"Closing the extension clears its terminal notice identity");
+    [controller viewDidAppear];
+    completeLoad(controller.settings.loads[4], values(-40, YES), nil);
+    check([controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."] && !controller.completionMessage &&
+          !controller.applyButton.enabled, @"Reopening the same project shows its current settings status without a historical verification claim");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void delayedTerminalCannotClaimTheNewSDKProject(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    [controller applyCuts:controller.applyButton];
+    current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-B.fcpbundle", @"Unrelated B");
+    [current.testTimeline notifySequenceChanged];
+    check([controller.projectUID isEqual:@"project-A"] && controller.settings.loads.count == 1 && client.busy,
+          @"The unrelated SDK switch is deferred while A's actual request is still busy");
+    [client deliver:reviewResponse(@"completed", @"Verified result for A") busy:NO canApply:NO];
+    check([controller.projectUID isEqual:@"project-B"] && [controller.projectLabel.stringValue isEqual:@"Unrelated B"] &&
+          !controller.completionMessage && !controller.completionContext && !controller.reviewClient && !controller.applyButton.enabled &&
+          [controller.statusLabel.stringValue isEqual:@"Loading project settings…"],
+          @"Delayed completion for A cannot attach a verified notice or edit authority to the unrelated SDK project B");
+    completeLoad(controller.settings.loads[1], values(-32, YES), nil);
+    check([controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."] && controller.analyzeButton.enabled &&
+          !controller.applyButton.enabled, @"B finishes loading with only its own status and remains unanalyzed");
+    client.testUpdate(reviewResponse(@"completed", @"Late second verified result for A"));
+    check(!controller.completionMessage && [controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."],
+          @"A further queued terminal response cannot restore A's notice after B has bound");
     closeController(controller);
     groupCount += 1;
 }
@@ -1103,6 +1219,9 @@ int main(void) {
         retryableResultRetainsRecoveryUntilVerified();
         busyPlayheadWaitsForTheSettledProject();
         pendingSaveCannotReplaceWorkerProgressOrRecovery();
+        synchronousApplyActivationFailureKeepsReviewUsable();
+        terminalNoticeStaysWithItsPinnedProject();
+        delayedTerminalCannotClaimTheNewSDKProject();
         offscreenParentResizeKeepsContentReachable();
         frameDrivenParentResizeKeepsContentReachable();
         check(hostSingleton == nil, @"No host fixture survives the test groups");

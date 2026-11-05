@@ -4,6 +4,20 @@ import XCTest
 @testable import SilentSnipMac
 
 final class FinalCutProjectCaptureTests: XCTestCase {
+    func testMissingTimelineSelectionExplainsSelectionWithoutRequiringAnAU() {
+        let timeline = AccessibilityNode(role: "AXLayoutArea", identifier: nil, title: nil,
+            description: "Project Timeline", value: nil, selected: nil, enabled: true, children: [])
+        do {
+            _ = try FinalCutSelectionSnapshot(projectName: "Workflow project", timeline: timeline)
+            XCTFail("A missing selection must still fail before capture")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.hasPrefix("Select one whole clip with audio in the primary storyline."))
+            XCTAssertTrue(error.localizedDescription.contains("exactly one enabled selected timeline clip"))
+            XCTAssertFalse(error.localizedDescription.contains("carrying Silent Snip Audio"))
+            XCTAssertFalse(error.localizedDescription.contains("Reopen"))
+        }
+    }
+
     func testRetainedRemoteEditorShellNeverExemptsAnotherWindowOrRealModalDialog() {
         XCTAssertTrue(FinalCutReviewWindowShell.isOwned(role: "AXWindow", modal: nil,
             title: "Audio recording", recordedTitle: "Audio recording", sameElement: true))

@@ -171,10 +171,13 @@ extension FinalCutAXSession {
     }
 
     func restoreWorkflowReview(bringToFront: Bool, document: TimelineDocument?, target: TimelineClip?) async -> String? {
+        // An initial selection failure owns no review or clip to restore.
+        // Preserve that actual error without inventing a reopen instruction.
+        guard let expected = reviewOwnership.active else { return nil }
         let guidance = "Reopen the Silent Snip Workflow Extension and select the original clip to review these results."
         do {
             try assertCurrentProject()
-            guard currentSheet() == nil, let expected = reviewOwnership.active else { return guidance }
+            guard currentSheet() == nil else { return guidance }
             if bringToFront {
                 requestActivation()
                 try await waitUntil(timeout: 3, context: "Final Cut activation for workflow review") {
