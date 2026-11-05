@@ -2,11 +2,21 @@
 
 November 4, 2026. Branch: `codex/workflow-extension-prototype`.
 
-**Installed frontend 11 passed the recorded 18-cut native review and Apply check with its compact settings/review layout.** The generated 60-second fixture opened a verified **44.6-second** cleaned result. Worker 53, AU29, and the worker ZIP are unchanged. This UI run adds no PCM-export proof or speed claim; the earlier frontend-8/worker-53 fidelity results retain their original scope. The three-second complete-flow target remains unmet.
+**Frontend 13 passed native empty, one-cut and 18-cut review checks plus verified Apply. The fixed outer-window/default-size request was not achieved.** Worker 53, AU29, and the worker ZIP are unchanged. The completed frontend-11 UI/Apply and earlier frontend-8/worker-53 fidelity checks remain historical, versioned evidence; they do not validate the new layout. The three-second complete-flow target remains unmet.
 
 **Milestone 1 passed native validation in build 5** for the hosted window, project/library/playhead observation, independent per-project settings, restart/reopen persistence, and reachable controls. Those checks remain historical evidence; they did not run audio analysis, Share, or timeline edits.
 
-## Frontend 11: compact settings and full-width review
+## Frontend 13: compact content and scoped native pass
+
+The content column is capped at **560 points**. Detection settings share one horizontal row when space permits, with a two-by-two fallback for narrower content. Output stretches beside Save Settings instead of leaving an empty area. Start, End, and Duration stay in compact aligned columns. Empty review hides the table and headers; one or a few cuts use only the height they need, with actions directly below. Longer reviews keep a bounded scrolling list.
+
+Native idle review showed four horizontal setting groups, Output filling its row with Save Settings at the trailing edge, hidden empty-table headers, and actions directly beneath review. At minimum silence **2.0 s**, the one-cut review displayed its full **10.300 s** duration in a compact single-row viewport and previewed **60 → 49.7 s**. Changing the minimum to **0.3 s** and saving left that review invalid with Apply disabled. Fresh Analyze produced **18** cuts totaling **15.4 s**; scrolling to the last row and toggling it was acknowledged **18 → 17 → 18**. Apply `11D724B6-41BD-4DAD-A9B3-0BFD6D9A6080` passed import verification with no differences and opened the generated **44.6-second** result. The one-cut 49.7-second value was a review preview, not a separately applied result. This generated no-effects/cache-eligible one-minute UI test adds no PCM comparison, all-effects proof, or throughput claim.
+
+Offline checks passed **32 groups / 4,384 functional assertions**; optional offscreen rendering reached **32 groups / 4,396 assertions** as geometry evidence. `Package13.json`, `Installed-Package13.json`, and `Install13.json` under `build/WorkflowPrototype/Window13` passed package/install checks. `After13-Preservation.json` passed all **16** checks of unchanged worker53/AU29/ZIP, installed package/signatures/directory identity, AU registration, immutable audit inputs, and accessible setup-file fingerprints. Protected preferences and active/default selections remain unverified. `Native13.json`, `Native13-Evidence-SHA256.json`, and copied receipts/XML under `Native-11D724B6` record the verified result with **19 direct primary PCM clips and no gaps**.
+
+**A remembered or fixed outer size was not achieved.** Final Cut owns the resizable host window. Apple’s [ProExtensionAttributes documentation](https://developer.apple.com/documentation/bundleresources/information-property-list/nsextension/proextensionattributes) specifies minimum window dimensions, without a resize-lock attribute; content-size hints did not resize the host in this run. The manually chosen **1230 × 1472-pixel** window was **not retained** after installing frontend 13 and quitting/reopening Final Cut: it returned at **1728 × 1596 pixels**. This observed reset does not establish a fresh-instance default; the 560-point cap applies to content only.
+
+## Historical frontend 11: compact settings and full-width review
 
 Open **Window → Extensions → Silent Snip**. The four detection settings share one row in wide windows and a two-by-two arrangement in narrow windows. Output and Save Settings share a row. Cut review uses the full width below, with compact checkboxes and aligned **Start / End / Duration** columns. Project information stays at the top; status and actions stay at the bottom. In wide windows the status is on the left and actions on the right. **Details / Hide Details** retains the full message without filling the review table.
 
@@ -101,7 +111,7 @@ The first native host connection returned Apple Event permission error `-1743` w
 
 ## Build and evidence
 
-`Scripts/build-workflow-prototype.sh` builds the model with the shared `build/swift` cache and assembles `build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app`. It does not install or register that app. Worker builds separately produce `build/App/Silent Snip.app` and `dist/Silent Snip.zip`. The final installation moved both staged apps' contents into their existing installed directories; those staging app copies are now absent. Current verification uses the installed executables, recorded package hashes, and worker ZIP. Frontend 11 uses compatible worker 53; an inert staging bundle does not advertise the Workflow capability.
+`Scripts/build-workflow-prototype.sh` builds the model with the shared `build/swift` cache and assembles `build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app`. It does not install or register that app. Worker builds separately produce `build/App/Silent Snip.app` and `dist/Silent Snip.zip`. The final installation moved both staged apps' contents into their existing installed directories; those staging app copies are now absent. Current verification uses the installed executables, recorded package hashes, and worker ZIP. Frontend 13 uses compatible worker 53; an inert staging bundle does not advertise the Workflow capability.
 
 For a local developer build:
 
@@ -162,15 +172,16 @@ If protected preference access later becomes available, compare parsed values se
 | --- | --- |
 | Apple Workflow Extensions SDK 1.0.3 installed | Verified metadata |
 | Production build-47 preservation baseline | Recorded before prototype installation |
-| Prototype packaging/build validation | Frontend 11 / unchanged worker 53 passed package/install/signature and 16 preservation checks; earlier versions retained |
+| Prototype packaging/build validation | Frontend-13 package/install checks and all 16 preservation checks passed; earlier records retained |
 | Native Final Cut extension load and project/playhead observation | Build 5 passed; earlier functional checks retained |
 | Native per-project settings persistence and isolation | Frontend 10 restored source settings through result-to-original navigation; build-5 reopen and build-3 restart evidence remain historical |
-| Native layout and control reachability | Frontend 11 passed its recorded normal window, 18-row scrolling/selection and Details; native narrow resizing untested |
-| Automated model, packaging, controller, and client checks | Frontend 11: 31 controller groups / 1,909 functional assertions and 19 focused package tests; earlier full suites retained |
+| Native layout and control reachability | Frontend 13 passed empty/one-cut/18-cut review states and verified Apply; fixed/default host size not achieved |
+| Automated model, packaging, controller, and client checks | Frontend 13: 32 groups / 4,384 functional assertions; optional offscreen 4,396; historical suites retained |
 | Native setup/preference comparison | Production/setup-file checks passed; protected preferences and active command-set selection remain limited |
 | Native Workflow Analyze → review → Apply and audio fidelity | Frontend 7 / worker 51 passed five-minute Gate → Limiter/no-detector gaps and one-minute delay/detector/connected-role removal, with exact native PCM |
 | Historical frontend 10 name/layout/Details/waveform icon | Passed its recorded native scope; limitations above |
-| Frontend 11 compact layout / 18-cut Apply | Native review/selection/Details and verified 44.6-second result passed; no new PCM comparison or benchmark |
+| Historical frontend 11 compact layout / 18-cut Apply | Passed as recorded; no new PCM comparison or benchmark |
+| Frontend 13 compact layout / window size | Scoped native layout/Apply pass; manual size did not persist after restart; resize lock/fixed default not achieved |
 | Worker 53 audio-only primary PCM | Removal and real-gap modes passed native layout, exact PCM, metadata/source, and fresh post-Apply original checks |
 | Historical frontend 8 / worker 52 native flow | Passed as recorded; frontend-8 close/reopen remains unverified |
 | Three-second complete-flow target and universal effect compatibility | Not established |

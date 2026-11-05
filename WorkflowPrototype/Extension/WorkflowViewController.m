@@ -43,15 +43,18 @@
 @property (nonatomic, copy) NSString *durationValue;
 @property (nonatomic, strong) NSFont *textFont;
 - (NSRect)columnRectForIndex:(NSUInteger)index;
+- (NSTextAlignment)textAlignmentForColumn:(NSUInteger)index;
 @end
 @implementation SSWorkflowCutRow
 - (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric, 22); }
 - (NSRect)columnRectForIndex:(NSUInteger)index {
-    CGFloat available = fmax(0, self.bounds.size.width - 26);
-    CGFloat origin = index < 2 ? index * 0.3 : 0.6;
-    CGFloat width = available * (index < 2 ? 0.3 : 0.4);
     CGFloat height = ceil(self.textFont.ascender - self.textFont.descender);
-    return NSMakeRect(26 + origin * available, floor((self.bounds.size.height - height) / 2), width - 8, height);
+    CGFloat origin = index == 0 ? 26 : (index == 1 ? 144 : fmax(262, self.bounds.size.width - 148));
+    CGFloat width = index < 2 ? 110 : fmax(0, fmin(140, self.bounds.size.width - origin - 8));
+    return NSMakeRect(origin, floor((self.bounds.size.height - height) / 2), width, height);
+}
+- (NSTextAlignment)textAlignmentForColumn:(NSUInteger)index {
+    return index < 2 ? NSTextAlignmentLeft : NSTextAlignmentRight;
 }
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
@@ -62,8 +65,10 @@
         NSForegroundColorAttributeName: self.enabled ? NSColor.controlTextColor : NSColor.disabledControlTextColor,
         NSParagraphStyleAttributeName: style};
     NSArray *values = @[self.startValue ?: @"", self.endValue ?: @"", self.durationValue ?: @""];
-    for (NSUInteger index = 0; index < values.count; ++index)
+    for (NSUInteger index = 0; index < values.count; ++index) {
+        style.alignment = [self textAlignmentForColumn:index];
         [values[index] drawInRect:[self columnRectForIndex:index] withAttributes:attributes];
+    }
 }
 @end
 
@@ -81,6 +86,7 @@
 @property (nonatomic, strong) NSButton *connectButton;
 @property (nonatomic, strong) NSScrollView *scroll;
 @property (nonatomic, strong) NSStackView *content;
+@property (nonatomic, strong) NSView *contentColumn;
 @property (nonatomic, strong) NSView *headerView;
 @property (nonatomic, strong) NSView *footerView;
 @property (nonatomic, strong) NSLayoutConstraint *footerHeightConstraint;
@@ -92,6 +98,7 @@
 @property (nonatomic) BOOL settingsWideLayout;
 @property (nonatomic, strong) NSStackView *cutColumnHeader;
 @property (nonatomic, strong) NSLayoutConstraint *cutColumnHeaderWidthConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *durationHeaderWidthConstraint;
 @property (nonatomic, strong) NSStackView *footerMainRow;
 @property (nonatomic, strong) NSLayoutConstraint *footerStatusWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *footerActionsWidthConstraint;
@@ -155,6 +162,11 @@
     return card;
 }
 
+// These read-only extension size hints are advisory; the host can ignore
+// them. They do not install preferredContentSize constraints on the root.
+- (NSSize)preferredMaximumSize { return NSMakeSize(560, CGFLOAT_MAX); }
+- (NSSize)preferredMinimumSize { return NSMakeSize(460, 300); }
+
 - (void)loadView {
     // The SDK owns the window size. Keep the root frame-driven so its remote
     // viewport can resize it without introducing preferred-size constraints.
@@ -162,6 +174,9 @@
     self.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.settings = [SSWorkflowSettingsBridge new];
     self.viewID = NSUUID.UUID.UUIDString;
+    self.contentColumn = [[NSView alloc] initWithFrame:self.view.bounds];
+    self.contentColumn.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin | NSViewMinYMargin;
+    [self.view addSubview:self.contentColumn];
     self.headerView = [NSView new];
     self.footerView = [NSView new];
     self.scroll = [NSScrollView new];
@@ -171,7 +186,7 @@
     self.scroll.autohidesScrollers = YES;
     for (NSView *part in @[self.headerView, self.scroll, self.footerView]) {
         part.translatesAutoresizingMaskIntoConstraints = NO;
-        [self.view addSubview:part];
+        [self.contentColumn addSubview:part];
     }
 
     self.connectButton = [NSButton buttonWithTitle:@"Connect to Final Cut Pro" target:self action:@selector(requestConnection:)];
@@ -266,9 +281,13 @@
     self.saveButton = [NSButton buttonWithTitle:@"Save Settings" target:self action:@selector(saveSettings:)];
     self.saveButton.bezelStyle = NSBezelStyleRounded;
     self.saveButton.accessibilityIdentifier = @"silentsnip.workflow.save";
-    NSView *outputSpring = [NSView new];
-    [outputSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *outputRow = [NSStackView stackViewWithViews:@[[self label:@"Output" size:12 weight:NSFontWeightRegular], self.output, self.saveButton, outputSpring]];
+    NSTextField *outputLabel = [self label:@"Output" size:12 weight:NSFontWeightRegular];
+    outputLabel.maximumNumberOfLines = 1;
+    [outputLabel.widthAnchor constraintEqualToConstant:42].active = YES;
+    [self.saveButton setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.saveButton setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *outputRow = [NSStackView stackViewWithViews:@[outputLabel, self.output, self.saveButton]];
+    outputRow.distribution = NSStackViewDistributionFill;
     outputRow.spacing = 10;
     self.settingsPanel = [self cardWithViews:@[self.settingsGroups, outputRow]];
 
@@ -358,15 +377,20 @@
     for (NSString *title in @[@"Start", @"End", @"Duration"]) {
         NSTextField *column = [self label:title size:11 weight:NSFontWeightMedium];
         column.textColor = NSColor.secondaryLabelColor;
-        column.alignment = NSTextAlignmentRight;
+        column.alignment = columnLabels.count < 2 ? NSTextAlignmentLeft : NSTextAlignmentRight;
         column.maximumNumberOfLines = 1;
         [columnLabels addObject:column];
     }
-    self.cutColumnHeader = [NSStackView stackViewWithViews:columnLabels];
+    NSView *columnSpring = [NSView new];
+    [columnSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.cutColumnHeader = [NSStackView stackViewWithViews:@[columnLabels[0], columnLabels[1], columnSpring, columnLabels[2]]];
     self.cutColumnHeader.distribution = NSStackViewDistributionFill;
-    [columnLabels[1].widthAnchor constraintEqualToAnchor:columnLabels[0].widthAnchor].active = YES;
-    [columnLabels[2].widthAnchor constraintEqualToAnchor:columnLabels[0].widthAnchor multiplier:4.0 / 3.0 constant:8.0 / 3.0].active = YES;
+    [columnLabels[0].widthAnchor constraintEqualToConstant:110].active = YES;
+    [columnLabels[1].widthAnchor constraintEqualToConstant:110].active = YES;
+    self.durationHeaderWidthConstraint = [columnLabels[2].widthAnchor constraintEqualToConstant:140];
+    self.durationHeaderWidthConstraint.active = YES;
     self.cutColumnHeader.spacing = 8;
+    [self.cutColumnHeader setCustomSpacing:0 afterView:columnLabels[1]];
     self.cutColumnHeader.edgeInsets = NSEdgeInsetsMake(0, 33, 0, 13);
     self.cutColumnHeaderWidthConstraint = [self.cutColumnHeader.widthAnchor constraintEqualToConstant:400];
     self.cutColumnHeaderWidthConstraint.active = YES;
@@ -392,31 +416,30 @@
         [self.settingsTopRow.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
         [self.settingsBottomRow.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
         [outputRow.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
-        [self.output.widthAnchor constraintLessThanOrEqualToConstant:290],
         [self.reviewScroll.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
         [reviewActions.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
         [self.reviewSummary.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
         [self.statusDetails.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
-        [self.headerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.headerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.headerView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.headerView.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
+        [self.headerView.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
+        [self.headerView.topAnchor constraintEqualToAnchor:self.contentColumn.topAnchor],
         [self.headerView.heightAnchor constraintEqualToConstant:56],
         [header.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:16],
         [header.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-16],
         [header.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
         [self.projectLabel.widthAnchor constraintEqualToAnchor:project.widthAnchor],
         [metadata.widthAnchor constraintEqualToAnchor:project.widthAnchor],
-        [self.footerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.footerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.footerView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.footerView.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
+        [self.footerView.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
+        [self.footerView.bottomAnchor constraintEqualToAnchor:self.contentColumn.bottomAnchor],
         self.footerHeightConstraint,
         [footer.leadingAnchor constraintEqualToAnchor:self.footerView.leadingAnchor constant:16],
         [footer.trailingAnchor constraintEqualToAnchor:self.footerView.trailingAnchor constant:-16],
         [footer.topAnchor constraintEqualToAnchor:self.footerView.topAnchor constant:7],
         [self.footerMainRow.widthAnchor constraintEqualToAnchor:footer.widthAnchor],
         [self.progressIndicator.widthAnchor constraintEqualToAnchor:footer.widthAnchor],
-        [self.scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.scroll.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
+        [self.scroll.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
         [self.scroll.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor],
         [self.scroll.bottomAnchor constraintEqualToAnchor:self.footerView.topAnchor]
     ]];
@@ -432,51 +455,86 @@
 
 - (void)updateDocumentFrame {
     if (self.updatingDocumentLayout || !self.content || !self.scroll) return;
-    CGFloat width = self.scroll.contentView.bounds.size.width;
-    if (width <= 48) return;
+    CGFloat hostHeight = self.view.bounds.size.height;
+    CGFloat columnWidth = fmin(560, self.view.bounds.size.width);
+    if (columnWidth <= 48 || hostHeight <= 0) return;
     self.updatingDocumentLayout = YES;
-    BOOL wide = width >= 700;
-    if (self.settingsWideLayout != wide) {
+    BOOL hasCuts = self.reviewCuts.count > 0;
+    self.reviewScroll.hidden = !hasCuts;
+    self.cutColumnHeader.hidden = !hasCuts;
+    if (!hasCuts) self.reviewListHeightConstraint.constant = 0;
+    else if (self.reviewListHeightConstraint.constant < 2) self.reviewListHeightConstraint.constant = 2;
+    BOOL settingsWide = columnWidth >= 530;
+    if (self.settingsWideLayout != settingsWide) {
         for (NSUInteger index = 2; index < self.numericGroups.count; ++index) {
             NSView *group = self.numericGroups[index];
-            NSStackView *source = wide ? self.settingsBottomRow : self.settingsTopRow;
-            NSStackView *destination = wide ? self.settingsTopRow : self.settingsBottomRow;
+            NSStackView *source = settingsWide ? self.settingsBottomRow : self.settingsTopRow;
+            NSStackView *destination = settingsWide ? self.settingsTopRow : self.settingsBottomRow;
             [source removeArrangedSubview:group];
             [group removeFromSuperview];
             [destination addArrangedSubview:group];
         }
-        self.settingsWideLayout = wide;
+        self.settingsWideLayout = settingsWide;
     }
-    self.settingsBottomRow.hidden = wide;
-    self.footerHeightConstraint.constant = wide ? 56 : 76;
+    self.settingsBottomRow.hidden = settingsWide;
+    self.footerHeightConstraint.constant = 76;
+    self.footerStatusWidthConstraint.active = YES;
+    self.footerActionsWidthConstraint.active = YES;
+    self.footerMainRow.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.footerMainRow.alignment = NSLayoutAttributeLeading;
     self.content.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.content.alignment = NSLayoutAttributeLeading;
-    CGFloat cardWidth = width - 24;
-    self.settingsPanelWidthConstraint.constant = cardWidth;
-    self.reviewPanelWidthConstraint.constant = cardWidth;
-    self.reviewSummary.preferredMaxLayoutWidth = cardWidth - 24;
-    self.statusDetails.preferredMaxLayoutWidth = cardWidth - 24;
-    self.footerStatusWidthConstraint.active = !wide;
-    self.footerActionsWidthConstraint.active = !wide;
-    self.footerMainRow.orientation = wide ? NSUserInterfaceLayoutOrientationHorizontal : NSUserInterfaceLayoutOrientationVertical;
-    self.footerMainRow.alignment = wide ? NSLayoutAttributeCenterY : NSLayoutAttributeLeading;
-    self.statusLabel.preferredMaxLayoutWidth = fmax(100, self.view.bounds.size.width - (wide ? 410 : 104));
-    [self.content setFrameSize:NSMakeSize(width, self.content.frame.size.height)];
-    [self.content layoutSubtreeIfNeeded];
-    CGFloat settingsHeight = ceil(self.settingsPanel.fittingSize.height);
-    CGFloat otherHeight = self.reviewPanel.fittingSize.height - self.reviewListHeightConstraint.constant;
-    CGFloat available = self.scroll.contentView.bounds.size.height - 24 - 12 - settingsHeight;
-    CGFloat minimum = wide ? 90 : fmax(90, fmin(150, self.scroll.contentView.bounds.size.height - 2));
-    self.reviewListHeightConstraint.constant = fmax(minimum, floor(available - otherHeight));
-    [self.content layoutSubtreeIfNeeded];
-    CGFloat height = fmax(1, ceil(self.content.fittingSize.height));
-    NSSize size = NSMakeSize(width, height);
-    if (!NSEqualSizes(self.content.frame.size, size)) [self.content setFrameSize:size];
-    [self.content layoutSubtreeIfNeeded];
-    CGFloat listWidth = self.reviewScroll.contentView.bounds.size.width;
-    self.cutColumnHeaderWidthConstraint.constant = fmax(1, listWidth);
-    [self.cutList setFrameSize:NSMakeSize(fmax(1, listWidth), fmax(1, ceil(self.cutList.fittingSize.height)))];
-    [self.cutList layoutSubtreeIfNeeded];
+    self.statusLabel.preferredMaxLayoutWidth = fmax(100, columnWidth - 104);
+    CGFloat provisionalHeight = fmin(hostHeight, fmax(132, self.contentColumn.frame.size.height));
+    NSRect provisionalFrame = NSMakeRect(floor((self.view.bounds.size.width - columnWidth) / 2),
+        hostHeight - provisionalHeight, columnWidth, provisionalHeight);
+    if (!NSEqualRects(self.contentColumn.frame, provisionalFrame)) self.contentColumn.frame = provisionalFrame;
+
+    // A bounded second pass accounts for a scroller changing the clip width.
+    // Only the inner column shrinks to its content; the SDK still owns root size.
+    for (NSUInteger pass = 0; pass < 2; ++pass) {
+        [self.contentColumn layoutSubtreeIfNeeded];
+        [self.scroll tile];
+        CGFloat width = self.scroll.contentView.bounds.size.width;
+        CGFloat cardWidth = width - 24;
+        self.settingsPanelWidthConstraint.constant = cardWidth;
+        self.reviewPanelWidthConstraint.constant = cardWidth;
+        self.reviewSummary.preferredMaxLayoutWidth = cardWidth - 24;
+        self.statusDetails.preferredMaxLayoutWidth = cardWidth - 24;
+        NSSize contentWidthSize = NSMakeSize(width, self.content.frame.size.height);
+        if (!NSEqualSizes(self.content.frame.size, contentWidthSize)) [self.content setFrameSize:contentWidthSize];
+        [self.content layoutSubtreeIfNeeded];
+        [self.reviewScroll tile];
+        CGFloat listWidth = self.reviewScroll.contentView.bounds.size.width;
+        if (hasCuts) {
+            self.cutColumnHeaderWidthConstraint.constant = fmax(1, listWidth);
+            CGFloat rowWidth = listWidth - 12;
+            CGFloat durationOrigin = fmax(262, rowWidth - 148);
+            self.durationHeaderWidthConstraint.constant = fmax(0, fmin(140, rowWidth - durationOrigin - 8));
+            NSSize listSize = NSMakeSize(fmax(1, listWidth), fmax(1, ceil(self.cutList.fittingSize.height)));
+            if (!NSEqualSizes(self.cutList.frame.size, listSize)) [self.cutList setFrameSize:listSize];
+            [self.cutList layoutSubtreeIfNeeded];
+        }
+        CGFloat settingsHeight = ceil(self.settingsPanel.fittingSize.height);
+        CGFloat otherReviewHeight = self.reviewPanel.fittingSize.height - self.reviewListHeightConstraint.constant;
+        // Use authoritative host height, rather than the previous compact
+        // column height, so repeated layout cannot progressively shrink a list.
+        CGFloat availableListHeight = hostHeight - 56 - 76 - 24 - 12 - settingsHeight - otherReviewHeight;
+        CGFloat actualListHeight = ceil(self.cutList.fittingSize.height) + 2;
+        self.reviewListHeightConstraint.constant = hasCuts ? fmin(actualListHeight, fmax(90, floor(availableListHeight))) : 0;
+        [self.content layoutSubtreeIfNeeded];
+        CGFloat bodyHeight = fmax(1, ceil(self.content.fittingSize.height));
+        NSSize bodySize = NSMakeSize(width, bodyHeight);
+        if (!NSEqualSizes(self.content.frame.size, bodySize)) [self.content setFrameSize:bodySize];
+        [self.content layoutSubtreeIfNeeded];
+        CGFloat columnHeight = fmin(hostHeight, 56 + bodyHeight + 76);
+        NSRect columnFrame = NSMakeRect(floor((self.view.bounds.size.width - columnWidth) / 2),
+            hostHeight - columnHeight, columnWidth, columnHeight);
+        if (!NSEqualRects(self.contentColumn.frame, columnFrame)) self.contentColumn.frame = columnFrame;
+        [self.contentColumn layoutSubtreeIfNeeded];
+        [self.scroll tile];
+        [self.reviewScroll tile];
+    }
     self.updatingDocumentLayout = NO;
 }
 
