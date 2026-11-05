@@ -912,7 +912,7 @@ static void busyWorkerDefersTemporarySDKBinding(void) {
           controller.reviewClient == nil && !controller.applyButton.enabled,
           @"Only terminal worker completion binds the SDK result project and drops the old review");
     completeLoad(controller.settings.loads[1], values(-50, NO), nil);
-    check([controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."] && controller.analyzeButton.enabled &&
+    check([controller.statusLabel.stringValue isEqual:@""] && controller.analyzeButton.enabled &&
           !controller.completionMessage,
           @"The result's settings load restores analysis without attaching a source-scoped notice to a new SDK identity");
     closeController(controller);
@@ -1011,7 +1011,7 @@ static void retryableResultRetainsRecoveryUntilVerified(void) {
           @"Successful verification settles recovery, then loads the actual result project's own settings");
     completeLoad(controller.settings.loads[1], values(-32, NO), nil);
     check(controller.analyzeButton.enabled && controller.saveButton.enabled && controller.fields[0].enabled &&
-          [controller.fields[0].stringValue isEqual:@"-32"] && [controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."] &&
+          [controller.fields[0].stringValue isEqual:@"-32"] && [controller.statusLabel.stringValue isEqual:@""] &&
           !controller.completionMessage,
           @"Only the result's own settings completion restores editing without borrowing the source project's terminal notice");
     closeController(controller);
@@ -1122,11 +1122,11 @@ static void terminalNoticeStaysWithItsPinnedProject(void) {
     [current.testTimeline notifySequenceChanged];
     [client deliver:reviewResponse(@"completed", @"Verified Cleaned A") busy:NO canApply:NO];
     completeLoad(controller.settings.loads[1], values(-47, NO), nil);
-    check([controller.projectUID isEqual:@"verified-result"] && [controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."] &&
+    check([controller.projectUID isEqual:@"verified-result"] && [controller.statusLabel.stringValue isEqual:@""] &&
           !controller.completionMessage && !controller.completionContext,
           @"Automatic result rebinding clears a source-scoped notice because the response has no verified result identity");
     [current.testTimeline notifySequenceChanged];
-    check(controller.settings.loads.count == 2 && [controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."],
+    check(controller.settings.loads.count == 2 && [controller.statusLabel.stringValue isEqual:@""],
           @"Duplicate callbacks for the result preserve its current settings status without reviving a source notice");
 
     current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-A.fcpbundle", @"B");
@@ -1134,11 +1134,11 @@ static void terminalNoticeStaysWithItsPinnedProject(void) {
     check(!controller.completionMessage && !controller.completionContext && !controller.reviewClient && !controller.applyButton.enabled,
           @"Changing project UID in the same library clears the prior verification notice and all review authority");
     completeLoad(controller.settings.loads[2], values(-32, YES), nil);
-    check([controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."] &&
-          [controller.reviewSummary.stringValue isEqual:@"Select one timeline clip with audio, then Analyze."],
+    check([controller.statusLabel.stringValue isEqual:@""] &&
+          [controller.reviewSummary.stringValue isEqual:@"Select a clip to analyze."],
           @"The new project's own loaded status replaces the old result notice before another Analyze");
     client.testUpdate(reviewResponse(@"completed", @"Late verified Cleaned A"));
-    check(!controller.completionMessage && [controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."],
+    check(!controller.completionMessage && [controller.statusLabel.stringValue isEqual:@""],
           @"A queued terminal callback cannot restore a cleared notice after rebinding");
 
     client = beginReview(controller);
@@ -1149,7 +1149,7 @@ static void terminalNoticeStaysWithItsPinnedProject(void) {
     [current.testTimeline notifySequenceChanged];
     completeLoad(controller.settings.loads[3], values(-40, NO), nil);
     check(!controller.completionMessage && !controller.completionContext &&
-          [controller.statusLabel.stringValue isEqual:@"Ready. Save settings for this project."],
+          [controller.statusLabel.stringValue isEqual:@""],
           @"A reused project UID in another library cannot inherit the prior library's terminal notice");
 
     client = beginReview(controller);
@@ -1159,7 +1159,7 @@ static void terminalNoticeStaysWithItsPinnedProject(void) {
     check(!controller.completionMessage && !controller.completionContext, @"Closing the extension clears its terminal notice identity");
     [controller viewDidAppear];
     completeLoad(controller.settings.loads[4], values(-40, YES), nil);
-    check([controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."] && !controller.completionMessage &&
+    check([controller.statusLabel.stringValue isEqual:@""] && !controller.completionMessage &&
           !controller.applyButton.enabled, @"Reopening the same project shows its current settings status without a historical verification claim");
     closeController(controller);
     groupCount += 1;
@@ -1181,10 +1181,10 @@ static void delayedTerminalCannotClaimTheNewSDKProject(void) {
           [controller.statusLabel.stringValue isEqual:@"Loading project settings…"],
           @"Delayed completion for A cannot attach a verified notice or edit authority to the unrelated SDK project B");
     completeLoad(controller.settings.loads[1], values(-32, YES), nil);
-    check([controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."] && controller.analyzeButton.enabled &&
+    check([controller.statusLabel.stringValue isEqual:@""] && controller.analyzeButton.enabled &&
           !controller.applyButton.enabled, @"B finishes loading with only its own status and remains unanalyzed");
     client.testUpdate(reviewResponse(@"completed", @"Late second verified result for A"));
-    check(!controller.completionMessage && [controller.statusLabel.stringValue isEqual:@"Saved settings loaded for this project."],
+    check(!controller.completionMessage && [controller.statusLabel.stringValue isEqual:@""],
           @"A further queued terminal response cannot restore A's notice after B has bound");
     closeController(controller);
     groupCount += 1;
@@ -1579,7 +1579,7 @@ static void checkStructuredCutRows(SSWorkflowViewController *controller, NSArray
 
 static void renderSyntheticLayoutIfRequested(SSWorkflowViewController *controller, NSString *name) {
     if (!getenv("SILENT_SNIP_CONTROLLER_LAYOUT_RENDER")) return;
-    NSString *directory = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"build/WorkflowPrototype/Window14"];
+    NSString *directory = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"build/WorkflowPrototype/Window15"];
     NSError *error;
     check([NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:&error],
           @"The optional synthetic layout-render directory is writable");
@@ -1756,12 +1756,14 @@ static void fixedCutPaneStaysStableAsRowsChange(void) {
 
 static NSString *longInformationalStatus(void) {
     return @"Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts. "
-        "Analyzed Final Cut's rendered audio, including clip volume and enabled effects. "
-        "The threshold uses average loudness over short windows. Apply creates a cleaned project copy "
-        "with the retained processed sound preserved, while the original project keeps editable effects.";
+        "Analyzed Final Cut’s rendered audio, including clip volume and enabled effects. "
+        "Threshold uses 10 ms average loudness (RMS), not peak meters. "
+        "Apply creates a cleaned project copy with the retained processed sound preserved. "
+        "The original project keeps its editable effects. "
+        "Quiet breaths may qualify; this detector does not classify breaths.";
 }
 
-static void informationalDetailsKeepReviewAuthorityUnchanged(void) {
+static void informationalCopyKeepsReviewAuthorityUnchanged(void) {
     SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
     SSTestWorkflowViewController *controller = openController(current);
     completeLoad(controller.settings.loads[0], values(-50, YES), nil);
@@ -1771,25 +1773,25 @@ static void informationalDetailsKeepReviewAuthorityUnchanged(void) {
     NSUInteger generation = controller.reviewGeneration;
     NSUInteger loads = controller.settings.loads.count;
     NSString *nativeMarker = controller.cancelButton.accessibilityIdentifier;
-    check(controller.statusLabel.stringValue.length < message.length &&
-          [controller.statusDetails.stringValue isEqual:message],
-          @"Long informational status is compact while its full explanation remains available");
-    check(!controller.detailsExpanded && controller.statusDetails.hidden && !controller.detailsButton.hidden &&
-          controller.detailsButton.enabled && controller.detailsButton.title.length > 0,
-          @"The full informational explanation starts collapsed behind a named, reachable disclosure");
+    check(controller.statusLabel.stringValue.length == 0 && [controller.statusLabel.toolTip isEqual:message],
+          @"Canonical review boilerplate leaves no visible status copy while its raw message remains available as a tooltip");
+    check(!controller.detailsExpanded && controller.statusDetails.hidden && controller.detailsButton.hidden,
+          @"Routine informational boilerplate does not expose an unnecessary Details control");
     [controller toggleDetails:controller.detailsButton];
-    check(controller.detailsExpanded && !controller.statusDetails.hidden &&
-          [controller.statusDetails.stringValue isEqual:message],
-          @"Opening Details exposes every word of the current backend explanation");
     [controller toggleDetails:controller.detailsButton];
     check(!controller.detailsExpanded && controller.statusDetails.hidden,
-          @"Closing Details restores the compact review presentation");
+          @"A hidden informational disclosure cannot reveal stale expanded content");
+    NSString *warning = @"Temporary isolation cleanup needs attention. Remove the temporary project manually.";
+    NSString *withWarning = [message stringByAppendingFormat:@" %@", warning];
+    [client deliver:reviewResponse(@"review", withWarning) busy:NO canApply:YES];
+    check([controller.statusLabel.stringValue containsString:@"cleanup"] && [controller.statusLabel.toolTip isEqual:withWarning],
+          @"Removing routine explanation cannot hide an actionable cleanup warning or discard its original message");
     check(controller.reviewClient == client && controller.reviewGeneration == generation &&
           controller.applyButton.enabled && client.canApply && client.startCount == 1 &&
           client.applyCommandCount == 0 && client.applyGestures.count == 0 && client.retryCount == 0 &&
           controller.settings.loads.count == loads && controller.settings.saves.count == 0 &&
           [controller.cancelButton.accessibilityIdentifier isEqual:nativeMarker],
-          @"Showing status details cannot alter a review, dispatch work, save settings, or replace the native authorization marker");
+          @"Compacting informational copy and presenting a warning cannot alter review authority, dispatch work, or save settings");
     [client deliver:reviewResponse(@"review", @"Review ready") busy:NO canApply:YES];
     check([controller.statusLabel.stringValue isEqual:@"Review ready"] && controller.detailsButton.hidden &&
           controller.statusDetails.hidden && ![controller.statusDetails.stringValue containsString:message],
@@ -1941,7 +1943,7 @@ int main(void) {
         frameDrivenParentResizeKeepsContentReachable();
         structuredEighteenCutReviewFitsNarrowAndWideWindows();
         fixedCutPaneStaysStableAsRowsChange();
-        informationalDetailsKeepReviewAuthorityUnchanged();
+        informationalCopyKeepsReviewAuthorityUnchanged();
         longRecoveryDetailsStayVisibleWithoutAuthorizingAnotherApply();
         longCancellationDetailsDoNotSuggestApply();
         longLocalSaveFailurePreservesReadyReview();

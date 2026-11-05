@@ -295,7 +295,7 @@
     outputRow.spacing = 10;
     self.settingsPanel = [self cardWithViews:@[self.settingsGroups, outputRow]];
 
-    self.statusLabel = [self label:@"Waiting for a project…" size:12 weight:NSFontWeightRegular];
+    self.statusLabel = [self label:@"" size:12 weight:NSFontWeightRegular];
     self.statusLabel.textColor = NSColor.secondaryLabelColor;
     self.statusLabel.maximumNumberOfLines = 2;
     self.statusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -347,7 +347,7 @@
     footer.translatesAutoresizingMaskIntoConstraints = NO;
     [self.footerView addSubview:footer];
 
-    self.reviewSummary = [self label:@"Select one timeline clip with audio, then Analyze." size:12 weight:NSFontWeightRegular];
+    self.reviewSummary = [self label:@"Select a clip to analyze." size:12 weight:NSFontWeightRegular];
     self.reviewSummary.accessibilityIdentifier = @"silentsnip.workflow.summary";
     self.reviewSummary.maximumNumberOfLines = 2;
     self.reviewSummary.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -398,10 +398,8 @@
     self.cutColumnHeader.edgeInsets = NSEdgeInsetsMake(0, 33, 0, 13);
     self.cutColumnHeaderWidthConstraint = [self.cutColumnHeader.widthAnchor constraintEqualToConstant:400];
     self.cutColumnHeaderWidthConstraint.active = YES;
-    NSTextField *scope = [self label:@"Creates a cleaned copy; original unchanged." size:11 weight:NSFontWeightRegular];
-    scope.textColor = NSColor.secondaryLabelColor;
     self.reviewPanel = [self cardWithViews:@[reviewActions, self.reviewSummary,
-        self.statusDetails, self.cutColumnHeader, self.reviewScroll, scope]];
+        self.statusDetails, self.cutColumnHeader, self.reviewScroll]];
     self.reviewPanel.spacing = 4;
     self.content = [SSWorkflowDocument stackViewWithViews:@[self.settingsPanel, self.reviewPanel]];
     self.content.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -548,8 +546,8 @@
         else if ([state isEqual:@"cancelled"]) self.statusLabel.stringValue = @"Cancelled. Review the details.";
         else if (attention) self.statusLabel.stringValue = @"Unable to finish. Review the details.";
         else if (self.reviewClient.busy) self.statusLabel.stringValue = @"Working in Final Cut Pro…";
-        else if ([@[@"completed", @"complete"] containsObject:state]) self.statusLabel.stringValue = @"Cleaned project ready. See Details.";
-        else self.statusLabel.stringValue = @"Analysis ready. Review the cuts, then Apply Cuts.";
+        else if ([@[@"completed", @"complete"] containsObject:state]) self.statusLabel.stringValue = @"Cuts applied.";
+        else self.statusLabel.stringValue = @"";
     }
     self.statusDetails.hidden = !longMessage || !self.detailsExpanded;
     self.detailsButton.title = self.detailsExpanded ? @"Hide Details" : @"Details";
@@ -754,7 +752,7 @@
         [owner.output selectItemAtIndex:[values[@"outputMode"] isEqual:@"gaps"] ? 1 : 0];
         owner.settingsLoaded = YES;
         [owner setControlsEnabled:YES];
-        [owner setStatusMessage:owner.completionMessage ?: ([values[@"wasSaved"] boolValue] ? @"Saved settings loaded for this project." : @"Ready. Save settings for this project.")];
+        [owner setStatusMessage:owner.completionMessage ?: @""];
     }];
 }
 
@@ -812,7 +810,7 @@
     self.statusLabel.toolTip = nil;
     self.reviewCuts = @[];
     for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
-    self.reviewSummary.stringValue = @"Select one timeline clip with audio, then Analyze.";
+    self.reviewSummary.stringValue = @"Select a clip to analyze.";
     self.reviewSummary.toolTip = self.reviewSummary.stringValue;
     self.analyzeButton.title = @"Analyze Audio";
     self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
@@ -826,7 +824,7 @@
     BOOL hadReview = self.reviewClient != nil;
     [self invalidateReview];
     self.analyzeButton.enabled = self.settingsLoaded;
-    if (hadReview) [self setStatusMessage:@"Settings changed. Analyze again before applying cuts."];
+    if (hadReview) [self setStatusMessage:@"Analyze again to update cuts."];
 }
 
 - (void)controlTextDidChange:(NSNotification *)notification { [self settingsChanged:notification.object]; }
@@ -854,6 +852,40 @@
             [self.reviewCuts[index][@"eligible"] boolValue];
     }
     [self updateDocumentFrame];
+}
+
+- (void)setReviewStatus:(NSDictionary *)response {
+    NSString *message = response[@"message"] ?: @"";
+    NSString *state = response[@"state"];
+    BOOL recovery = [response[@"canRetryVerification"] boolValue];
+    BOOL completed = [@[@"completed", @"complete"] containsObject:state] && !recovery;
+    NSString *normalReview = @"Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts.";
+    BOOL snapshot = [response[@"usesAudioSnapshot"] boolValue];
+    if (completed || (!recovery && !snapshot && [state isEqual:@"review"] && [message hasPrefix:normalReview])) {
+        NSString *remaining = message;
+        if (!completed) {
+            // Remove only known informational copy. Any appended cleanup or
+            // recovery notice remains actionable rather than disappearing.
+            NSArray<NSString *> *boilerplate = @[
+                normalReview,
+                @"Reused verified audio measurements after checking the current project and source contents.",
+                @"Analyzed original audio; this clip has no audio adjustments or processing effects.",
+                @"Analyzed Final Cut’s rendered audio, including clip volume and enabled effects.",
+                @"Threshold uses 10 ms average loudness (RMS), not peak meters.",
+                @"Apply creates a cleaned project copy with the retained processed sound preserved.",
+                @"The original project keeps its editable effects.",
+                @"Quiet breaths may qualify; this detector does not classify breaths."
+            ];
+            for (NSString *text in boilerplate) remaining = [remaining stringByReplacingOccurrencesOfString:text withString:@""];
+            remaining = [remaining stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        }
+        [self setStatusMessage:completed ? @"Cuts applied." : remaining requiresAttention:!completed && remaining.length > 0];
+        self.statusDetails.stringValue = message;
+        self.statusDetails.toolTip = message;
+        self.statusLabel.toolTip = message;
+        return;
+    }
+    [self setStatusMessage:message requiresAttention:[state isEqual:@"review"] && (snapshot || message.length > 180)];
 }
 
 - (void)receiveReview:(NSDictionary *)response {
@@ -893,13 +925,14 @@
     NSString *target = response[@"targetClipName"];
     self.reviewSummary.stringValue = target.length ? [NSString stringWithFormat:@"Clip: %@\n%@", target, summary] : summary;
     self.reviewSummary.toolTip = self.reviewSummary.stringValue;
-    [self setStatusMessage:response[@"message"] ?: @""];
+    [self setReviewStatus:response];
     [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
     self.analyzeButton.title = @"Analyze Again";
     [self updateReviewControls];
     NSString *state = response[@"state"];
     if ([@[@"completed", @"complete", @"failed", @"cancelled", @"unavailable"] containsObject:state]) {
-        self.completionMessage = response[@"message"];
+        self.completionMessage = [@[@"completed", @"complete"] containsObject:state] &&
+            ![response[@"canRetryVerification"] boolValue] ? @"Cuts applied." : response[@"message"];
         // The response has no explicit result identity. Only the request's
         // pinned project can own its notice; a delayed response must not bind
         // verification to whichever project the user has since opened.
@@ -993,7 +1026,7 @@
         if (!owner || generation != owner.contextGeneration || !owner.timeline) return;
         [owner setControlsEnabled:YES];
         if (!owner.reviewClient.busy && ![owner.reviewResponse[@"canRetryVerification"] boolValue])
-            [owner setStatusMessage:error ? error.localizedDescription : @"Settings saved for this project." requiresAttention:error != nil];
+            [owner setStatusMessage:error ? error.localizedDescription : @"Settings saved." requiresAttention:error != nil];
     }];
 }
 @end

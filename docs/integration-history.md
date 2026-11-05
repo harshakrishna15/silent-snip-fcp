@@ -7,6 +7,14 @@ Product prose uses the current Silent Snip name; recorded project names and arti
 This is an archived snapshot. Statements labeled “current” below describe their original revision, not the latest source. Use [workflow.md](workflow.md) and [overhaul-progress.md](overhaul-progress.md) for current behavior and verification status. All shell commands assume the workspace root.
 
 
+## November 4, 2026 addendum: frontend 15 copy cleanup
+
+Frontend 15 removes the permanent cleaned-copy sentence, routine idle/ready prose, and normal informational Details paragraphs/buttons. The existing summary retains target/counts; short operational messages replace redundant prose, while errors, recovery, snapshot hints, and unknown residual warnings remain actionable. The fixed **320-point** table and all review controls/authority remain unchanged.
+
+Controller checks passed **33 groups / 5,304 assertions**. Native empty and **18-cut** review checks passed at **615 × 736 points** with the fixed **320-point** pane, no normal status/Details prose, and **15.4 s removed / 60 → 44.6 s** totals. Fresh Analyze/Apply markers were observed. Request `E16C3995-7C06-47ED-BF22-49B0869475D8` verified with no differences and verified source media, opening `B1AFD4A0-3746-4978-9508-EFB4209E271B` with **19 direct primary PCM clips and no gaps**. One-cut, error/warning, and completed-label presentation remain offline coverage; the hosted window hid as the result opened.
+
+`Package15.json`, `Installed-Package15.json`, `Install15.json`, and all **12** `After15-Preservation.json` checks passed. Worker54/AU29/ZIP remain byte-identical to before frontend15. A second manual frontend PlugInKit refresh recovered the catalog without another Final Cut quit. The original project/clip, enabled Gate/Limiter, and **75.933-second** playhead were restored, with the minimal window open ready to Analyze. Evidence is in `build/WorkflowPrototype/Window15/{Native15.json,Native15-Evidence-SHA256.json,Native-E16C3995}`. Helper Analyze **4.957 s** plus Apply **12.617 s** was a UI smoke check, with no new PCM comparison or performance claim. Frontend-14 size-restoration proof below remains historical, including its helper/Accessibility dependency and active resize controls.
+
 ## November 4, 2026 addendum: frontend 14 / worker 54
 
 Frontend 14 / worker 54 passed native review, verified Apply, and helper restoration of the Workflow window to **615 × 736 points** (**1230 × 1472-pixel** screenshots) on initial open, close/reopen, and a full Final Cut restart. The helper was ready after restart without Analyze. The table and timing headers stay visible with zero, one, or many cuts in a permanent **320-point** viewport; long lists scroll inside it. Horizontal settings, a full-width Output/Save row, and fixed header/footer controls remain in place.
