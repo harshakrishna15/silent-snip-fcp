@@ -51,6 +51,7 @@ enum ImportedSettingsRecovery {
         var hostAudioAssetUIDs: [String: String]?
         var sourceMedia: MediaContentSnapshot?
         var renderedAudio: LosslessRenderedAudio?
+        var workflowOrigin: WorkflowReviewOrigin?
     }
     let request: AnalyzeRequest
     let expected: Data
@@ -146,7 +147,8 @@ enum ImportedSettingsRecovery {
     func savePending() throws {
         let receipt = Receipt(requestID: request.id, settings: request.settings, outputMode: request.outputMode.rawValue,
             originalProjectName: originalProjectName, expectedSHA256: Self.digest(expected), replacementTarget: replacementTarget, hostProjectUID: hostProjectUID,
-            hostAudioAssetUIDs: hostAudioAssetUIDs, sourceMedia: sourceMedia, renderedAudio: renderedAudio)
+            hostAudioAssetUIDs: hostAudioAssetUIDs, sourceMedia: sourceMedia, renderedAudio: renderedAudio,
+            workflowOrigin: request.workflowOrigin)
         try JSONEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
     }
 
@@ -196,7 +198,8 @@ enum ImportedSettingsRecovery {
         }
         let result = try ImportedResultVerification(expected: data, outputURL: outputURL,
             originalProjectName: receipt.originalProjectName,
-            request: AnalyzeRequest(id: receipt.requestID, settings: receipt.settings, outputMode: mode), replacementTarget: receipt.replacementTarget,
+            request: AnalyzeRequest(id: receipt.requestID, settings: receipt.settings, outputMode: mode,
+                workflowOrigin: receipt.workflowOrigin), replacementTarget: receipt.replacementTarget,
             sourceMedia: receipt.sourceMedia, renderedAudio: receipt.renderedAudio)
         result.hostProjectUID = receipt.hostProjectUID
         result.hostAudioAssetUIDs = receipt.hostAudioAssetUIDs

@@ -6,19 +6,24 @@ public struct AnalyzeRequest: Equatable, Sendable {
     public let id: UUID
     public let settings: AnalysisSettings
     public let outputMode: SilentSnipOutputMode
+    public let workflowOrigin: WorkflowReviewOrigin?
 
-    public init(id: UUID, settings: AnalysisSettings, outputMode: SilentSnipOutputMode) {
+    public init(id: UUID, settings: AnalysisSettings, outputMode: SilentSnipOutputMode,
+                workflowOrigin: WorkflowReviewOrigin? = nil) {
         self.id = id; self.settings = settings; self.outputMode = outputMode
+        self.workflowOrigin = workflowOrigin
     }
 
     public init(url: URL) throws {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              parts.scheme == "silentsnip", parts.host == "analyze",
+              parts.scheme == "silentsnip", ["analyze", "workflow-analyze"].contains(parts.host ?? ""),
               parts.path.isEmpty, parts.fragment == nil,
               parts.user == nil, parts.password == nil, parts.port == nil else {
             throw RequestError.invalidURL
         }
-        let allowed = Set(["request", "threshold", "minimum", "before", "after", "output"])
+        let workflow = parts.host == "workflow-analyze"
+        var allowed = Set(["request", "threshold", "minimum", "before", "after", "output"])
+        if workflow { allowed.formUnion(["view", "gesture", "library", "project", "projectName"]) }
         var values: [String: String] = [:]
         for item in parts.queryItems ?? [] {
             guard allowed.contains(item.name), values[item.name] == nil, let value = item.value else {
@@ -36,10 +41,20 @@ public struct AnalyzeRequest: Equatable, Sendable {
         guard let mode = SilentSnipOutputMode(rawValue: values["output"] ?? "remove") else { throw RequestError.invalidURL }
         self.outputMode = mode
         self.id = id
+        if workflow {
+            guard let view = values["view"].flatMap(UUID.init(uuidString:)),
+                  let gesture = values["gesture"].flatMap(UUID.init(uuidString:)),
+                  let library = values["library"].flatMap(URL.init(string:)),
+                  let projectUID = values["project"], let projectName = values["projectName"],
+                  values["output"] != nil else { throw RequestError.invalidURL }
+            workflowOrigin = try WorkflowReviewOrigin(view: view, gesture: gesture,
+                libraryURL: library, projectUID: projectUID, projectName: projectName)
+        } else { workflowOrigin = nil }
         self.settings = try AnalysisSettings(
             thresholdDBFS: threshold, minimumSilenceDuration: minimum,
             beforeSpeechPadding: before, afterSpeechPadding: after, windowDuration: 0.01
         )
+        if workflow { try WorkflowReviewOrigin.validate(settings: settings) }
     }
 
     public enum RequestError: LocalizedError {

@@ -38,6 +38,132 @@ final class XMLProjectApplyTests: XCTestCase {
             settings: .defaults, mode: mode, outputName: "Edited", directory: destination)
     }
 
+    private func workflowFixture(controller: Bool = false) -> Data {
+        var text = String(decoding: fixture(), as: UTF8.self)
+            .replacingOccurrences(of: "original-event", with: "BBBB0000-0000-4000-8000-000000000001")
+        if !controller {
+            text = text.replacingOccurrences(of: "<filter-audio ref=\"e\" name=\"Silent Snip Audio\"/>", with: "")
+        }
+        return Data(text.utf8)
+    }
+
+    private func workflowOrigin(projectUID: String = "original-project") throws -> WorkflowReviewOrigin {
+        try WorkflowReviewOrigin(view: UUID(), gesture: UUID(), libraryURL: library,
+            projectUID: projectUID, projectName: "Original")
+    }
+
+    func testWorkflowOutputNeedsNoAUAndKeepsRecoverySourcesAndExplicitSettings() throws {
+        let input = workflowFixture()
+        let settings = try AnalysisSettings(thresholdDBFS: -32, minimumSilenceDuration: 0.7)
+        let output = try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
+            settings: settings, mode: .remove, outputName: "Workflow cleaned", directory: destination,
+            omitController: true, workflowOrigin: workflowOrigin())
+        let document = try TimelineParser.parse(data: output.output.xmlData)
+        XCTAssertEqual(document.projectRange.duration, .init(7))
+        XCTAssertEqual(document.clips.map(\.sourceStart), [.init(0), .init(3), .init(8)])
+        XCTAssertTrue(document.clips.allSatisfy { $0.mediaURL == source })
+        XCTAssertEqual(try TimelineParser.parse(data: output.recoveryData).fingerprint,
+            try TimelineParser.parse(data: input).fingerprint)
+        let saved = try JSONDecoder().decode(AnalysisSettings.self,
+            from: Data(contentsOf: destination.appendingPathComponent("Analysis-Settings.json")))
+        XCTAssertEqual(saved, settings)
+        XCTAssertEqual(try XMLDocument(data: output.output.xmlData).nodes(forXPath: "//filter-audio").count, 0)
+    }
+
+    func testWorkflowDoesNotEmbedOrOverwriteExistingControllerSettings() throws {
+        let input = workflowFixture(controller: true)
+        let output = try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
+            settings: AnalysisSettings(thresholdDBFS: -30), mode: .remove, outputName: "Workflow cleaned",
+            directory: destination, workflowOrigin: workflowOrigin())
+        let xml = try XMLDocument(data: output.output.xmlData)
+        XCTAssertEqual(try xml.nodes(forXPath: "//filter-audio").count, 3)
+        XCTAssertEqual(try xml.nodes(forXPath: "//filter-audio/data | //filter-audio/param").count, 0)
+        XCTAssertFalse(String(decoding: input, as: UTF8.self).contains("effectState"))
+    }
+
+    func testWorkflowPreservesDifferentSerializedAUSettingsInSegmentsAndRecovery() throws {
+        let existing = try AnalysisSettings(thresholdDBFS: -51.25, minimumSilenceDuration: 0.9123,
+            beforeSpeechPadding: 0.075, afterSpeechPadding: 0.125)
+        let submitted = try AnalysisSettings(thresholdDBFS: -24, minimumSilenceDuration: 0.45,
+            beforeSpeechPadding: 0.15, afterSpeechPadding: 0.3)
+        let input = try AudioControllerSettings.embedding(existing,
+            in: workflowFixture(controller: true), selection: selection)
+        let inputURL = folder.appendingPathComponent("Original-Workflow.fcpxml")
+        try input.write(to: inputURL)
+        let sourceBefore = try Data(contentsOf: source)
+
+        func filters(_ data: Data) throws -> [XMLElement] {
+            try XMLDocument(data: data).nodes(forXPath: "//asset-clip/filter-audio[@ref='e']")
+                .compactMap { $0 as? XMLElement }
+        }
+        func archive(_ filter: XMLElement) throws -> Data {
+            let records = filter.elements(forName: "data").filter { $0.attribute(forName: "key")?.stringValue == "effectState" }
+            XCTAssertEqual(records.count, 1)
+            return try XCTUnwrap(Data(base64Encoded: XCTUnwrap(records.first?.stringValue)))
+        }
+        func parameters(_ filter: XMLElement) -> [[String: String]] {
+            filter.elements(forName: "param").map { parameter in
+                Dictionary(uniqueKeysWithValues: (parameter.attributes ?? []).map { ($0.name ?? "", $0.stringValue ?? "") })
+            }
+        }
+        let originalFilter = try XCTUnwrap(filters(input).first)
+        let originalArchive = try archive(originalFilter)
+        let originalParameters = parameters(originalFilter)
+        XCTAssertFalse(originalArchive.isEmpty)
+        XCTAssertEqual(originalParameters.count, 4)
+
+        let prepared = try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
+            settings: submitted, mode: .remove, outputName: "Workflow cleaned", directory: destination,
+            workflowOrigin: workflowOrigin())
+        XCTAssertEqual(try filters(prepared.output.xmlData).count, 3)
+        XCTAssertEqual(try filters(prepared.recoveryData).count, 1)
+        for data in [prepared.output.xmlData, prepared.recoveryData] {
+            for filter in try filters(data) {
+                // Compare the actual archive bytes and every parameter
+                // attribute, independently of XML indentation/serialization.
+                XCTAssertEqual(try archive(filter), originalArchive)
+                XCTAssertEqual(parameters(filter), originalParameters)
+            }
+            let parsed = try TimelineParser.parse(data: data)
+            for clip in parsed.clips where clip.isPrimaryStoryline {
+                XCTAssertNoThrow(try AudioControllerSettings.validate(projectData: data, target: clip, requested: existing))
+            }
+        }
+        let saved = try JSONDecoder().decode(AnalysisSettings.self,
+            from: Data(contentsOf: destination.appendingPathComponent("Analysis-Settings.json")))
+        XCTAssertEqual(saved, submitted)
+        XCTAssertNotEqual(saved, existing)
+        XCTAssertEqual(try Data(contentsOf: inputURL), input)
+        XCTAssertEqual(try Data(contentsOf: source), sourceBefore)
+    }
+
+    func testWorkflowWrongProjectAndLegacyMissingControllerRejectBeforeWritingResult() throws {
+        let input = workflowFixture()
+        XCTAssertThrowsError(try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
+            settings: .defaults, mode: .remove, outputName: "Wrong", directory: destination,
+            workflowOrigin: workflowOrigin(projectUID: "another-project")))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertThrowsError(try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
+            settings: .defaults, mode: .remove, outputName: "Legacy", directory: destination))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @MainActor func testWorkflowVerificationReceiptPreservesOriginWithoutAuthorizingAnotherImport() throws {
+        let origin = try workflowOrigin()
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove, workflowOrigin: origin)
+        let prepared = try XMLProjectApply.prepare(projectData: workflowFixture(), selection: selection, cuts: cuts,
+            settings: request.settings, mode: request.outputMode, outputName: "Workflow cleaned", directory: destination,
+            omitController: true, workflowOrigin: origin)
+        let verification = try ImportedResultVerification(expected: prepared.output.xmlData, outputURL: prepared.outputURL,
+            originalProjectName: "Original", request: request)
+        try verification.savePending()
+        let loaded = try ImportedResultVerification.load(outputURL: prepared.outputURL)
+        XCTAssertEqual(loaded.request.workflowOrigin, origin)
+        XCTAssertEqual(loaded.request.id, request.id)
+        XCTAssertEqual(loaded.expected, verification.expected)
+        XCTAssertFalse(loaded.complete)
+    }
+
     func testCreatesSeparateEditableProjectAndRecoveryWithoutChangingInput() throws {
         let input = fixture()
         let result = try prepare(data: input)

@@ -151,8 +151,8 @@ import SilentSnipMac
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // The Audio Unit Controls view is the only Silent Snip window.
-        // URL delivery can also trigger this callback; never open a second UI.
+        // Final Cut's native Audio Unit or Workflow Extension owns the UI.
+        // URL delivery can also trigger this callback; never open a helper UI.
         return false
     }
 

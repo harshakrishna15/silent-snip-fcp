@@ -1,4 +1,4 @@
-"""Verify the isolated M1 Workflow Extension package without running it.
+"""Verify the isolated Workflow frontend and optional worker without running them.
 
 This checks identities, routes, capabilities, Mach-O bootstrap/dependencies and
 signatures. It does not install/register the app or establish native behavior.
@@ -191,18 +191,51 @@ def verify_app(app, run=subprocess.run):
                 deepStrictSignatureVerified=True, installationPerformedByChecker=False,
                 registrationPerformedByChecker=False,
                 nativeFinalCutBehaviorEstablished=False, analysisOrCutsEstablished=False,
-                scope="Read-only SDK library inspection with macOS Automation consent; isolated-package verification performs no app execution, registration, installation, host observation, audio analysis or timeline edits")
+                scope="Package verification only: SDK inspection stays read-only with macOS Automation consent; frontend requests can delegate review/apply to a compatible worker. This check performs no app execution, registration, installation, host observation, audio analysis or timeline edits")
+
+
+def verify_worker(app, run=subprocess.run):
+    """Match the client capability gate at an explicit path, without launching it."""
+    app = app.resolve(strict=True)
+    info = read_info(app)
+    require(info.get("CFBundleIdentifier") == "local.silentsnip.app" and
+            info.get("CFBundlePackageType") == "APPL", "Unexpected workflow worker identity")
+    protocol = info.get("SilentSnipWorkflowProtocolVersion")
+    require(type(protocol) is int and protocol == 1, "The worker does not advertise workflow protocol 1")
+    version = info.get("CFBundleVersion")
+    require(isinstance(version, str) and version.isascii() and version.isdecimal() and int(version) >= 49,
+            "Workflow requests require worker build 49 or later")
+    routes = info.get("CFBundleURLTypes")
+    require(isinstance(routes, list) and any(isinstance(route, dict) and
+            isinstance(route.get("CFBundleURLSchemes"), list) and
+            "silentsnip" in route["CFBundleURLSchemes"] for route in routes),
+            "The worker has no active silentsnip URL route")
+    require(isinstance(info.get("com.apple.proapps.MediaAssetProtocol"), dict),
+            "The worker has no existing Final Cut Share receiver route")
+    binary = executable(app, info, "SilentSnip")
+    details = macho_details(binary)
+    tool(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], run)
+    return dict(app=str(app), bundleIdentifier=info["CFBundleIdentifier"],
+                executable=info["CFBundleExecutable"], bundleVersion=version,
+                workflowProtocolVersion=protocol, executableSHA256=sha(binary),
+                activeURLAndShareRoutesVerified=True, deepStrictSignatureVerified=True,
+                MachO=details, runtimeLookupUniquenessEstablished=False,
+                sandboxClientReadabilityEstablished=False,
+                scope="Explicit-path worker metadata/signature compatibility only; no launch, runtime sandbox-read or processing proof")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", required=True, type=Path)
+    parser.add_argument("--worker", type=Path, help="Optional explicit worker app to verify without launching")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     if args.output.exists():
         parser.exit(2, "The audit already exists; preserve it and choose a new output path.\n")
     try:
         report = verify_app(args.app)
+        if args.worker:
+            report["workerCompatibility"] = verify_worker(args.worker)
     except (OSError, ValueError, KeyError, TypeError, struct.error, plistlib.InvalidFileException) as error:
         report = dict(verified=False, app=str(args.app), error=str(error), nativeFinalCutBehaviorEstablished=False)
     report["auditedAtUTC"] = datetime.now(timezone.utc).isoformat()

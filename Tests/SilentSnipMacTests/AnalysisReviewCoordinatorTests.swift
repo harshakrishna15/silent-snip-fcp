@@ -4,6 +4,44 @@ import XCTest
 @testable import SilentSnipMac
 
 @MainActor final class AnalysisReviewCoordinatorTests: XCTestCase {
+    func testWorkflowReviewRetainsOriginAndTargetThroughSelectionAndOneApply() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: fixture.directory.appendingPathComponent("Fixture.fcpbundle"),
+            projectUID: "review-fixture", projectName: "Review Fixture")
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove, workflowOrigin: origin)
+        var latest: ReviewResponse?, applied: AnalyzeRequest?, applyCount = 0, recalculations = 0
+        let gesture = UUID()
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            applyOperation: { received, result, _ in
+                applied = received; applyCount += 1
+                XCTAssertEqual(result.analyzed.review.selectedCuts.count, 1)
+            }, authorizeApply: { $0.view == origin.view && $0.applyGesture == gesture },
+            recalculationOperation: { _, _, _ in recalculations += 1 }, authorizeRecalculation: { _ in true },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request)
+        try await waitUntil { latest?.state == "review" }
+        XCTAssertEqual(latest?.targetClipName, "Voice")
+        let originalRevision = try XCTUnwrap(latest).revision
+        coordinator.handle(settingsCommand(request, revision: originalRevision, view: origin.view, sequence: 1))
+        XCTAssertEqual(recalculations, 0)
+        XCTAssertEqual(coordinator.currentRequest, request)
+        XCTAssertEqual(latest?.revision, originalRevision)
+        let first = try XCTUnwrap(latest?.cuts.first)
+        coordinator.handle(.init(request: request.id, command: .include, cutID: first.id,
+            included: false, expectedRevision: originalRevision))
+        let command = ReviewCommand(request: request.id, command: .apply, expectedRevision: latest?.revision,
+            view: origin.view, applyGesture: gesture)
+        coordinator.handle(command)
+        try await waitUntil { latest?.state == "completed" }
+        XCTAssertEqual(applied?.workflowOrigin, origin)
+        XCTAssertEqual(applied?.settings, request.settings)
+        XCTAssertEqual(latest?.targetClipName, "Voice")
+        coordinator.handle(command)
+        XCTAssertEqual(applyCount, 1)
+    }
+
     private func settingsCommand(_ request: AnalyzeRequest, revision: Int, view: UUID, sequence: Int,
                                  minimum: Double = 0.7, edit: UUID = UUID()) -> ReviewCommand {
         ReviewCommand(request: request.id, command: .recalculate, expectedRevision: revision, view: view,

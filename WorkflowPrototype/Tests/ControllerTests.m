@@ -7,7 +7,7 @@
 #import <stdlib.h>
 
 // This executable includes the actual controller implementation below. Only
-// its persistence bridge and SDK host objects are replaced, through their
+// its persistence bridge, review transport, and SDK host objects are replaced, through their
 // public interfaces. No NSApplication, NSWindow, events, Final Cut connection,
 // filesystem settings, or SDK bootstrap is created by this harness.
 @interface SSPendingLoad : NSObject
@@ -113,6 +113,120 @@ id<NSObject> ProExtensionHostSingleton(void) { return hostSingleton; }
 
 #import "../Extension/WorkflowViewController.m"
 
+// The real transport has its own offline test executable. Keep even its
+// destructor and notification-center cleanup out of these controller tests.
+// Every transport operation must dispatch to the explicit fake subclass.
+static void unexpectedReviewBoundary(void) {
+    fprintf(stderr, "FAIL: A controller test reached the real review-client boundary\n");
+    abort();
+}
+@implementation SSWorkflowReviewClient
+- (instancetype)initWithViewID:(NSString *)viewID update:(void (^)(NSDictionary *))update failure:(void (^)(NSString *))failure {
+    return [super init];
+}
+- (NSString *)requestID { unexpectedReviewBoundary(); return nil; }
+- (BOOL)busy { unexpectedReviewBoundary(); return NO; }
+- (BOOL)canApply { unexpectedReviewBoundary(); return NO; }
+- (BOOL)canChangeSelection { unexpectedReviewBoundary(); return NO; }
+- (BOOL)canCancel { unexpectedReviewBoundary(); return NO; }
+- (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName
+                  settings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
+- (BOOL)sendApplyWithGesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
+- (BOOL)setCut:(NSString *)cutID included:(BOOL)included { unexpectedReviewBoundary(); return NO; }
+- (BOOL)selectAll:(BOOL)included { unexpectedReviewBoundary(); return NO; }
+- (BOOL)retryVerification { unexpectedReviewBoundary(); return NO; }
+- (void)cancel { unexpectedReviewBoundary(); }
+- (void)detach { unexpectedReviewBoundary(); }
+@end
+
+@interface SSFakeWorkflowReviewClient : SSWorkflowReviewClient
+@property (nonatomic, weak) SSWorkflowViewController *owner;
+@property (nonatomic, copy) void (^testUpdate)(NSDictionary *);
+@property (nonatomic, copy) void (^testFailure)(NSString *);
+@property (nonatomic, copy) NSString *fakeRequestID;
+@property (nonatomic) BOOL fakeBusy;
+@property (nonatomic) BOOL fakeCanApply;
+@property (nonatomic) BOOL fakeCanChangeSelection;
+@property (nonatomic) BOOL fakeCanCancel;
+@property (nonatomic) BOOL fakeCanRetry;
+@property (nonatomic, copy) NSDictionary *lastResponse;
+@property (nonatomic, copy) NSDictionary *startPayload;
+@property (nonatomic) NSUInteger startCount;
+@property (nonatomic, strong) NSMutableArray<NSString *> *applyGestures;
+@property (nonatomic, copy) NSString *analyzeIdentifierAtDispatch;
+@property (nonatomic, copy) NSString *applyIdentifierAtDispatch;
+@property (nonatomic) BOOL analyzeDisabledAtDispatch;
+@property (nonatomic) BOOL applyDisabledAtDispatch;
+@property (nonatomic) NSUInteger cancelCount;
+@property (nonatomic) NSUInteger detachCount;
+@property (nonatomic) NSUInteger retryCount;
+- (void)deliver:(NSDictionary *)response busy:(BOOL)busy canApply:(BOOL)canApply;
+@end
+@implementation SSFakeWorkflowReviewClient
+- (instancetype)initWithViewID:(NSString *)viewID update:(void (^)(NSDictionary *))update failure:(void (^)(NSString *))failure {
+    self = [super initWithViewID:viewID update:update failure:failure];
+    if (self) { _testUpdate = [update copy]; _testFailure = [failure copy]; _applyGestures = [NSMutableArray new]; }
+    return self;
+}
+- (NSString *)requestID { return self.fakeRequestID; }
+- (BOOL)busy { return self.fakeBusy; }
+- (BOOL)canApply { return self.fakeCanApply; }
+- (BOOL)canChangeSelection { return self.fakeCanChangeSelection; }
+- (BOOL)canCancel { return self.fakeCanCancel; }
+- (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName
+                  settings:(NSDictionary *)settings gesture:(NSString *)gesture {
+    self.startCount += 1;
+    self.startPayload = @{@"libraryURL": libraryURL, @"projectUID": projectUID, @"projectName": projectName,
+                          @"settings": settings, @"gesture": gesture};
+    self.analyzeIdentifierAtDispatch = self.owner.analyzeButton.accessibilityIdentifier;
+    self.analyzeDisabledAtDispatch = !self.owner.analyzeButton.enabled;
+    self.fakeRequestID = NSUUID.UUID.UUIDString;
+    self.fakeBusy = YES;
+    self.fakeCanCancel = YES;
+    return YES;
+}
+- (BOOL)sendApplyWithGesture:(NSString *)gesture {
+    [self.applyGestures addObject:gesture];
+    self.applyIdentifierAtDispatch = self.owner.applyButton.accessibilityIdentifier;
+    self.applyDisabledAtDispatch = !self.owner.applyButton.enabled;
+    self.fakeBusy = YES;
+    self.fakeCanApply = NO;
+    self.fakeCanChangeSelection = NO;
+    return YES;
+}
+- (BOOL)setCut:(NSString *)cutID included:(BOOL)included { return self.fakeCanChangeSelection; }
+- (BOOL)selectAll:(BOOL)included { return self.fakeCanChangeSelection; }
+- (BOOL)retryVerification {
+    if (!self.fakeCanRetry || self.fakeBusy) return NO;
+    self.retryCount += 1;
+    self.fakeBusy = YES;
+    self.fakeCanApply = NO;
+    self.fakeCanChangeSelection = NO;
+    self.fakeCanCancel = YES;
+    self.testUpdate(self.lastResponse); // The real client publishes its pending state synchronously.
+    return YES;
+}
+- (void)cancel { self.cancelCount += 1; self.fakeCanCancel = NO; }
+- (void)detach {
+    self.detachCount += 1;
+    self.fakeBusy = NO;
+    self.fakeCanApply = NO;
+    self.fakeCanChangeSelection = NO;
+    self.fakeCanCancel = NO;
+    self.fakeCanRetry = NO;
+    // Keep callbacks so tests can model already-queued messages after detach.
+}
+- (void)deliver:(NSDictionary *)response busy:(BOOL)busy canApply:(BOOL)canApply {
+    self.lastResponse = response;
+    self.fakeBusy = busy;
+    self.fakeCanApply = canApply;
+    self.fakeCanChangeSelection = canApply;
+    self.fakeCanCancel = busy || canApply;
+    self.fakeCanRetry = [response[@"canRetryVerification"] boolValue];
+    self.testUpdate(response);
+}
+@end
+
 @interface SSPendingPermission : NSObject
 @property (nonatomic) BOOL asksUser;
 @property (nonatomic, copy) void (^completion)(OSStatus);
@@ -127,8 +241,16 @@ id<NSObject> ProExtensionHostSingleton(void) { return hostSingleton; }
 @property (nonatomic) OSStatus permissionStatus;
 @property (nonatomic) BOOL delaysPermission;
 @property (nonatomic, strong) NSMutableArray<SSPendingPermission *> *permissions;
+@property (nonatomic, strong) NSMutableArray<SSFakeWorkflowReviewClient *> *reviewClients;
 @end
 @implementation SSTestWorkflowViewController
+- (SSWorkflowReviewClient *)newReviewClientWithUpdate:(void (^)(NSDictionary *))update failure:(void (^)(NSString *))failure {
+    if (!self.reviewClients) self.reviewClients = [NSMutableArray new];
+    SSFakeWorkflowReviewClient *client = [[SSFakeWorkflowReviewClient alloc] initWithViewID:self.viewID update:update failure:failure];
+    client.owner = self;
+    [self.reviewClients addObject:client];
+    return client;
+}
 - (void)checkHostPermissionAskingUser:(BOOL)ask completion:(void (^)(OSStatus))completion {
     if (!self.permissions) self.permissions = [NSMutableArray new];
     SSPendingPermission *request = [SSPendingPermission new];
@@ -470,6 +592,367 @@ static void deniedPermissionKeepsConnectExplicit(void) {
     groupCount += 1;
 }
 
+static NSDictionary *reviewResponse(NSString *state, NSString *message) {
+    BOOL reviewing = [state isEqual:@"review"];
+    return @{@"state": state, @"message": message, @"targetClipName": @"Disposable clip",
+             @"summary": @"One selected silence", @"canRetryVerification": @NO,
+             @"cuts": reviewing ? @[@{@"id": @"cut-1", @"start": @"1.000", @"end": @"2.000",
+                 @"duration": @"1.000 sec", @"included": @YES, @"eligible": @YES}] : @[]};
+}
+
+static SSFakeWorkflowReviewClient *beginReview(SSTestWorkflowViewController *controller) {
+    [controller analyzeAudio:controller.analyzeButton];
+    SSFakeWorkflowReviewClient *client = controller.reviewClients.lastObject;
+    check(client != nil && controller.reviewClient == client, @"Analyze uses the overridable transport factory");
+    [client deliver:reviewResponse(@"review", @"Review the selected silence") busy:NO canApply:YES];
+    return client;
+}
+
+static void analyzeDispatchPinsPayloadAndGesture(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Disposable A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    check(controller.analyzeButton.target == controller && controller.analyzeButton.action == @selector(analyzeAudio:),
+          @"The actual Analyze button is wired to the tested action");
+    check(!controller.analyzeButton.enabled && !controller.applyButton.enabled, @"Analysis and Apply wait for project settings");
+    [controller analyzeAudio:controller.analyzeButton];
+    [controller applyCuts:controller.applyButton];
+    check(controller.reviewClients.count == 0, @"Pending settings cannot create a review request");
+    completeLoad(controller.settings.loads[0], values(-50, NO), nil);
+    controller.fields[0].stringValue = @"-41.5";
+    controller.fields[1].stringValue = @"0.35";
+    controller.fields[2].stringValue = @"0.12";
+    controller.fields[3].stringValue = @"0.18";
+    [controller.output selectItemAtIndex:1];
+    [controller analyzeAudio:controller.analyzeButton];
+    SSFakeWorkflowReviewClient *client = controller.reviewClients.lastObject;
+    NSDictionary *payload = client.startPayload;
+    check(client.startCount == 1 && controller.reviewClients.count == 1, @"One explicit Analyze starts exactly one request");
+    check([payload[@"libraryURL"] isEqual:[NSURL fileURLWithPath:@"/Test/Library-A.fcpbundle" isDirectory:YES]] &&
+          [payload[@"projectUID"] isEqual:@"project-A"] && [payload[@"projectName"] isEqual:@"Disposable A"],
+          @"Analyze pins the SDK library URL, project UID, and displayed project name");
+    check([payload[@"settings"] isEqual:@{@"thresholdDBFS": @-41.5, @"minimumSilenceDuration": @0.35,
+          @"beforeSpeechPadding": @0.12, @"afterSpeechPadding": @0.18, @"outputMode": @"gaps"}],
+          @"Analyze sends all current numeric drafts and the chosen output mode without a Save");
+    NSString *gesture = payload[@"gesture"];
+    check([[NSUUID alloc] initWithUUIDString:gesture] != nil &&
+          [client.analyzeIdentifierAtDispatch isEqual:[@"silentsnip.workflow.analyze.requested." stringByAppendingString:gesture]],
+          @"A canonical Analyze gesture is exposed by the actual button before client dispatch");
+    check(client.analyzeDisabledAtDispatch && !controller.analyzeButton.enabled && !controller.applyButton.enabled &&
+          !controller.saveButton.enabled && !controller.fields[0].enabled && !controller.output.enabled,
+          @"Analyze disables itself and settings before dispatch and keeps Apply unavailable while pending");
+    [controller analyzeAudio:controller.analyzeButton];
+    [controller applyCuts:controller.applyButton];
+    check(controller.reviewClients.count == 1 && client.startCount == 1 && client.applyGestures.count == 0,
+          @"Repeated actions while pending neither launch another analysis nor apply an unreviewed plan");
+    check(controller.settings.saves.count == 0, @"Analyze does not implicitly persist the settings draft");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void applyRequiresReviewAndFreshGesture(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    [controller analyzeAudio:controller.analyzeButton];
+    SSFakeWorkflowReviewClient *client = controller.reviewClients.lastObject;
+    [controller applyCuts:controller.applyButton];
+    check(!controller.applyButton.enabled && client.applyGestures.count == 0, @"An analysis without a ready review cannot Apply");
+    [client deliver:reviewResponse(@"review", @"Review ready") busy:NO canApply:YES];
+    check(controller.applyButton.target == controller && controller.applyButton.action == @selector(applyCuts:),
+          @"The actual Apply button is wired to the tested action");
+    check(controller.applyButton.enabled && controller.allButton.enabled && controller.noneButton.enabled &&
+          controller.cutList.arrangedSubviews.count == 1 && ((NSButton *)controller.cutList.arrangedSubviews[0]).enabled,
+          @"A ready review enables Apply and its eligible cut selection");
+    [controller applyCuts:controller.applyButton];
+    NSString *gesture = client.applyGestures.lastObject;
+    check(client.applyGestures.count == 1 && [[NSUUID alloc] initWithUUIDString:gesture] != nil &&
+          ![gesture isEqual:client.startPayload[@"gesture"]], @"Apply dispatches one new gesture distinct from Analyze");
+    check(client.applyDisabledAtDispatch &&
+          [client.applyIdentifierAtDispatch isEqual:[@"silentsnip.workflow.apply.requested." stringByAppendingString:gesture]],
+          @"Apply is disabled and exposes its fresh authorization gesture before client dispatch");
+    check(!controller.applyButton.enabled && !controller.analyzeButton.enabled && !controller.fields[0].enabled &&
+          !controller.allButton.enabled && !((NSButton *)controller.cutList.arrangedSubviews[0]).enabled,
+          @"Applying locks analysis, settings, and cut-selection actions");
+    [controller applyCuts:controller.applyButton];
+    check(client.applyGestures.count == 1, @"A second Apply action cannot duplicate an in-flight edit");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void editsInvalidateEveryReviewedSetting(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    for (NSUInteger index = 0; index < 5; ++index) {
+        SSFakeWorkflowReviewClient *client = beginReview(controller);
+        NSUInteger requests = controller.reviewClients.count;
+        if (index < controller.fields.count) {
+            controller.fields[index].stringValue = index == 0 ? @"-44" : @"0.2";
+            [controller controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:controller.fields[index]]];
+        } else {
+            [controller.output selectItemAtIndex:1];
+            [controller settingsChanged:controller.output];
+        }
+        check(controller.reviewClient == nil && controller.reviewResponse == nil && controller.cutList.arrangedSubviews.count == 0 &&
+              !controller.applyButton.enabled, @"Editing any reviewed field or output mode discards its applicable cut plan");
+        check(client.cancelCount == 1 && client.detachCount == 1, @"An invalidated review is cancelled and detached once");
+        check(controller.analyzeButton.enabled && controller.reviewClients.count == requests && controller.settings.saves.count == 0 &&
+              [controller.statusLabel.stringValue containsString:@"Analyze again"],
+              @"An edit stays local and requires a new explicit analysis without automatically saving or launching");
+        NSString *status = controller.statusLabel.stringValue;
+        client.testUpdate(reviewResponse(@"review", @"Stale review"));
+        client.testFailure(@"Stale failure");
+        check(controller.reviewClient == nil && !controller.applyButton.enabled && [controller.statusLabel.stringValue isEqual:status],
+              @"Queued callbacks cannot restore a plan invalidated by a settings edit");
+    }
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void projectSwitchDiscardsIdleReview(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-B.fcpbundle", @"B");
+    [current.testTimeline notifySequenceChanged];
+    check(client.cancelCount == 1 && client.detachCount == 1 && controller.reviewClient == nil && !controller.applyButton.enabled,
+          @"An idle SDK project switch discards and detaches A's ready review");
+    check([controller.projectUID isEqual:@"project-B"] && controller.settings.loads.count == 2 && !controller.settingsLoaded,
+          @"A project switch binds B only through B's own settings load");
+    NSString *status = controller.statusLabel.stringValue;
+    client.testUpdate(reviewResponse(@"review", @"Late A review"));
+    client.testFailure(@"Late A failure");
+    check(controller.reviewClient == nil && !controller.applyButton.enabled && [controller.statusLabel.stringValue isEqual:status],
+          @"A's late review and failure cannot change B's pending state");
+    completeLoad(controller.settings.loads[1], values(-32, YES), nil);
+    SSFakeWorkflowReviewClient *second = beginReview(controller);
+    check([second.startPayload[@"projectUID"] isEqual:@"project-B"] &&
+          [second.startPayload[@"libraryURL"] isEqual:[NSURL fileURLWithPath:@"/Test/Library-B.fcpbundle" isDirectory:YES]],
+          @"The next explicit Analyze carries B's identity, never A's stale plan");
+    check(![second.startPayload[@"gesture"] isEqual:client.startPayload[@"gesture"]], @"Each new Analyze exposes a fresh gesture");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void liveIdentityMismatchStopsAnalyzeAndApply(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Same name"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    current.testTimeline.sequence = sequence(@"project-A", @"/Test/Library-B.fcpbundle", @"Same name");
+    [controller analyzeAudio:controller.analyzeButton]; // SDK notification has not arrived.
+    check(controller.reviewClients.count == 0 && controller.settings.loads.count == 2 && !controller.analyzeButton.enabled,
+          @"Analyze checks the live library identity before creating a client even for a reused project UID");
+    completeLoad(controller.settings.loads[1], values(-32, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    current.testTimeline.sequence = sequence(@"project-C", @"/Test/Library-B.fcpbundle", @"Same name");
+    [controller applyCuts:controller.applyButton];
+    check(client.applyGestures.count == 0 && client.detachCount == 1 && controller.settings.loads.count == 3 &&
+          [controller.projectUID isEqual:@"project-C"] && !controller.applyButton.enabled,
+          @"Apply checks the live project UID before sending an edit and invalidates the displaced review");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void busyWorkerDefersTemporarySDKBinding(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    [controller analyzeAudio:controller.analyzeButton];
+    SSFakeWorkflowReviewClient *client = controller.reviewClients.lastObject;
+    NSUInteger generation = controller.contextGeneration;
+    current.testTimeline.sequence = sequence(@"temporary-analysis", @"/Test/Library-A.fcpbundle", @"Temporary analysis");
+    [current.testTimeline notifySequenceChanged];
+    check([controller.projectUID isEqual:@"project-A"] && [controller.projectLabel.stringValue isEqual:@"A"] &&
+          controller.contextGeneration == generation && controller.settings.loads.count == 1 && client.detachCount == 0,
+          @"A busy Analyze defers temporary sequence callbacks without changing its pinned project or settings");
+    current.testTimeline.sequence = sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A");
+    [client deliver:reviewResponse(@"review", @"Review ready") busy:NO canApply:YES];
+    [current.testTimeline notifySequenceChanged];
+    check(controller.reviewClient == client && controller.applyButton.enabled && controller.settings.loads.count == 1,
+          @"Returning to the original project preserves the finished Analyze review");
+    [controller applyCuts:controller.applyButton];
+    current.testTimeline.sequence = sequence(@"verified-result", @"/Test/Library-A.fcpbundle", @"Cleaned A");
+    [current.testTimeline notifySequenceChanged];
+    check([controller.projectUID isEqual:@"project-A"] && controller.contextGeneration == generation && client.detachCount == 0,
+          @"A busy Apply also defers the worker's result-project callback");
+    [client deliver:reviewResponse(@"completed", @"Verified result opened") busy:NO canApply:NO];
+    check([controller.projectUID isEqual:@"verified-result"] && controller.settings.loads.count == 2 &&
+          controller.reviewClient == nil && !controller.applyButton.enabled,
+          @"Only terminal worker completion binds the SDK result project and drops the old review");
+    completeLoad(controller.settings.loads[1], values(-50, NO), nil);
+    check([controller.statusLabel.stringValue isEqual:@"Verified result opened"] && controller.analyzeButton.enabled,
+          @"The result's settings load retains the verified completion status and restores analysis");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void closingReviewRejectsLateCallbacksAfterReopen(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    [controller analyzeAudio:controller.analyzeButton];
+    SSFakeWorkflowReviewClient *old = controller.reviewClients.lastObject;
+    [controller viewWillDisappear];
+    check(old.cancelCount == 1 && old.detachCount == 1 && controller.reviewClient == nil && !controller.analyzeButton.enabled &&
+          !controller.applyButton.enabled, @"Closing cancels and detaches the active request and disables its controls");
+    NSString *closedStatus = controller.statusLabel.stringValue;
+    old.testUpdate(reviewResponse(@"review", @"Late hidden review"));
+    old.testFailure(@"Late hidden failure");
+    check(controller.reviewClient == nil && controller.reviewResponse == nil && !controller.applyButton.enabled &&
+          [controller.statusLabel.stringValue isEqual:closedStatus], @"Late transport callbacks cannot reactivate a hidden view");
+    [controller viewDidAppear];
+    completeLoad(controller.settings.loads[1], values(-47, YES), nil);
+    SSFakeWorkflowReviewClient *fresh = beginReview(controller);
+    NSString *freshStatus = controller.statusLabel.stringValue;
+    old.testUpdate(reviewResponse(@"review", @"Late previous appearance"));
+    old.testFailure(@"Late previous failure");
+    check(controller.reviewClient == fresh && controller.applyButton.enabled && fresh.detachCount == 0 &&
+          [controller.statusLabel.stringValue isEqual:freshStatus], @"Old appearance callbacks cannot replace or detach the new ready review");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void malformedAnalyzeAndCurrentFailureStayLocal(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    for (NSString *bad in @[@"nan", @"-40 trailing", @"not a number"]) {
+        controller.fields[0].stringValue = bad;
+        [controller analyzeAudio:controller.analyzeButton];
+        check(controller.reviewClients.count == 0 && controller.analyzeButton.enabled &&
+              [controller.statusLabel.stringValue containsString:@"valid number"],
+              @"Malformed Analyze values fail locally before creating a client and remain editable");
+    }
+    controller.fields[0].stringValue = @"-47";
+    [controller analyzeAudio:controller.analyzeButton];
+    SSFakeWorkflowReviewClient *client = controller.reviewClients.lastObject;
+    client.testFailure(@"Updated worker required");
+    check(client.detachCount == 1 && controller.reviewClient == nil && controller.analyzeButton.enabled &&
+          controller.fields[0].enabled && !controller.applyButton.enabled &&
+          [controller.statusLabel.stringValue isEqual:@"Updated worker required"],
+          @"A current client failure drops its plan, displays the exact error, and restores editable Analyze controls");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void retryableResultRetainsRecoveryUntilVerified(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    [controller applyCuts:controller.applyButton];
+    current.testTimeline.sequence = sequence(@"imported-result", @"/Test/Library-A.fcpbundle", @"Cleaned A");
+    [current.testTimeline notifySequenceChanged];
+    NSMutableDictionary *failed = [reviewResponse(@"failed", @"Result exists; retry verification") mutableCopy];
+    failed[@"canRetryVerification"] = @YES;
+    [client deliver:failed busy:NO canApply:NO];
+    check(controller.reviewClient == client && client.detachCount == 0 && client.cancelCount == 0 &&
+          [controller.projectUID isEqual:@"project-A"] && controller.settings.loads.count == 1,
+          @"A retryable failure after the imported result opens retains the original request instead of rebinding or detaching it");
+    check(!controller.retryButton.hidden && controller.retryButton.enabled && !controller.applyButton.enabled &&
+          !controller.analyzeButton.enabled && !controller.saveButton.enabled && !controller.fields[0].enabled && !controller.output.enabled,
+          @"Retry remains available while new analysis, Apply, and setting edits stay disabled during recovery");
+    NSString *playhead = controller.playheadLabel.stringValue;
+    NSUInteger generation = controller.contextGeneration;
+    current.testTimeline.currentPlayhead = CMTimeMake(3619, 1);
+    [current.testTimeline notifySequenceChanged];
+    [controller playheadTimeChanged];
+    [controller sequenceTimeRangeChanged];
+    [controller settingsChanged:controller.output];
+    [controller analyzeAudio:controller.analyzeButton];
+    check(controller.reviewClient == client && client.detachCount == 0 && controller.reviewClients.count == 1 &&
+          controller.contextGeneration == generation && controller.settings.loads.count == 1 &&
+          [controller.playheadLabel.stringValue isEqual:playhead],
+          @"Deferred SDK/result callbacks and stale edit or Analyze actions cannot discard a pending result-verification request");
+    [controller retryVerification:controller.retryButton];
+    [controller retryVerification:controller.retryButton];
+    check(client.retryCount == 1 && client.busy && !controller.retryButton.enabled && !controller.analyzeButton.enabled,
+          @"The retained Retry action starts one verification and cannot duplicate it while pending");
+    [client deliver:reviewResponse(@"verifying", @"Checking the existing imported result") busy:YES canApply:NO];
+    [current.testTimeline notifySequenceChanged];
+    check(controller.reviewClient == client && controller.settings.loads.count == 1 && [controller.projectUID isEqual:@"project-A"],
+          @"Clearing the retry flag during active verification still defers SDK rebinding until work finishes");
+    [client deliver:reviewResponse(@"completed", @"Existing result verified") busy:NO canApply:NO];
+    check(client.detachCount == 1 && controller.reviewClient == nil && [controller.projectUID isEqual:@"imported-result"] &&
+          controller.settings.loads.count == 2 && controller.retryButton.hidden && !controller.analyzeButton.enabled,
+          @"Successful verification settles recovery, then loads the actual result project's own settings");
+    completeLoad(controller.settings.loads[1], values(-32, NO), nil);
+    check(controller.analyzeButton.enabled && controller.saveButton.enabled && controller.fields[0].enabled &&
+          [controller.fields[0].stringValue isEqual:@"-32"] && [controller.statusLabel.stringValue isEqual:@"Existing result verified"],
+          @"Only the result's settings completion restores editing and preserves the verification outcome");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void busyPlayheadWaitsForTheSettledProject(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    NSString *originalPlayhead = controller.playheadLabel.stringValue;
+    [controller analyzeAudio:controller.analyzeButton];
+    SSFakeWorkflowReviewClient *client = controller.reviewClients.lastObject;
+    current.testTimeline.sequence = sequence(@"temporary-analysis", @"/Test/Library-A.fcpbundle", @"Temporary");
+    current.testTimeline.sequence.startTime = CMTimeMake(0, 1);
+    current.testTimeline.currentPlayhead = CMTimeMake(9, 1);
+    [controller playheadTimeChanged];
+    [controller sequenceTimeRangeChanged];
+    [current.testTimeline notifySequenceChanged];
+    check([controller.projectLabel.stringValue isEqual:@"A"] && [controller.playheadLabel.stringValue isEqual:originalPlayhead],
+          @"Busy SDK time and range callbacks cannot display a temporary project's playhead under the pinned original name");
+    current.testTimeline.sequence = sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A");
+    current.testTimeline.currentPlayhead = CMTimeMake(7229, 2); // 14.5 seconds in the settled original project.
+    [client deliver:reviewResponse(@"review", @"Review ready") busy:NO canApply:YES];
+    [controller playheadTimeChanged];
+    check([controller.playheadLabel.stringValue isEqual:@"Playhead 14.500 sec"] && controller.reviewClient == client,
+          @"Once analysis settles, a current-project time callback updates the playhead without discarding its review");
+    [controller applyCuts:controller.applyButton];
+    current.testTimeline.sequence = sequence(@"result-project", @"/Test/Library-A.fcpbundle", @"Cleaned A");
+    current.testTimeline.sequence.startTime = CMTimeMake(0, 1);
+    current.testTimeline.currentPlayhead = CMTimeMake(7, 1);
+    [controller playheadTimeChanged];
+    check([controller.playheadLabel.stringValue isEqual:@"Playhead 14.500 sec"], @"Apply also freezes the original playhead while its result is opening");
+    [client deliver:reviewResponse(@"completed", @"Verified result") busy:NO canApply:NO];
+    check([controller.projectLabel.stringValue isEqual:@"Cleaned A"] && [controller.playheadLabel.stringValue isEqual:@"Playhead 7.000 sec"],
+          @"Terminal completion updates project identity and playhead together from the settled SDK context");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void pendingSaveCannotReplaceWorkerProgressOrRecovery(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    [controller saveSettings:controller.saveButton];
+    check(controller.settings.saves.count == 1 && controller.applyButton.enabled,
+          @"The fixture holds one Save completion while an already-reviewed Apply remains available");
+    [controller applyCuts:controller.applyButton];
+    [client deliver:reviewResponse(@"applying", @"Rendering current audio for Apply") busy:YES canApply:NO];
+    completeSave(controller.settings.saves[0], nil);
+    check([controller.statusLabel.stringValue isEqual:@"Rendering current audio for Apply"] && !controller.fields[0].enabled &&
+          !controller.saveButton.enabled && !controller.analyzeButton.enabled,
+          @"A successful delayed Save cannot overwrite active worker progress or re-enable settings during Apply");
+    closeController(controller);
+    current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    client = beginReview(controller);
+    [controller saveSettings:controller.saveButton];
+    check(controller.settings.saves.count == 1, @"The recovery case holds a separate pending Save completion");
+    [controller applyCuts:controller.applyButton];
+    NSMutableDictionary *failed = [reviewResponse(@"failed", @"Result pending verification; use Retry") mutableCopy];
+    failed[@"canRetryVerification"] = @YES;
+    [client deliver:failed busy:NO canApply:NO];
+    completeSave(controller.settings.saves[0], [NSError errorWithDomain:@"test.persistence" code:1
+        userInfo:@{NSLocalizedDescriptionKey: @"Late Save failed"}]);
+    check([controller.statusLabel.stringValue isEqual:@"Result pending verification; use Retry"] && controller.retryButton.enabled &&
+          !controller.analyzeButton.enabled && !controller.saveButton.enabled && !controller.fields[0].enabled,
+          @"Even a delayed Save error cannot replace recovery guidance or unlock a retryable result's settings");
+    closeController(controller);
+    groupCount += 1;
+}
+
 static BOOL nearlyEqualSize(NSSize first, NSSize second) {
     return fabs(first.width - second.width) < 0.5 && fabs(first.height - second.height) < 0.5;
 }
@@ -609,10 +1092,21 @@ int main(void) {
         invalidNumbersNeverDispatchSave();
         delayedPermissionCannotReconnectHiddenView();
         deniedPermissionKeepsConnectExplicit();
+        analyzeDispatchPinsPayloadAndGesture();
+        applyRequiresReviewAndFreshGesture();
+        editsInvalidateEveryReviewedSetting();
+        projectSwitchDiscardsIdleReview();
+        liveIdentityMismatchStopsAnalyzeAndApply();
+        busyWorkerDefersTemporarySDKBinding();
+        closingReviewRejectsLateCallbacksAfterReopen();
+        malformedAnalyzeAndCurrentFailureStayLocal();
+        retryableResultRetainsRecoveryUntilVerified();
+        busyPlayheadWaitsForTheSettledProject();
+        pendingSaveCannotReplaceWorkerProgressOrRecovery();
         offscreenParentResizeKeepsContentReachable();
         frameDrivenParentResizeKeepsContentReachable();
         check(hostSingleton == nil, @"No host fixture survives the test groups");
-        printf("Passed %lu controller groups (%lu assertions); no Final Cut, windows, events, or settings files used.\n",
+        printf("Passed %lu controller groups (%lu assertions); no Final Cut, windows, events, notifications, helper launches, or settings files used.\n",
                (unsigned long)groupCount, (unsigned long)assertionCount);
     }
     return EXIT_SUCCESS;

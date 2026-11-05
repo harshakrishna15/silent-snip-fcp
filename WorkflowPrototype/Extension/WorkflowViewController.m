@@ -4,6 +4,7 @@
 #import <ProExtension/ProExtension.h>
 #import <ProExtensionHost/ProExtensionHost.h>
 #import "SSWorkflowPersistence-Swift.h"
+#import "WorkflowReviewClient.h"
 
 @interface SSWorkflowDocument : NSStackView
 @end
@@ -11,7 +12,7 @@
 - (BOOL)isFlipped { return YES; }
 @end
 
-@interface SSWorkflowViewController : NSViewController <FCPXTimelineObserver>
+@interface SSWorkflowViewController : NSViewController <FCPXTimelineObserver, NSTextFieldDelegate>
 @property (nonatomic, strong) id<FCPXHost> host;
 @property (nonatomic, strong) FCPXTimeline *timeline;
 @property (nonatomic, strong) SSWorkflowSettingsBridge *settings;
@@ -30,6 +31,21 @@
 @property (nonatomic, strong) NSString *projectUID;
 @property (nonatomic) NSUInteger contextGeneration;
 @property (nonatomic) BOOL settingsLoaded;
+@property (nonatomic, copy) NSString *viewID;
+@property (nonatomic, strong) SSWorkflowReviewClient *reviewClient;
+@property (nonatomic, strong) NSButton *analyzeButton;
+@property (nonatomic, strong) NSButton *applyButton;
+@property (nonatomic, strong) NSButton *cancelButton;
+@property (nonatomic, strong) NSButton *retryButton;
+@property (nonatomic, strong) NSButton *allButton;
+@property (nonatomic, strong) NSButton *noneButton;
+@property (nonatomic, strong) NSTextField *reviewSummary;
+@property (nonatomic, strong) NSProgressIndicator *progressIndicator;
+@property (nonatomic, strong) NSStackView *cutList;
+@property (nonatomic, copy) NSArray<NSDictionary *> *reviewCuts;
+@property (nonatomic, copy) NSDictionary *reviewResponse;
+@property (nonatomic, copy) NSString *completionMessage;
+@property (nonatomic) NSUInteger reviewGeneration;
 @end
 
 @implementation SSWorkflowViewController
@@ -64,6 +80,7 @@
     [self.view addSubview:scroll];
     self.scroll = scroll;
     self.settings = [SSWorkflowSettingsBridge new];
+    self.viewID = NSUUID.UUID.UUIDString;
     self.connectButton = [NSButton buttonWithTitle:@"Connect to Final Cut Pro" target:self action:@selector(requestConnection:)];
     self.connectButton.accessibilityIdentifier = @"silentsnip.workflow.connect";
     self.connectButton.hidden = YES;
@@ -88,6 +105,7 @@
         field.alignment = NSTextAlignmentRight;
         field.accessibilityLabel = labels[index];
         field.accessibilityIdentifier = [NSString stringWithFormat:@"silentsnip.workflow.setting.%lu", (unsigned long)index];
+        field.delegate = self;
         [field.widthAnchor constraintEqualToConstant:90].active = YES;
         NSTextField *name = [self label:labels[index] size:13 weight:NSFontWeightRegular];
         [name.widthAnchor constraintEqualToConstant:160].active = YES;
@@ -103,6 +121,8 @@
     [self.output addItemsWithTitles:@[@"Remove Silence", @"Replace with 1-Second Gaps"]];
     self.output.accessibilityLabel = @"Output";
     self.output.accessibilityIdentifier = @"silentsnip.workflow.output";
+    self.output.target = self;
+    self.output.action = @selector(settingsChanged:);
     NSStackView *outputRow = [NSStackView stackViewWithViews:@[[self label:@"Output" size:13 weight:NSFontWeightRegular], self.output]];
     outputRow.spacing = 16;
     self.saveButton = [NSButton buttonWithTitle:@"Save Settings" target:self action:@selector(saveSettings:)];
@@ -111,11 +131,40 @@
     self.statusLabel = [self label:@"Waiting for a project…" size:12 weight:NSFontWeightRegular];
     self.statusLabel.textColor = NSColor.secondaryLabelColor;
     self.statusLabel.accessibilityIdentifier = @"silentsnip.workflow.status";
-    NSTextField *scope = [self label:@"This preview saves settings for the open project. Analysis and timeline cuts are coming later." size:12 weight:NSFontWeightRegular];
+    self.analyzeButton = [NSButton buttonWithTitle:@"Analyze Audio" target:self action:@selector(analyzeAudio:)];
+    self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
+    self.applyButton = [NSButton buttonWithTitle:@"Apply" target:self action:@selector(applyCuts:)];
+    self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
+    self.cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancelReview:)];
+    // The worker verifies this native view and a fresh disabled button gesture;
+    // a broadcast request or revision alone cannot authorize an edit.
+    self.cancelButton.accessibilityIdentifier = [@"silentsnip.workflow.review." stringByAppendingString:self.viewID];
+    NSStackView *actions = [NSStackView stackViewWithViews:@[self.analyzeButton, self.applyButton, self.cancelButton]];
+    actions.spacing = 12;
+    self.progressIndicator = [NSProgressIndicator new];
+    self.progressIndicator.style = NSProgressIndicatorStyleBar;
+    self.progressIndicator.minValue = 0;
+    self.progressIndicator.maxValue = 1;
+    self.progressIndicator.hidden = YES;
+    [self.progressIndicator.widthAnchor constraintEqualToConstant:300].active = YES;
+    self.reviewSummary = [self label:@"Select one timeline clip with audio, then Analyze." size:12 weight:NSFontWeightRegular];
+    self.reviewSummary.accessibilityIdentifier = @"silentsnip.workflow.summary";
+    self.allButton = [NSButton buttonWithTitle:@"Select All" target:self action:@selector(selectAllCuts:)];
+    self.noneButton = [NSButton buttonWithTitle:@"Deselect All" target:self action:@selector(deselectAllCuts:)];
+    self.retryButton = [NSButton buttonWithTitle:@"Retry Verification" target:self action:@selector(retryVerification:)];
+    self.retryButton.hidden = YES;
+    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[self.allButton, self.noneButton, self.retryButton]];
+    reviewActions.spacing = 12;
+    self.cutList = [NSStackView stackViewWithViews:@[]];
+    self.cutList.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.cutList.alignment = NSLayoutAttributeLeading;
+    self.cutList.spacing = 6;
+    NSTextField *scope = [self label:@"Analyze measures the selected clip with its audio effects. Apply creates a cleaned copy of the whole project; the original stays unchanged." size:12 weight:NSFontWeightRegular];
     scope.textColor = NSColor.secondaryLabelColor;
-    NSMutableArray *views = [NSMutableArray arrayWithArray:@[title, subtitle, self.projectLabel, self.libraryLabel, self.playheadLabel, self.connectButton, heading]];
+    NSMutableArray *views = [NSMutableArray arrayWithArray:@[title, subtitle, self.projectLabel, self.libraryLabel,
+        self.playheadLabel, self.connectButton, actions, self.progressIndicator, self.statusLabel, self.reviewSummary, heading]];
     [views addObjectsFromArray:rows];
-    [views addObjectsFromArray:@[outputRow, self.saveButton, self.statusLabel, scope]];
+    [views addObjectsFromArray:@[outputRow, self.saveButton, reviewActions, self.cutList, scope]];
     NSStackView *stack = [SSWorkflowDocument stackViewWithViews:views];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeLeading;
@@ -132,6 +181,7 @@
         [scroll.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
     ]];
     [self setControlsEnabled:NO];
+    [self updateReviewControls];
     [self updateDocumentFrame];
 }
 
@@ -162,9 +212,11 @@
 }
 
 - (void)setControlsEnabled:(BOOL)enabled {
+    enabled = enabled && !self.reviewClient.busy && ![self.reviewResponse[@"canRetryVerification"] boolValue];
     for (NSTextField *field in self.fields) field.enabled = enabled;
     self.output.enabled = enabled;
     self.saveButton.enabled = enabled;
+    self.analyzeButton.enabled = enabled && !self.reviewClient.busy;
 }
 
 - (void)viewDidAppear {
@@ -225,6 +277,7 @@
 }
 
 - (void)viewWillDisappear {
+    [self invalidateReview];
     [self.timeline removeTimelineObserver:self];
     self.timeline = nil;
     self.host = nil;
@@ -262,6 +315,9 @@
 }
 
 - (void)refreshProject {
+    // The worker can temporarily open an isolated analysis project or the
+    // verified result. Keep its request bound until that operation settles.
+    if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
     NSDictionary *context = [self observedProjectContext];
     self.projectLabel.stringValue = context[@"projectName"] ?: @"Open a project in Final Cut Pro";
     self.libraryLabel.stringValue = context[@"libraryName"] ?: @"";
@@ -270,6 +326,7 @@
     // and an in-flight load instead of replacing either with saved defaults.
     if (context && [context[@"projectUID"] isEqual:self.projectUID] &&
         [context[@"libraryURL"] isEqual:self.libraryURL]) return;
+    [self invalidateReview];
     self.contextGeneration += 1;
     NSUInteger generation = self.contextGeneration;
     self.libraryURL = nil;
@@ -297,11 +354,12 @@
         [owner.output selectItemAtIndex:[values[@"outputMode"] isEqual:@"gaps"] ? 1 : 0];
         owner.settingsLoaded = YES;
         [owner setControlsEnabled:YES];
-        [owner setStatusMessage:[values[@"wasSaved"] boolValue] ? @"Saved settings loaded for this project." : @"Ready. Save settings for this project."];
+        [owner setStatusMessage:owner.completionMessage ?: ([values[@"wasSaved"] boolValue] ? @"Saved settings loaded for this project." : @"Ready. Save settings for this project.")];
     }];
 }
 
 - (void)refreshPlayhead {
+    if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
     if (!self.timeline || !self.timeline.activeSequence) {
         self.playheadLabel.stringValue = @"Playhead —";
         return;
@@ -317,16 +375,7 @@
     self.playheadLabel.stringValue = [NSString stringWithFormat:@"Playhead %.3f sec", seconds];
 }
 
-- (void)saveSettings:(id)sender {
-    if (!self.settingsLoaded || !self.libraryURL || !self.projectUID.length) return;
-    // A pending host notification must not let old visible controls write
-    // settings under a different project's identity.
-    NSDictionary *context = [self observedProjectContext];
-    if (![context[@"projectUID"] isEqual:self.projectUID] ||
-        ![context[@"libraryURL"] isEqual:self.libraryURL]) {
-        [self refreshProject];
-        return;
-    }
+- (NSDictionary *)currentSettingsValues {
     NSArray *keys = @[@"thresholdDBFS", @"minimumSilenceDuration", @"beforeSpeechPadding", @"afterSpeechPadding"];
     NSMutableDictionary *values = [NSMutableDictionary new];
     for (NSUInteger index = 0; index < keys.count; ++index) {
@@ -334,11 +383,168 @@
         double value;
         if (![scanner scanDouble:&value] || !scanner.isAtEnd || !isfinite(value)) {
             [self setStatusMessage:@"Enter a valid number for each detection setting."];
-            return;
+            return nil;
         }
         values[keys[index]] = @(value);
     }
     values[@"outputMode"] = self.output.indexOfSelectedItem == 1 ? @"gaps" : @"remove";
+    return values;
+}
+
+- (BOOL)observedProjectMatchesSettings {
+    NSDictionary *context = [self observedProjectContext];
+    return [context[@"projectUID"] isEqual:self.projectUID] &&
+        [context[@"libraryURL"] isEqual:self.libraryURL];
+}
+
+- (void)invalidateReview {
+    self.reviewGeneration += 1;
+    if (self.reviewClient.canCancel) [self.reviewClient cancel];
+    [self.reviewClient detach];
+    self.reviewClient = nil;
+    self.reviewResponse = nil;
+    self.reviewCuts = @[];
+    for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
+    self.reviewSummary.stringValue = @"Select one timeline clip with audio, then Analyze.";
+    self.analyzeButton.title = @"Analyze Audio";
+    self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
+    self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
+    [self updateReviewControls];
+}
+
+- (void)settingsChanged:(id)sender {
+    if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
+    self.completionMessage = nil;
+    BOOL hadReview = self.reviewClient != nil;
+    [self invalidateReview];
+    self.analyzeButton.enabled = self.settingsLoaded;
+    if (hadReview) [self setStatusMessage:@"Settings changed. Analyze again before applying cuts."];
+}
+
+- (void)controlTextDidChange:(NSNotification *)notification { [self settingsChanged:notification.object]; }
+
+- (void)updateReviewControls {
+    self.applyButton.enabled = self.reviewClient.canApply;
+    self.cancelButton.enabled = self.reviewClient.canCancel;
+    self.allButton.enabled = self.reviewClient.canChangeSelection;
+    self.noneButton.enabled = self.reviewClient.canChangeSelection;
+    self.retryButton.hidden = ![self.reviewResponse[@"canRetryVerification"] boolValue];
+    self.retryButton.enabled = !self.reviewClient.busy;
+    self.progressIndicator.hidden = !self.reviewClient.busy;
+    NSNumber *fraction = self.reviewResponse[@"progress"];
+    self.progressIndicator.indeterminate = fraction == nil;
+    if (fraction) self.progressIndicator.doubleValue = fraction.doubleValue;
+    if (self.reviewClient.busy && !fraction) [self.progressIndicator startAnimation:nil];
+    else [self.progressIndicator stopAnimation:nil];
+    for (NSButton *row in self.cutList.arrangedSubviews) {
+        NSUInteger index = (NSUInteger)row.tag;
+        row.enabled = self.reviewClient.canChangeSelection && index < self.reviewCuts.count &&
+            [self.reviewCuts[index][@"eligible"] boolValue];
+    }
+    [self updateDocumentFrame];
+}
+
+- (void)receiveReview:(NSDictionary *)response {
+    self.reviewResponse = response;
+    NSArray *cuts = response[@"cuts"] ?: @[];
+    if (![cuts isEqual:self.reviewCuts]) {
+        self.reviewCuts = cuts;
+        for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
+        for (NSUInteger index = 0; index < cuts.count; ++index) {
+            NSDictionary *cut = cuts[index];
+            NSString *title = [NSString stringWithFormat:@"%@ – %@  (%@)", cut[@"start"], cut[@"end"], cut[@"duration"]];
+            NSButton *row = [NSButton checkboxWithTitle:title target:self action:@selector(toggleCut:)];
+            row.tag = (NSInteger)index;
+            row.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+            row.toolTip = cut[@"reason"];
+            row.accessibilityIdentifier = [@"silentsnip.workflow.cut." stringByAppendingString:cut[@"id"]];
+            [self.cutList addArrangedSubview:row];
+        }
+    }
+    NSString *summary = response[@"summary"] ?: @"";
+    NSString *target = response[@"targetClipName"];
+    self.reviewSummary.stringValue = target.length ? [NSString stringWithFormat:@"Clip: %@\n%@", target, summary] : summary;
+    [self setStatusMessage:response[@"message"] ?: @""];
+    [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
+    self.analyzeButton.title = @"Analyze Audio Again";
+    [self updateReviewControls];
+    NSString *state = response[@"state"];
+    if ([@[@"completed", @"complete", @"failed", @"cancelled", @"unavailable"] containsObject:state]) {
+        self.completionMessage = response[@"message"];
+        // Apply can open its verified project copy; bind the settings UI to the
+        // SDK's new active project only after the worker has finished.
+        [self refreshProject];
+    }
+}
+
+- (SSWorkflowReviewClient *)newReviewClientWithUpdate:(void (^)(NSDictionary *))update
+                                            failure:(void (^)(NSString *))failure {
+    return [[SSWorkflowReviewClient alloc] initWithViewID:self.viewID update:update failure:failure];
+}
+
+- (void)analyzeAudio:(id)sender {
+    if (!self.settingsLoaded || self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
+    if (![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
+    NSDictionary *values = [self currentSettingsValues];
+    if (!values) return;
+    self.completionMessage = nil;
+    [self invalidateReview];
+    NSUInteger generation = self.reviewGeneration;
+    __weak SSWorkflowViewController *weakSelf = self;
+    self.reviewClient = [self newReviewClientWithUpdate:^(NSDictionary *response) {
+        SSWorkflowViewController *owner = weakSelf;
+        if (owner && generation == owner.reviewGeneration && owner.timeline) [owner receiveReview:response];
+    } failure:^(NSString *message) {
+        SSWorkflowViewController *owner = weakSelf;
+        if (!owner || generation != owner.reviewGeneration || !owner.timeline) return;
+        [owner invalidateReview];
+        [owner setControlsEnabled:owner.settingsLoaded];
+        [owner setStatusMessage:message];
+    }];
+    NSString *gesture = NSUUID.UUID.UUIDString;
+    self.analyzeButton.accessibilityIdentifier = [@"silentsnip.workflow.analyze.requested." stringByAppendingString:gesture];
+    [self setControlsEnabled:NO];
+    [self setStatusMessage:@"Starting analysis of the selected timeline clip…"];
+    [self.reviewClient startWithLibraryURL:self.libraryURL projectUID:self.projectUID
+        projectName:self.projectLabel.stringValue settings:values gesture:gesture];
+    [self updateReviewControls];
+}
+
+- (void)applyCuts:(id)sender {
+    if (!self.reviewClient.canApply) return;
+    if (![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
+    NSString *gesture = NSUUID.UUID.UUIDString;
+    self.applyButton.accessibilityIdentifier = [@"silentsnip.workflow.apply.requested." stringByAppendingString:gesture];
+    self.applyButton.enabled = NO;
+    [self.reviewClient sendApplyWithGesture:gesture];
+    [self setControlsEnabled:NO];
+    [self updateReviewControls];
+}
+
+- (void)cancelReview:(id)sender {
+    if (self.reviewClient.canCancel) [self.reviewClient cancel];
+    [self updateReviewControls];
+}
+- (void)toggleCut:(NSButton *)sender {
+    NSUInteger index = (NSUInteger)sender.tag;
+    if (!self.reviewClient.canChangeSelection || index >= self.reviewCuts.count) return;
+    [self.reviewClient setCut:self.reviewCuts[index][@"id"] included:sender.state == NSControlStateValueOn];
+    [self updateReviewControls];
+}
+- (void)selectAllCuts:(id)sender { [self.reviewClient selectAll:YES]; [self updateReviewControls]; }
+- (void)deselectAllCuts:(id)sender { [self.reviewClient selectAll:NO]; [self updateReviewControls]; }
+- (void)retryVerification:(id)sender { [self.reviewClient retryVerification]; [self updateReviewControls]; }
+
+- (void)saveSettings:(id)sender {
+    if (!self.settingsLoaded || self.reviewClient.busy || !self.libraryURL || !self.projectUID.length) return;
+    // A pending host notification must not let old visible controls write
+    // settings under a different project's identity.
+    if (![self observedProjectMatchesSettings]) {
+        [self refreshProject];
+        return;
+    }
+    NSDictionary *values = [self currentSettingsValues];
+    if (!values) return;
     NSUInteger generation = self.contextGeneration;
     [self setControlsEnabled:NO];
     [self setStatusMessage:@"Saving…"];
@@ -347,7 +553,8 @@
         SSWorkflowViewController *owner = weakSelf;
         if (!owner || generation != owner.contextGeneration || !owner.timeline) return;
         [owner setControlsEnabled:YES];
-        [owner setStatusMessage:error ? error.localizedDescription : @"Settings saved for this project."];
+        if (!owner.reviewClient.busy && ![owner.reviewResponse[@"canRetryVerification"] boolValue])
+            [owner setStatusMessage:error ? error.localizedDescription : @"Settings saved for this project."];
     }];
 }
 @end

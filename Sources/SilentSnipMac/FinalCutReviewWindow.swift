@@ -36,6 +36,9 @@ extension FinalCutAXSession {
 
     func suspendReviewWindow() async throws {
         try assertCurrentProject()
+        // Workflow Extensions remain open during Share. Never treat one as an
+        // AU editor or close/toggle a detector on another selected clip.
+        if workflowOrigin != nil { return }
         var windows = silentSnipReviewWindows()
         if let focused = focusedReviewWindow(), !windows.contains(where: { CFEqual($0, focused) }) {
             windows.append(focused)
@@ -84,6 +87,9 @@ extension FinalCutAXSession {
 
     func restoreReviewWindowIfSafe(bringToFront: Bool = false,
                                    document: TimelineDocument? = nil, target: TimelineClip? = nil) async -> String? {
+        if workflowOrigin != nil {
+            return await restoreWorkflowReview(bringToFront: bringToFront, document: document, target: target)
+        }
         guard let expected = suspendedReview?.selection ?? activeReviewSelection else { return nil }
         let guidance = "To reopen the results, close any unfinished export dialog, select ‘\(expected.clipName)’ in ‘\(projectName)’, and click Silent Snip Audio’s Show effect editor button."
         var stage = "Checking the original project"
@@ -256,7 +262,8 @@ extension FinalCutAXSession {
         guard directory.standardizedFileURL == lastXMLShareDirectory,
               let expected = activeReviewSelection, (try? assertCurrentProject()) != nil,
               currentSheet() == nil, (try? selectionSnapshot()) == expected else { return }
-        _ = try? await raiseReviewWindow(expected: expected)
+        if workflowOrigin != nil { _ = try? await raiseWorkflowReview() }
+        else { _ = try? await raiseReviewWindow(expected: expected) }
     }
 
     /// A UUID alone does not establish ownership. Require its native control
@@ -266,6 +273,7 @@ extension FinalCutAXSession {
     }
 
     func reviewReconnectFailure(view: UUID) -> String? {
+        if workflowOrigin != nil { return workflowReconnectFailure(view: view) }
         guard let expected = activeReviewSelection else { return "No retained review selection." }
         do { try assertCurrentProject() } catch { return "The original project is no longer active: \(error.localizedDescription)" }
         guard currentSheet() == nil else { return "A Final Cut dialog is blocking the review." }
@@ -298,6 +306,7 @@ extension FinalCutAXSession {
     /// accepted only while the selected clip's sole Controls view exposes the
     /// fresh gesture identifier set by its Apply button action.
     func canAuthorizeApply(view: UUID, gesture: UUID) -> Bool {
+        if workflowOrigin != nil { return canAuthorizeWorkflowApply(view: view, gesture: gesture) }
         guard canReconnectReview(view: view), let window = focusedReviewWindow(),
               let button = find(in: window, role: kAXButtonRole,
                   identifier: "silentsnip.apply.requested.\(gesture.uuidString)", maxDepth: 16, maxNodes: 250) else { return false }
@@ -306,6 +315,7 @@ extension FinalCutAXSession {
     }
 
     func canAuthorizePreview(view: UUID, edit: UUID) -> Bool {
+        guard workflowOrigin == nil else { return false }
         guard canReconnectReview(view: view), let window = focusedReviewWindow(),
               let button = find(in: window, role: kAXButtonRole,
                   identifier: "silentsnip.preview.requested.\(edit.uuidString)", maxDepth: 16, maxNodes: 250) else { return false }

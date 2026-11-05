@@ -43,6 +43,7 @@ public struct ReviewAnalysisResult: Sendable {
         var settingsSequence = 0
         var verifySettings = false
         var previewSuspended = false
+        var targetClipName: String?
         init(_ request: AnalyzeRequest) { self.request = request }
     }
 
@@ -112,6 +113,7 @@ public struct ReviewAnalysisResult: Sendable {
         guard active == id, let job = jobs[id], job.state == .analyzing,
               !job.cancelled, job.task != nil else { return }
         job.result = result
+        job.targetClipName = result.analyzed.review.target.name
         job.message = "Preview ready. Finishing analysis cleanup…"
         publish(job)
     }
@@ -152,6 +154,7 @@ public struct ReviewAnalysisResult: Sendable {
                 try Task.checkCancellation()
                 guard !job.cancelled else { throw CancellationError() }
                 job.result = result
+                job.targetClipName = result.analyzed.review.target.name
                 job.state = .review
                 job.progress = 1
                 job.message = self.reviewMessage(result)
@@ -273,6 +276,10 @@ public struct ReviewAnalysisResult: Sendable {
     }
 
     private func recalculate(_ job: Job, command: ReviewCommand) {
+        // This Workflow Extension milestone requires another explicit Analyze
+        // after settings edits. Never silently convert its provenance to AU
+        // settings or admit the legacy Update Cuts command on that route.
+        guard job.request.workflowOrigin == nil else { resend(job); return }
         let started = ProcessInfo.processInfo.systemUptime
         let local = command.localPreview == true
         guard active == command.request, !job.cancelled, !job.applyStarted,
@@ -292,7 +299,8 @@ public struct ReviewAnalysisResult: Sendable {
         do {
             _ = try result.analyzed.recalculate(settings: settings)
             if local { result.usesAudioSnapshot = true }
-            job.request = AnalyzeRequest(id: job.request.id, settings: settings, outputMode: output)
+            job.request = AnalyzeRequest(id: job.request.id, settings: settings, outputMode: output,
+                workflowOrigin: job.request.workflowOrigin)
             job.result = result; job.settingsEdit = edit; job.settingsView = view; job.settingsSequence = sequence
             job.previewSuspended = false
             job.verifySettings = verify
@@ -558,7 +566,8 @@ public struct ReviewAnalysisResult: Sendable {
             return ReviewResponse(request: job.request.id, revision: job.revision,
                 state: job.state.rawValue, message: job.message, progress: job.progress,
                 canCancel: job.state.canCancel,
-                canRetryVerification: verificationOperation != nil && job.state.canRetryVerification && canRetryVerification(job.request.id), settingsEdit: job.settingsEdit)
+                canRetryVerification: verificationOperation != nil && job.state.canRetryVerification && canRetryVerification(job.request.id),
+                settingsEdit: job.settingsEdit, targetClipName: job.targetClipName)
         }
         let analysis = result.analyzed
         let review = analysis.review
@@ -588,7 +597,7 @@ public struct ReviewAnalysisResult: Sendable {
                 before: job.request.settings.beforeSpeechPadding, after: job.request.settings.afterSpeechPadding),
             output: job.request.outputMode.rawValue, provisional: job.state == .recalculating,
             canUpdateCuts: ready && result.canUpdateCuts && localPreviewOperation != nil,
-            usesAudioSnapshot: result.usesAudioSnapshot)
+            usesAudioSnapshot: result.usesAudioSnapshot, targetClipName: job.targetClipName)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {

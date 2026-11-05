@@ -15,7 +15,7 @@ extension FinalCutAXSession {
             // Replace closes the old timeline and may expose a previous project
             // or an empty timeline. Re-pin solely to navigate the browser, then
             // return a normal session; semantic verification precedes writes.
-            let browserSession = try await FinalCutAXSession.forImport(allowImportDialog: false, allowEmptyTimeline: true)
+            let browserSession = try await FinalCutAXSession.forImport(allowImportDialog: false, allowEmptyTimeline: true, inheritingWorkflowFrom: self)
             guard browserSession.application.processIdentifier == application.processIdentifier,
                   CFEqual(browserSession.mainWindow, mainWindow) else { throw FinalCutCaptureError.changedProject }
             try browserSession.assertReplacementEvent(replacement)
@@ -23,7 +23,7 @@ extension FinalCutAXSession {
             // rebuilds the toolbar and invalidates this session. A fresh export
             // still has to prove the replacement UID, edits and settings.
             if browserSession.projectName == name {
-                let current = try FinalCutAXSession()
+                let current = try FinalCutAXSession(inheritingWorkflowFrom: self)
                 try await current.activate()
                 try await current.suspendReviewWindow()
                 return current
@@ -37,7 +37,7 @@ extension FinalCutAXSession {
                 // sampling its previous timeline and navigating the browser.
                 // Accept only that same-window, same-process handoff in the
                 // original event; do not repeat navigation or import delivery.
-                let current = try await FinalCutAXSession.forImport(allowImportDialog: false, allowEmptyTimeline: false)
+                let current = try await FinalCutAXSession.forImport(allowImportDialog: false, allowEmptyTimeline: false, inheritingWorkflowFrom: self)
                 guard current.application.processIdentifier == application.processIdentifier,
                       CFEqual(current.mainWindow, mainWindow), current.projectName == name else {
                     throw FinalCutCaptureError.changedProject
@@ -51,13 +51,13 @@ extension FinalCutAXSession {
         // Import can replace the toolbar and briefly leave an empty timeline.
         // Re-pin after delivery rather than using pre-import AX objects for
         // browser navigation. Never navigate from an unrelated project/window.
-        let browserSession = try await FinalCutAXSession.forImport(allowImportDialog: false, allowEmptyTimeline: true)
+        let browserSession = try await FinalCutAXSession.forImport(allowImportDialog: false, allowEmptyTimeline: true, inheritingWorkflowFrom: self)
         guard browserSession.application.processIdentifier == application.processIdentifier,
               CFEqual(browserSession.mainWindow, mainWindow),
               FinalCutImportTimeline.permits(browserSession.projectName, original: projectName, imported: name) else {
             throw FinalCutCaptureError.changedProject
         }
-        if browserSession.projectName == name { return try FinalCutAXSession() }
+        if browserSession.projectName == name { return try FinalCutAXSession(inheritingWorkflowFrom: self) }
         do {
             _ = try await browserSession.selectBrowserProject(named: name)
             try await browserSession.pressMenu(path: ["Clip", "Open Clip"], openingProject: name)
@@ -67,7 +67,7 @@ extension FinalCutAXSession {
             // Accept only the exact same-window destination after re-pinning;
             // no navigation is repeated and semantic XML verification follows.
             try Task.checkCancellation()
-            if let current = try? FinalCutAXSession(),
+            if let current = try? FinalCutAXSession(inheritingWorkflowFrom: self),
                current.application.processIdentifier == application.processIdentifier,
                CFEqual(current.mainWindow, mainWindow), current.projectName == name { return current }
             throw error
@@ -390,7 +390,7 @@ extension FinalCutAXSession {
     }
 
     func returnToPreviousProject(named name: String) async throws -> FinalCutAXSession {
-        if let current = try? FinalCutAXSession(), current.projectName == name { return current }
+        if let current = try? FinalCutAXSession(inheritingWorkflowFrom: self), current.projectName == name { return current }
         try await activate()
         guard let back = find(in: mainWindow, role: kAXButtonRole, description: "Timeline Navigation Back") else {
             throw FinalCutCaptureError.unavailable("Could not return to the original project.")
@@ -406,7 +406,7 @@ extension FinalCutAXSession {
         while Date() < deadline {
             try Task.checkCancellation()
             guard !application.isTerminated else { throw FinalCutCaptureError.changedProject }
-            if let current = try? FinalCutAXSession() {
+            if let current = try? FinalCutAXSession(inheritingWorkflowFrom: self) {
                 guard current.application.processIdentifier == application.processIdentifier,
                       CFEqual(current.mainWindow, mainWindow) else { throw FinalCutCaptureError.changedProject }
                 if current.projectName == name { return current }

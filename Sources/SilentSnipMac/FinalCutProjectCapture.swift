@@ -39,10 +39,11 @@ import Foundation
     static func capture(to directory: URL, controllerEffectUIDs: Set<String> = [],
                                timing: AnalysisTiming? = nil,
                                directRenderHint: DirectAudioRenderHint? = nil,
+                               workflowOrigin: WorkflowReviewOrigin? = nil,
                                onSession: (FinalCutAXSession) -> Void = { _ in },
                                progress: (String) -> Void = { _ in }) async throws -> CapturedFinalCutProject {
         let timing = timing ?? AnalysisTiming(request: UUID())
-        let session = try timing.measure("capture.sessionDiscovery") { try FinalCutAXSession() }
+        let session = try timing.measure("capture.sessionDiscovery") { try FinalCutAXSession(workflowOrigin: workflowOrigin) }
         defer { timing.recordCounters(session.projectLookupCounters) }
         do {
         try await timing.measure("capture.activation") { try await session.activate() }
@@ -64,7 +65,7 @@ import Foundation
         }
         // The Inspector can expose an obvious duplicate before Share displaces
         // the AU window. XML validation remains authoritative if it is hidden.
-        if controllerEffectUIDs.contains(AudioControllerSettings.effectUID),
+        if workflowOrigin == nil, controllerEffectUIDs.contains(AudioControllerSettings.effectUID),
            timing.measure("capture.inspector", operation: { session.hasMultipleSilentSnipEffectsInInspector() }) {
             throw AudioControllerSettingsError.ambiguousController
         }
@@ -119,6 +120,7 @@ import Foundation
         var delivered = false
         defer { if !delivered { try? FileManager.default.removeItem(at: destination) } }
         let data = try Data(contentsOf: xml)
+        try workflowOrigin?.verify(projectData: data)
         let document = try timing.measure("capture.parse") {
             try TimelineParser.parse(data: data, exclusions: .init(controllerEffectUIDs: controllerEffectUIDs))
         }

@@ -17,6 +17,7 @@ public struct DialogueRenderContext: Sendable {
     public let audioURL: URL
     public let audioSHA256: String
     public let allowOmittedPrivateSettings: Bool
+    public let workflowOrigin: WorkflowReviewOrigin?
     /// Non-nil means selected source audio, not a rendered Dialogue mix.
     public let sourceRange: TimeRange?
     let isolatedTargetID: String?
@@ -30,17 +31,18 @@ public struct DialogueRenderContext: Sendable {
 
     public init(projectFingerprint: String, projectUID: String?, projectName: String,
                 projectRange: TimeRange, renderedRoles: Set<String>, audioURL: URL,
-                controllerEffectUIDs: Set<String> = [], allowOmittedPrivateSettings: Bool = false, sourceRange: TimeRange? = nil) throws {
+                controllerEffectUIDs: Set<String> = [], allowOmittedPrivateSettings: Bool = false, sourceRange: TimeRange? = nil,
+                workflowOrigin: WorkflowReviewOrigin? = nil) throws {
         let canonicalURL = try MediaContentSnapshot.canonical(audioURL)
         try self.init(projectFingerprint: projectFingerprint, projectUID: projectUID, projectName: projectName,
             projectRange: projectRange, renderedRoles: renderedRoles, audioURL: canonicalURL,
             controllerEffectUIDs: controllerEffectUIDs, allowOmittedPrivateSettings: allowOmittedPrivateSettings,
-            sourceRange: sourceRange, audioSHA256: MediaContentSnapshot.contentHash(at: canonicalURL))
+            sourceRange: sourceRange, audioSHA256: MediaContentSnapshot.contentHash(at: canonicalURL), workflowOrigin: workflowOrigin)
     }
 
     /// Only the interactive capture path can reuse its freshly read media evidence.
     static func capturedSource(document: TimelineDocument, target: TimelineClip,
-                               media: MediaContentSnapshot) throws -> Self {
+                               media: MediaContentSnapshot, workflowOrigin: WorkflowReviewOrigin? = nil) throws -> Self {
         guard let url = target.mediaURL else { throw SourceAudioError.invalidAudio }
         let canonicalURL = try MediaContentSnapshot.canonical(url)
         guard let digest = media.hashes[canonicalURL] else { throw ProjectAnalysisError.invalidRenderArtifact }
@@ -49,13 +51,16 @@ public struct DialogueRenderContext: Sendable {
             audioURL: canonicalURL, controllerEffectUIDs: [AudioControllerSettings.effectUID],
             allowOmittedPrivateSettings: true,
             sourceRange: TimeRange(start: target.sourceFileStart,
-                end: try target.sourceFileStart.adding(target.timelineRange.checkedDuration())), audioSHA256: digest)
+                end: try target.sourceFileStart.adding(target.timelineRange.checkedDuration())), audioSHA256: digest,
+            workflowOrigin: workflowOrigin)
     }
 
     private init(projectFingerprint: String, projectUID: String?, projectName: String,
                  projectRange: TimeRange, renderedRoles: Set<String>, audioURL: URL,
                  controllerEffectUIDs: Set<String>, allowOmittedPrivateSettings: Bool,
-                 sourceRange: TimeRange?, audioSHA256: String, isolatedTargetID: String? = nil, projectSlice: Bool = false) {
+                 sourceRange: TimeRange?, audioSHA256: String, isolatedTargetID: String? = nil, projectSlice: Bool = false,
+                 workflowOrigin: WorkflowReviewOrigin? = nil) {
+        self.workflowOrigin = workflowOrigin
         self.projectSlice = projectSlice
         self.isolatedTargetID = isolatedTargetID
         self.sourceRange = sourceRange
@@ -70,23 +75,27 @@ public struct DialogueRenderContext: Sendable {
         self.audioSHA256 = audioSHA256
     }
 
-    static func capturedIsolated(document: TimelineDocument, target: TimelineClip, audioURL: URL) throws -> Self {
+    static func capturedIsolated(document: TimelineDocument, target: TimelineClip, audioURL: URL,
+                                 workflowOrigin: WorkflowReviewOrigin? = nil) throws -> Self {
         let canonical = try MediaContentSnapshot.canonical(audioURL)
         return Self(projectFingerprint: document.fingerprint, projectUID: document.projectUID,
             projectName: document.projectName, projectRange: document.projectRange, renderedRoles: [],
             audioURL: canonical, controllerEffectUIDs: [AudioControllerSettings.effectUID],
             allowOmittedPrivateSettings: true, sourceRange: nil,
-            audioSHA256: try MediaContentSnapshot.contentHash(at: canonical), isolatedTargetID: target.id)
+            audioSHA256: try MediaContentSnapshot.contentHash(at: canonical), isolatedTargetID: target.id,
+            workflowOrigin: workflowOrigin)
     }
 
     /// Call only after the fresh XML passes DirectAudioRender's scope proof.
-    static func capturedProjectSlice(document: TimelineDocument, target: TimelineClip, audioURL: URL) throws -> Self {
+    static func capturedProjectSlice(document: TimelineDocument, target: TimelineClip, audioURL: URL,
+                                     workflowOrigin: WorkflowReviewOrigin? = nil) throws -> Self {
         let canonical = try MediaContentSnapshot.canonical(audioURL)
         return Self(projectFingerprint: document.fingerprint, projectUID: document.projectUID,
             projectName: document.projectName, projectRange: document.projectRange, renderedRoles: [],
             audioURL: canonical, controllerEffectUIDs: [AudioControllerSettings.effectUID],
             allowOmittedPrivateSettings: true, sourceRange: nil,
-            audioSHA256: try MediaContentSnapshot.contentHash(at: canonical), isolatedTargetID: target.id, projectSlice: true)
+            audioSHA256: try MediaContentSnapshot.contentHash(at: canonical), isolatedTargetID: target.id, projectSlice: true,
+            workflowOrigin: workflowOrigin)
     }
 
     fileprivate func validateArtifact(at url: URL) async throws {
@@ -101,7 +110,8 @@ public struct DialogueRenderContext: Sendable {
         Self(projectFingerprint: projectFingerprint, projectUID: projectUID, projectName: projectName,
             projectRange: projectRange, renderedRoles: renderedRoles, audioURL: url,
             controllerEffectUIDs: controllerEffectUIDs, allowOmittedPrivateSettings: allowOmittedPrivateSettings,
-            sourceRange: sourceRange, audioSHA256: audioSHA256, isolatedTargetID: isolatedTargetID, projectSlice: projectSlice)
+            sourceRange: sourceRange, audioSHA256: audioSHA256, isolatedTargetID: isolatedTargetID, projectSlice: projectSlice,
+            workflowOrigin: workflowOrigin)
     }
 
 
@@ -207,7 +217,10 @@ public enum ProjectAudioAnalysis {
         // The app verifies a required controller before driving Final Cut's
         // export. The read-only verifier also accepts audio-only fixtures with
         // no controller, but must validate any Silent Snip AU that is present.
-        if renderContext.allowOmittedPrivateSettings {
+        if let origin = renderContext.workflowOrigin {
+            try origin.verify(projectData: projectData)
+            try WorkflowReviewOrigin.validate(settings: settings)
+        } else if renderContext.allowOmittedPrivateSettings {
             try AudioControllerSettings.validateInteractive(projectData: projectData, target: target, requested: settings)
         } else {
             try AudioControllerSettings.validate(projectData: projectData, target: target, requested: settings, requireController: false)

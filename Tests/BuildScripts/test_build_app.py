@@ -56,9 +56,14 @@ exec /bin/mv "$@"
 
     def bundle(self, path, identity, executable):
         (path / "Contents/MacOS").mkdir(parents=True)
-        (path / "Contents/Info.plist").write_bytes(plistlib.dumps({
+        configured = plistlib.loads((self.root / "Config/Info.plist").read_bytes())
+        info = {
             "CFBundleIdentifier": identity, "CFBundleExecutable": executable,
-            "SilentSnipContainingApp": {"bundleIdentifier": "local.silentsnip.app", "executable": "SilentSnip", "enabled": True}}))
+            "CFBundleVersion": configured["CFBundleVersion"],
+            "SilentSnipContainingApp": {"bundleIdentifier": "local.silentsnip.app", "executable": "SilentSnip", "enabled": True}}
+        if identity == "local.silentsnip.helper.candidate":
+            info["SilentSnipWorkflowProtocolVersion"] = configured["SilentSnipWorkflowProtocolVersion"]
+        (path / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
         binary = path / "Contents/MacOS" / executable
         binary.write_bytes(b"fixture executable")
         binary.chmod(0o755)
@@ -79,6 +84,9 @@ exec /bin/mv "$@"
         info = plistlib.loads((self.output / "Contents/Info.plist").read_bytes())
         self.assertEqual(info["CFBundleIdentifier"], "local.silentsnip.app")
         self.assertEqual(info["CFBundleExecutable"], "SilentSnip")
+        configured = plistlib.loads((self.root / "Config/Info.plist").read_bytes())
+        self.assertEqual(info["CFBundleVersion"], configured["CFBundleVersion"])
+        self.assertEqual(info["SilentSnipWorkflowProtocolVersion"], 1)
         self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["silentsnip"])
         self.assertIn("com.apple.proapps.MediaAssetProtocol", info)
         self.assertTrue((self.output / "Contents/Resources/SilentSnip.sdef").exists())
@@ -99,8 +107,20 @@ exec /bin/mv "$@"
         self.assertEqual(info["CFBundleIdentifier"], "local.silentsnip.app")
         extension_info = plistlib.loads((candidate / "Contents/PlugIns/SilentSnipAudio.appex/Contents/Info.plist").read_bytes())
         self.assertFalse(extension_info["SilentSnipContainingApp"]["enabled"])
-        for key in ("CFBundleURLTypes", "CFBundleDocumentTypes", "com.apple.proapps.MediaAssetProtocol"):
+        for key in ("CFBundleURLTypes", "CFBundleDocumentTypes", "com.apple.proapps.MediaAssetProtocol", "SilentSnipWorkflowProtocolVersion"):
             self.assertNotIn(key, info)
+
+    def test_stale_reused_helper_cannot_advertise_the_new_workflow_protocol(self):
+        path = self.helper / "Contents/Info.plist"
+        original = plistlib.loads(path.read_bytes())
+        for field, value in [("CFBundleVersion", "47"), ("SilentSnipWorkflowProtocolVersion", 0)]:
+            with self.subTest(field=field):
+                info = dict(original); info[field] = value
+                path.write_bytes(plistlib.dumps(info))
+                result = self.run_build()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("out of date", result.stderr)
+                self.assert_previous_preserved()
 
     def test_running_apps_or_unknown_probe_status_prevent_replacement(self):
         for mode in ("host", "output"):

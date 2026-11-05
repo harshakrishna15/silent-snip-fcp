@@ -122,6 +122,7 @@ import Foundation
 
     public func analyze(_ request: AnalyzeRequest,
                         progress: @escaping AnalysisReviewCoordinator.Progress) async throws -> ReviewAnalysisResult {
+        if request.workflowOrigin != nil { try WorkflowReviewOrigin.validate(settings: request.settings) }
         // Only one coordinator job may run. Release earlier review contexts.
         preview.hide()
         contexts.removeAll()
@@ -137,13 +138,16 @@ import Foundation
         try Task.checkCancellation()
         let persistedHint = await timing.measure("capture.routingHintLookup") { await routingHintStore.consume() }
         try Task.checkCancellation()
-        let renderHint = directRenderHint ?? persistedHint
+        // Historical hints bind a selection, not the Workflow SDK's library
+        // and project identity. Workflow entry first obtains fresh XML.
+        let renderHint = request.workflowOrigin == nil ? (directRenderHint ?? persistedHint) : nil
         directRenderHint = nil // A failed/stale hint must not loop on the next click.
         let capture: CapturedFinalCutProject
         do {
             capture = try await FinalCutProjectCapture.capture(to: directory,
                 controllerEffectUIDs: [AudioControllerSettings.effectUID],
                 timing: timing, directRenderHint: renderHint,
+                workflowOrigin: request.workflowOrigin,
                 onSession: { if !Task.isCancelled { self.reviewSession = $0 } }) { progress($0, nil) }
         } catch {
             try? Data(error.localizedDescription.utf8).write(
@@ -163,8 +167,11 @@ import Foundation
             try Task.checkCancellation()
             // One immutable input for routing, isolation, analysis, and preflight.
             let projectData = try Data(contentsOf: capture.xmlURL)
-            try AudioControllerSettings.validateInteractive(projectData: projectData, target: capture.target,
-                requested: request.settings)
+            if let origin = request.workflowOrigin { try origin.verify(projectData: projectData) }
+            else {
+                try AudioControllerSettings.validateInteractive(projectData: projectData, target: capture.target,
+                    requested: request.settings)
+            }
             timing.begin("sourceValidation")
             progress("Checking source media before analysis…", nil)
             let mediaReadGuard = try MediaContentSnapshot.prepareRead(capture.document.clips.filter(\.enabled).compactMap(\.mediaURL))
@@ -198,7 +205,7 @@ import Foundation
                 switch route {
                 case .source:
                     boundContext = try DialogueRenderContext.capturedSource(document: capture.document,
-                        target: capture.target, media: try await pendingMedia)
+                        target: capture.target, media: try await pendingMedia, workflowOrigin: request.workflowOrigin)
                     audioURL = sourceURL
                     scopeNotice = "Analyzed original audio; this clip has no audio adjustments or processing effects."
                 case .finalCutRender:
@@ -224,6 +231,7 @@ import Foundation
                         let deliveredXML = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
                             ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
                         let deliveredData = try Data(contentsOf: deliveredXML)
+                        try request.workflowOrigin?.verify(projectData: deliveredData)
                         timing.begin("directRenderVerification")
                         // The same exchange delivers PCM and fresh XML. Identity,
                         // source trim, effects and scope all remain authoritative.
@@ -239,10 +247,10 @@ import Foundation
                         audioURL = receipt.mediaURLs[0]
                         if renderScope == .projectSlice {
                             boundContext = try DialogueRenderContext.capturedProjectSlice(document: capture.document,
-                                target: capture.target, audioURL: audioURL)
+                                target: capture.target, audioURL: audioURL, workflowOrigin: request.workflowOrigin)
                         } else {
                             boundContext = try DialogueRenderContext.capturedIsolated(document: capture.document,
-                                target: capture.target, audioURL: audioURL)
+                                target: capture.target, audioURL: audioURL, workflowOrigin: request.workflowOrigin)
                         }
                         renderedInOriginal = true
                     } else {
@@ -275,7 +283,8 @@ import Foundation
                             try isolated.destination.verifyDestination(deliveredData)
                             cleanup = (isolated, deliveredData)
                             audioURL = receipt.mediaURLs[0]
-                            boundContext = try DialogueRenderContext.capturedIsolated(document: capture.document, target: capture.target, audioURL: audioURL)
+                            boundContext = try DialogueRenderContext.capturedIsolated(document: capture.document, target: capture.target,
+                                audioURL: audioURL, workflowOrigin: request.workflowOrigin)
                             timing.begin("returnToOriginal")
                             _ = try await isolatedSession.returnToPreviousProject(named: capture.projectName)
                         } catch {
@@ -310,10 +319,12 @@ import Foundation
                 if !renderedInOriginal {
                     timing.begin("originalProjectVerification")
                     progress("Checking the original project after rendering…", nil)
-                    let restored = try FinalCutAXSession()
+                    let restored = try FinalCutAXSession(inheritingWorkflowFrom: capture.session)
                     guard restored.projectName == capture.projectName else { throw FinalCutCaptureError.changedProject }
                     let restoredURL = try await restored.exportProjectXML(to: directory.appendingPathComponent("After-Isolation.fcpxmld"), timing: timing)
-                    let restoredDocument = try TimelineParser.parse(url: restoredURL, exclusions: analyzed.dialogueContext.fingerprintExclusions)
+                    let restoredData = try Data(contentsOf: restoredURL)
+                    try request.workflowOrigin?.verify(projectData: restoredData)
+                    let restoredDocument = try TimelineParser.parse(data: restoredData, exclusions: analyzed.dialogueContext.fingerprintExclusions)
                     try XMLProjectApply.verifyBaseline(restoredDocument, analyzed: capture.document)
                     capture.session.lastXMLShareDirectory = restored.lastXMLShareDirectory
                 }
@@ -345,7 +356,7 @@ import Foundation
                 timing.begin("cleanup")
                 progress("Preview ready. Removing the temporary analysis project…", nil)
                 do {
-                    let restored = try FinalCutAXSession()
+                    let restored = try FinalCutAXSession(inheritingWorkflowFrom: capture.session)
                     guard restored.projectName == capture.projectName else { throw FinalCutCaptureError.changedProject }
                     try await restored.removeAnalysisProject(isolated, verifiedData: delivered)
                     cleanup = nil; importedAnalysisName = nil
@@ -372,14 +383,14 @@ import Foundation
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
                 presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply creates a cleaned project copy with the retained processed sound preserved. The original project keeps its editable effects. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "),
-                canUpdateCuts: route == .source || renderedInOriginal)
+                canUpdateCuts: request.workflowOrigin == nil && (route == .source || renderedInOriginal))
         } catch {
             // A cancellation must not prevent bounded cleanup of a verified,
             // request-owned project after returning to the original timeline.
             if let (isolated, delivered) = cleanup {
                 let cleaned = await Task { @MainActor in
                     do {
-                        let restored = try FinalCutAXSession()
+                        let restored = try FinalCutAXSession(inheritingWorkflowFrom: capture.session)
                         guard restored.projectName == capture.projectName else { return false }
                         try await restored.removeAnalysisProject(isolated, verifiedData: delivered)
                         return true
@@ -424,8 +435,11 @@ import Foundation
             let current = try TimelineParser.parse(data: data, exclusions: result.analyzed.dialogueContext.fingerprintExclusions)
             try XMLProjectApply.verifyBaseline(current, analyzed: context.capture.document)
             guard try session.selectionSnapshot() == selection else { throw AudioControllerSettingsError.targetChanged }
-            try AudioControllerSettings.validateForApply(projectData: data, target: current.selectedTarget(context.capture.selection),
-                requested: request.settings)
+            if let origin = request.workflowOrigin { try origin.verify(projectData: data) }
+            else {
+                try AudioControllerSettings.validateForApply(projectData: data, target: current.selectedTarget(context.capture.selection),
+                    requested: request.settings)
+            }
             timing.begin("mediaVerification")
             guard try await Self.mediaSnapshot(current) == context.mediaSnapshot else { throw AudioProjectProcessingError.changedProject }
             try Task.checkCancellation()
@@ -523,8 +537,11 @@ import Foundation
             }
             try readGuard.validate()
             let target = try final.selectedTarget(capture.selection)
-            try AudioControllerSettings.validateForApply(projectData: finalData,
-                target: target, requested: result.analyzed.settings)
+            if let origin = request.workflowOrigin { try origin.verify(projectData: finalData) }
+            else {
+                try AudioControllerSettings.validateForApply(projectData: finalData,
+                    target: target, requested: result.analyzed.settings)
+            }
             let fullMix = receipt.mediaURLs[0]
             let renderGuard = try MediaContentSnapshot.prepareRead([fullMix, finalURL])
             if applyRoute == .finalCutRender {
@@ -537,7 +554,7 @@ import Foundation
                     // With exactly one audible source, the full mix is also the
                     // selected Dialogue render. Its file zero is project zero.
                     let bound = try DialogueRenderContext.capturedProjectSlice(document: final,
-                        target: target, audioURL: fullMix)
+                        target: target, audioURL: fullMix, workflowOrigin: request.workflowOrigin)
                     fresh = try await ProjectAudioAnalysis.analyze(projectData: finalData,
                         selection: capture.selection, dialogueAudio: fullMix, renderContext: bound,
                         settings: request.settings, jobID: request.id, capturedMedia: nil)
@@ -587,7 +604,7 @@ import Foundation
             let artifact = try XMLProjectApply.prepare(projectData: finalData, selection: capture.selection,
                 cuts: removals, settings: result.analyzed.settings, mode: request.outputMode,
                 outputName: outputName, directory: parent, selectedClipOnly: false, useOriginalEvent: true,
-                omitController: true, losslessAudio: durable)
+                omitController: true, losslessAudio: durable, workflowOrigin: request.workflowOrigin)
             prepared = artifact
             try session.assertCurrentProject()
             progress("Sending ‘\(outputName)’ to Final Cut Pro…", 0.8)
@@ -613,8 +630,11 @@ import Foundation
                 let importData = try Data(contentsOf: importCheck)
                 let current = try TimelineParser.parse(data: importData, exclusions: exclusions)
                 try XMLProjectApply.verifyBaseline(current, analyzed: final)
-                try AudioControllerSettings.validateForApply(projectData: importData,
-                    target: current.selectedTarget(capture.selection), requested: result.analyzed.settings)
+                if let origin = request.workflowOrigin { try origin.verify(projectData: importData) }
+                else {
+                    try AudioControllerSettings.validateForApply(projectData: importData,
+                        target: current.selectedTarget(capture.selection), requested: result.analyzed.settings)
+                }
                 try self.validateReviewSelection(capture)
                 try importReadGuard.validate()
                 try readGuard.validate()
@@ -667,7 +687,9 @@ import Foundation
             try ShareDestinationManager.shared.validateReceipt(receipt)
             let xml = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
                 ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
-            try ProjectRoundTripVerification.verify(expected: projectData, actual: Data(contentsOf: xml),
+            let targetData = try Data(contentsOf: xml)
+            try request.workflowOrigin?.verify(projectData: targetData)
+            try ProjectRoundTripVerification.verify(expected: projectData, actual: targetData,
                 reportURL: directory.appendingPathComponent("Apply-Target-Render-Verification.json"))
         } else {
             let isolated = try IsolatedAudioProject.make(projectData: projectData, selection: capture.selection)
@@ -707,7 +729,7 @@ import Foundation
             }
             if let delivered {
                 do {
-                    let original = try FinalCutAXSession()
+                    let original = try FinalCutAXSession(inheritingWorkflowFrom: capture.session)
                     guard original.projectName == capture.projectName else { throw FinalCutCaptureError.changedProject }
                     try await original.removeAnalysisProject(isolated, verifiedData: delivered)
                 } catch {
@@ -715,19 +737,21 @@ import Foundation
                         .write(to: directory.appendingPathComponent("Apply-Cleanup-Status.txt"), options: .atomic)
                 }
             }
-            let original = try FinalCutAXSession()
+            let original = try FinalCutAXSession(inheritingWorkflowFrom: capture.session)
             guard original.projectName == capture.projectName else { throw FinalCutCaptureError.changedProject }
             let after = try await original.exportProjectXML(
                 to: directory.appendingPathComponent("Apply-After-Isolation-\(UUID().uuidString).fcpxmld"), timing: timing)
-            let current = try TimelineParser.parse(url: after,
+            let afterData = try Data(contentsOf: after)
+            try request.workflowOrigin?.verify(projectData: afterData)
+            let current = try TimelineParser.parse(data: afterData,
                 exclusions: .init(controllerEffectUIDs: [AudioControllerSettings.effectUID]))
             try XMLProjectApply.verifyBaseline(current, analyzed: document)
         }
         guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
         let audio = receipt.mediaURLs[0]
         let bound = try scope == .projectSlice
-            ? DialogueRenderContext.capturedProjectSlice(document: document, target: target, audioURL: audio)
-            : DialogueRenderContext.capturedIsolated(document: document, target: target, audioURL: audio)
+            ? DialogueRenderContext.capturedProjectSlice(document: document, target: target, audioURL: audio, workflowOrigin: request.workflowOrigin)
+            : DialogueRenderContext.capturedIsolated(document: document, target: target, audioURL: audio, workflowOrigin: request.workflowOrigin)
         return try await ProjectAudioAnalysis.analyze(projectData: projectData, selection: capture.selection,
             dialogueAudio: audio, renderContext: bound, settings: request.settings,
             jobID: request.id, capturedMedia: nil)
@@ -759,7 +783,8 @@ import Foundation
         let result = try ImportedResultVerification.load(outputURL: outputURL)
         let parent = result.outputURL.deletingLastPathComponent()
         do {
-            let current = try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil)
+            let current = try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil,
+                inheritingWorkflowFrom: reviewSession)
             guard result.replacementTarget != nil || current.projectName == result.originalProjectName || current.projectName == result.projectName else {
                 throw FinalCutCaptureError.unavailable("Open the original project or ‘\(result.projectName)’ before retrying verification.")
             }

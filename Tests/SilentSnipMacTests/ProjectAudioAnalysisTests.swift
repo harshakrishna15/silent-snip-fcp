@@ -15,6 +15,81 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         try FileManager.default.removeItem(at: directory)
     }
 
+    func testWorkflowCapturedRenderContextsAcceptNoAUOnlyWithMatchingSDKProject() async throws {
+        let fixture = try fixture()
+        let library = directory.appendingPathComponent("Fixture.fcpbundle")
+        let text = try String(contentsOf: fixture.xml).replacingOccurrences(of: "<library><event>",
+            with: "<library location=\"\(library.absoluteString)\"><event name=\"Fixture\" uid=\"BBBB0000-0000-4000-8000-000000000001\">")
+        let data = Data(text.utf8)
+        let document = try TimelineParser.parse(data: data,
+            exclusions: .init(controllerEffectUIDs: [AudioControllerSettings.effectUID]))
+        let target = try document.selectedTarget(fixture.selection)
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(), libraryURL: library,
+            projectUID: "audio-project", projectName: "Audio-only")
+        for context in [
+            try DialogueRenderContext.capturedIsolated(document: document, target: target,
+                audioURL: fixture.audio, workflowOrigin: origin),
+            try DialogueRenderContext.capturedProjectSlice(document: document, target: target,
+                audioURL: fixture.audio, workflowOrigin: origin)
+        ] {
+            let result = try await ProjectAudioAnalysis.analyze(projectData: data, selection: fixture.selection,
+                dialogueAudio: fixture.audio, renderContext: context, settings: .defaults, jobID: UUID(), capturedMedia: nil)
+            XCTAssertEqual(result.review.selectedCuts.map(\.range), [.init(start: .init(11, 10), end: .init(19, 10))])
+            XCTAssertEqual(result.dialogueContext.workflowOrigin, origin)
+        }
+        let legacy = try DialogueRenderContext.capturedIsolated(document: document, target: target, audioURL: fixture.audio)
+        do {
+            _ = try await ProjectAudioAnalysis.analyze(projectData: data, selection: fixture.selection,
+                dialogueAudio: fixture.audio, renderContext: legacy, settings: .defaults, jobID: UUID(), capturedMedia: nil)
+            XCTFail("Legacy interactive renders still require their AU")
+        } catch {
+            XCTAssertEqual(error as? AudioControllerSettingsError, .missingController)
+        }
+        let wrong = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(), libraryURL: library,
+            projectUID: "another-project", projectName: "Audio-only")
+        let wrongContext = try DialogueRenderContext.capturedIsolated(document: document, target: target,
+            audioURL: fixture.audio, workflowOrigin: wrong)
+        do {
+            _ = try await ProjectAudioAnalysis.analyze(projectData: data, selection: fixture.selection,
+                dialogueAudio: fixture.audio, renderContext: wrongContext, settings: .defaults, jobID: UUID(), capturedMedia: nil)
+            XCTFail("An absent AU cannot make the SDK project identity optional")
+        } catch { }
+    }
+
+    func testWorkflowCapturedSourceAnalyzesExactNoAUTrimWithoutRenderedAudio() async throws {
+        let fixture = try fixture()
+        let library = directory.appendingPathComponent("Fixture.fcpbundle")
+        let data = Data(try String(contentsOf: fixture.xml).replacingOccurrences(of: "<library><event>",
+            with: "<library location=\"\(library.absoluteString)\"><event name=\"Fixture\" uid=\"BBBB0000-0000-4000-8000-000000000001\">").utf8)
+        let document = try TimelineParser.parse(data: data,
+            exclusions: .init(controllerEffectUIDs: [AudioControllerSettings.effectUID]))
+        let target = try document.selectedTarget(fixture.selection)
+        let source = try XCTUnwrap(target.mediaURL)
+        let sourceBefore = try Data(contentsOf: source)
+        let media = try await MediaContentSnapshot.capture([source])
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(), libraryURL: library,
+            projectUID: "audio-project", projectName: "Audio-only")
+        XCTAssertEqual(try ClipAudioAnalysisRoute.resolve(projectData: data, selection: fixture.selection), .source)
+        let context = try DialogueRenderContext.capturedSource(document: document, target: target,
+            media: media, workflowOrigin: origin)
+        XCTAssertEqual(context.sourceRange, .init(start: .init(1), end: .init(4)))
+        // The fixture's processed render contains silence, while its original
+        // source is continuous speech-level PCM. Removing the render proves
+        // this path reads only the requested original source trim.
+        try FileManager.default.removeItem(at: fixture.audio)
+        let result = try await ProjectAudioAnalysis.analyze(projectData: data, selection: fixture.selection,
+            dialogueAudio: source, renderContext: context, settings: .defaults, jobID: UUID(), capturedMedia: media)
+        XCTAssertEqual(result.audio.windows.count, 300)
+        XCTAssertEqual(result.audio.windows.first?.range.start, .zero)
+        XCTAssertEqual(result.target.sourceFileStart, .init(1))
+        XCTAssertEqual(result.analysis.disposition, .noSilence)
+        XCTAssertTrue(result.review.selectedCuts.isEmpty)
+        XCTAssertEqual(result.dialogueContext.workflowOrigin, origin)
+        XCTAssertEqual(result.dialogueContext.audioSHA256, media.hashes[try MediaContentSnapshot.canonical(source)])
+        try await media.validate()
+        XCTAssertEqual(try Data(contentsOf: source), sourceBefore)
+    }
+
     func testImmutableCaptureBytesProduceSameCutsWithoutReopeningXML() async throws {
         let fixture = try fixture()
         let expected = try await analyze(fixture)

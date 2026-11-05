@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build an isolated read-only Workflow Extension. Never install or register it.
+# Build the isolated Workflow frontend. Never install or register it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [[ $# != 0 ]]; then
@@ -10,6 +10,10 @@ sdk="${SILENT_SNIP_WORKFLOW_SDK:-/Library/Developer/SDKs/WorkflowExtensionSDK.sd
 [[ -f "$sdk/usr/lib/libProExtension.a" && -f "$sdk/Library/Frameworks/ProExtensionHost.framework/Headers/FCPXHost.h" ]] || {
   echo 'Install Apple’s Workflow Extensions SDK before building this prototype.' >&2; exit 1;
 }
+for source in WorkflowPrototype/Extension/WorkflowViewController.m \
+  WorkflowPrototype/Extension/WorkflowReviewClient.m AudioPlugin/Extension/SilentSnipReviewConnection.m; do
+  [[ -f "$source" ]] || { printf 'Required workflow source is missing: %s\n' "$source" >&2; exit 1; }
+done
 root="$PWD/build/WorkflowPrototype"
 destination="$root/Products/Silent Snip Workflow Prototype.app"
 for process in SilentSnipWorkflowExtension SilentSnipWorkflowPrototype; do
@@ -47,13 +51,16 @@ xcrun swiftc -swift-version 5 -O -parse-as-library -emit-object \
   -module-name SSWorkflowPersistence -target arm64-apple-macosx14.0 -sdk "$sysroot" \
   -I "$module_path" -module-cache-path "$root/ModuleCache" -emit-objc-header -emit-objc-header-path "$work/SSWorkflowPersistence-Swift.h" \
   WorkflowPrototype/Extension/WorkflowSettingsBridge.swift -o "$work/Persistence.o"
-xcrun clang -arch arm64 -isysroot "$sysroot" -mmacosx-version-min=14.0 -fobjc-arc \
+objc_flags=(-arch arm64 -isysroot "$sysroot" -mmacosx-version-min=14.0 -fobjc-arc \
   -fmodules -fmodules-cache-path="$root/ModuleCache" -fapplication-extension \
-  -I "$work" -I "$sdk/usr/include" -F "$sdk/Library/Frameworks" \
-  -c WorkflowPrototype/Extension/WorkflowViewController.m -o "$work/ViewController.o"
+  -I "$work" -I WorkflowPrototype/Extension -I AudioPlugin/Extension \
+  -I "$sdk/usr/include" -F "$sdk/Library/Frameworks")
+xcrun clang "${objc_flags[@]}" -c WorkflowPrototype/Extension/WorkflowViewController.m -o "$work/ViewController.o"
+xcrun clang "${objc_flags[@]}" -c WorkflowPrototype/Extension/WorkflowReviewClient.m -o "$work/ReviewClient.o"
+xcrun clang "${objc_flags[@]}" -c AudioPlugin/Extension/SilentSnipReviewConnection.m -o "$work/ReviewConnection.o"
 xcrun swiftc -target arm64-apple-macosx14.0 -sdk "$sysroot" \
-  "$work/ViewController.o" "$work/Persistence.o" "${model_objects[@]}" \
-  -L "$sdk/usr/lib" -lProExtension -lc++ -framework AppKit -framework CoreMedia -framework CoreServices \
+  "$work/ViewController.o" "$work/ReviewClient.o" "$work/ReviewConnection.o" "$work/Persistence.o" "${model_objects[@]}" \
+  -L "$sdk/usr/lib" -lProExtension -lc++ -framework AppKit -framework Foundation -framework CoreMedia -framework CoreServices \
   -Xlinker -e -Xlinker _ProExtensionMain \
   -o "$extension/Contents/MacOS/SilentSnipWorkflowExtension"
 xcrun clang -arch arm64 -isysroot "$sysroot" -mmacosx-version-min=14.0 -fobjc-arc \

@@ -57,6 +57,12 @@ extension="$PWD/build/Candidate/AudioPlugin/SilentSnipAudio.appex"
 [[ -x "$helper/Contents/MacOS/SilentSnip" && -d "$extension" ]] || { echo 'Staged components are missing. Build without --reuse-components.' >&2; exit 1; }
 [[ ! -L "$helper" && ! -L "$extension" ]] || { echo 'Staged components must not be symbolic links.' >&2; exit 1; }
 [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$helper/Contents/Info.plist") == local.silentsnip.helper.candidate ]] || { echo 'Unexpected helper identity.' >&2; exit 1; }
+[[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$helper/Contents/Info.plist") == \
+   $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Config/Info.plist) &&
+   $(/usr/libexec/PlistBuddy -c 'Print :SilentSnipWorkflowProtocolVersion' "$helper/Contents/Info.plist") == \
+   $(/usr/libexec/PlistBuddy -c 'Print :SilentSnipWorkflowProtocolVersion' Config/Info.plist) ]] || {
+  echo 'The staged helper metadata is out of date. Rebuild without --reuse-components.' >&2; exit 1;
+}
 [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$extension/Contents/Info.plist") == local.silentsnip.app.audio ]] || { echo 'Unexpected extension identity.' >&2; exit 1; }
 [[ $(/usr/libexec/PlistBuddy -c 'Print :SilentSnipContainingApp:bundleIdentifier' "$extension/Contents/Info.plist") == local.silentsnip.app &&
    $(/usr/libexec/PlistBuddy -c 'Print :SilentSnipContainingApp:executable' "$extension/Contents/Info.plist") == SilentSnip &&
@@ -77,7 +83,7 @@ cp Config/SilentSnip.sdef "$app/Contents/Resources/SilentSnip.sdef"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier local.silentsnip.app' "$app/Contents/Info.plist"
 if [[ "$stage" == true ]]; then
   /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Silent Snip Candidate' "$app/Contents/Info.plist"
-  for key in CFBundleURLTypes CFBundleDocumentTypes com.apple.proapps.MediaAssetProtocol; do
+  for key in CFBundleURLTypes CFBundleDocumentTypes com.apple.proapps.MediaAssetProtocol SilentSnipWorkflowProtocolVersion; do
     /usr/libexec/PlistBuddy -c "Delete :$key" "$app/Contents/Info.plist"
   done
 fi

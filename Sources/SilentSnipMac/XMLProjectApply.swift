@@ -54,7 +54,8 @@ enum XMLProjectApply {
                         outputName: String, directory: URL, replaceOriginal: Bool = false,
                         selectedClipOnly: Bool = false, useOriginalEvent: Bool = false,
                         omitController: Bool = false,
-                        losslessAudio: LosslessRenderedAudio? = nil) throws -> PreparedXMLProject {
+                        losslessAudio: LosslessRenderedAudio? = nil,
+                        workflowOrigin: WorkflowReviewOrigin? = nil) throws -> PreparedXMLProject {
         let document = try TimelineParser.parse(data: projectData)
         let xml = try XMLDocument(data: projectData, options: [.nodeLoadExternalEntitiesNever])
         let libraries = try xml.nodes(forXPath: "/fcpxml/library").compactMap { $0 as? XMLElement }
@@ -66,7 +67,16 @@ enum XMLProjectApply {
         let gap = try mode.gapDuration(frame: document.frameDuration)
         var gaps: [TimeRange: RationalTime] = [:]
         if let gap { for cut in cuts { gaps[cut] = gap } }
-        let withSettings = try AudioControllerSettings.embedding(settings, in: projectData, selection: selection)
+        let withSettings: Data
+        if let workflowOrigin {
+            try workflowOrigin.verify(projectData: projectData)
+            try WorkflowReviewOrigin.validate(settings: settings)
+            // Workflow controls own these settings. Never insert a controller
+            // or overwrite an existing AU's state on this route.
+            withSettings = projectData
+        } else {
+            withSettings = try AudioControllerSettings.embedding(settings, in: projectData, selection: selection)
+        }
         let output = try EditedProjectWriter.write(projectData: withSettings, selection: selection,
             selectedRanges: cuts, outputName: outputName, destinationLibrary: library, replacementGaps: gaps,
             replaceOriginal: replaceOriginal, selectedClipOnly: selectedClipOnly, useOriginalEvent: useOriginalEvent,

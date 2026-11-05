@@ -13,7 +13,7 @@
     NSTextField *title = [NSTextField labelWithString:@"Ready to open in Final Cut Pro"];
     title.font = [NSFont boldSystemFontOfSize:19];
     NSTextField *detail = [NSTextField wrappingLabelWithString:
-        @"Choose Silent Snip Workflow Prototype from Final Cut Pro’s Extensions menu.\n\nThis preview shows your project and saves detection settings. Analysis and timeline cuts are coming later."];
+        @"Choose Silent Snip Workflow Prototype from Final Cut Pro’s Extensions menu.\n\nSelect a timeline clip, Analyze its audio, review the pauses, then Apply to create a cleaned project copy. Keep the updated Silent Snip app installed for processing."];
     NSButton *done = [NSButton buttonWithTitle:@"Done" target:NSApp action:@selector(terminate:)];
     NSStackView *stack = [NSStackView stackViewWithViews:@[title, detail, done]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;

@@ -193,6 +193,46 @@ class WorkflowPrototypePackageTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 2)
         self.assertEqual(output.read_text(), "preserve evidence")
 
+    def make_worker(self):
+        app = Path(self.directory.name) / "Worker.app"
+        info = dict(CFBundleIdentifier="local.silentsnip.app", CFBundlePackageType="APPL",
+                    CFBundleExecutable="SilentSnip", CFBundleVersion="49",
+                    SilentSnipWorkflowProtocolVersion=1,
+                    CFBundleURLTypes=[{"CFBundleURLSchemes": ["silentsnip"]}],
+                    **{"com.apple.proapps.MediaAssetProtocol": {}})
+        self.write_info(app, info)
+        write_macho(app / "Contents/MacOS/SilentSnip")
+        return app, info
+
+    def test_worker_metadata_contract_verified_without_launch_or_registry_claim(self):
+        app, _ = self.make_worker()
+        report = MODULE.verify_worker(app, run=self.run_tool)
+        self.assertEqual(report["workflowProtocolVersion"], 1)
+        self.assertTrue(report["activeURLAndShareRoutesVerified"])
+        self.assertFalse(report["runtimeLookupUniquenessEstablished"])
+        self.assertFalse(report["sandboxClientReadabilityEstablished"])
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn("--verify", self.calls[0])
+
+    def test_old_boolean_unknown_or_inert_worker_is_rejected_before_external_commands(self):
+        app, original = self.make_worker()
+        for field, value in [("CFBundleIdentifier", "local.silentsnip.helper.candidate"),
+                ("CFBundleExecutable", "OtherWorker"), ("CFBundleVersion", "47"), ("CFBundleVersion", "48"),
+                ("SilentSnipWorkflowProtocolVersion", None), ("SilentSnipWorkflowProtocolVersion", True),
+                ("SilentSnipWorkflowProtocolVersion", 2), ("CFBundleURLTypes", []),
+                ("com.apple.proapps.MediaAssetProtocol", None)]:
+            with self.subTest(field=field, value=value):
+                info = copy.deepcopy(original)
+                if value is None:
+                    info.pop(field)
+                else:
+                    info[field] = value
+                self.write_info(app, info)
+                self.calls.clear()
+                with self.assertRaises(ValueError):
+                    MODULE.verify_worker(app, run=self.run_tool)
+                self.assertEqual(self.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

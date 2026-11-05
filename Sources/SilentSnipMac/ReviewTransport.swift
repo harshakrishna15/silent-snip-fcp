@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import SilentSnipCore
 
 /// A small, local control channel. No audio or project XML crosses this channel.
@@ -152,13 +153,14 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     public let provisional: Bool?
     public let canUpdateCuts: Bool?
     public let usesAudioSnapshot: Bool?
+    public let targetClipName: String?
 
     public init(request: UUID, revision: Int, state: String, message: String,
                 progress: Double? = nil,
                 summary: String? = nil, cuts: [ReviewCutResponse] = [], canApply: Bool = false,
                 canChangeSelection: Bool = false, canCancel: Bool = false, canHighlight: Bool = false, previewVisible: Bool? = nil, canRetryVerification: Bool? = nil,
                 settingsEdit: UUID? = nil, settings: ReviewWireSettings? = nil, output: String? = nil, provisional: Bool? = nil,
-                canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil) {
+                canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil, targetClipName: String? = nil) {
         version = ReviewWire.version; self.request = request; self.revision = revision
         self.state = state; self.message = message; self.progress = progress
         self.summary = summary; self.cuts = cuts
@@ -168,6 +170,7 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
         self.canRetryVerification = canRetryVerification
         self.settingsEdit = settingsEdit; self.settings = settings; self.output = output; self.provisional = provisional
         self.canUpdateCuts = canUpdateCuts; self.usesAudioSnapshot = usesAudioSnapshot
+        self.targetClipName = targetClipName
     }
 }
 
@@ -226,6 +229,11 @@ struct ReviewReconnectReply: Encodable {
             name: Notification.Name("local.silentsnip.review.reconnect.v1"), object: nil, suspensionBehavior: .deliverImmediately)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(receive(_:)),
             name: Notification.Name(ReviewWire.commandName), object: nil, suspensionBehavior: .deliverImmediately)
+        if WorkflowAvailability.isAdvertised(bundleIdentifier: Bundle.main.bundleIdentifier,
+            protocolVersion: Bundle.main.object(forInfoDictionaryKey: "SilentSnipWorkflowProtocolVersion")) {
+            DistributedNotificationCenter.default().addObserver(self, selector: #selector(availability(_:)),
+                name: Notification.Name(WorkflowAvailability.queryName), object: nil, suspensionBehavior: .deliverImmediately)
+        }
     }
 
     public func stop() {
@@ -271,7 +279,43 @@ struct ReviewReconnectReply: Encodable {
         handler?(command)
     }
 
+    @objc private func availability(_ notification: Notification) {
+        guard notification.userInfo == nil, let query = WorkflowAvailability.decode(notification.object),
+              let object = try? ReviewWire.encode(WorkflowAvailability.Reply(query: query)) else { return }
+        // This announces availability only. It does not create a job, expose
+        // state, bind a view, authorize a gesture, or accept a file path.
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name(WorkflowAvailability.responseName(view: query.view)),
+            object: object, userInfo: nil, deliverImmediately: true)
+    }
+
     deinit { DistributedNotificationCenter.default().removeObserver(self) }
+}
+
+enum WorkflowAvailability {
+    static let queryName = "local.silentsnip.workflow.capabilities.v1"
+    struct Query: Codable { let version: Int; let view: UUID; let nonce: UUID }
+    struct Reply: Encodable {
+        let version = 1
+        let view: UUID
+        let nonce: UUID
+        let `protocol` = 1
+        init(query: Query) { view = query.view; nonce = query.nonce }
+    }
+    static func responseName(view: UUID) -> String { "\(queryName).\(view.uuidString)" }
+    static func isAdvertised(bundleIdentifier: String?, protocolVersion: Any?) -> Bool {
+        guard bundleIdentifier == "local.silentsnip.app", let number = protocolVersion as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              "cCsSiIlLqQ".contains(String(cString: number.objCType)), number.int64Value == 1 else { return false }
+        return true
+    }
+    static func decode(_ object: Any?) -> Query? {
+        guard let object = object as? String, let data = object.data(using: .utf8), data.count <= 2048,
+              let dictionary = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(dictionary.keys) == ["version", "view", "nonce"],
+              let query = try? JSONDecoder().decode(Query.self, from: data), query.version == 1 else { return nil }
+        return query
+    }
 }
 
 public enum ReviewTransportError: LocalizedError {

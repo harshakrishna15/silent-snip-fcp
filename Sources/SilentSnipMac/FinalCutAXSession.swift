@@ -23,6 +23,8 @@ import Foundation
     var quietPrototypeStage: ((String) -> Void)?
 #endif
     var knownReviewWindows: [(element: AXUIElement, title: String)] = []
+    var workflowOrigin: WorkflowReviewOrigin?
+    var retainedWorkflowWindow: AXUIElement?
     typealias SuspendedReview = FinalCutReviewOwnership.Suspended
     var reviewOwnership = FinalCutReviewOwnership()
     var suspendedReview: SuspendedReview? {
@@ -30,7 +32,9 @@ import Foundation
         set { reviewOwnership.suspended = newValue }
     }
 
-    init(allowImportDialog: Bool = false, allowEmptyTimeline: Bool = false) throws {
+    init(allowImportDialog: Bool = false, allowEmptyTimeline: Bool = false,
+         workflowOrigin: WorkflowReviewOrigin? = nil,
+         inheritingWorkflowFrom previous: FinalCutAXSession? = nil) throws {
 #if DEBUG
         try QuietSharePrototype.pluginLease?.assertMayContinue()
 #endif
@@ -86,6 +90,8 @@ import Foundation
         // Empty sessions are used only to reopen a replaced project in the
         // browser. A normal session is required before exporting or editing it.
         self.timeline = timeline ?? window
+        if let workflowOrigin { try bindWorkflow(workflowOrigin) }
+        else if let previous { try inheritWorkflowPresentation(from: previous) }
         // Import verification owns the bounded dialog-settling policy. Other
         // entry points still require an unobstructed project before any action.
         guard allowImportDialog || currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut dialog before continuing.") }
@@ -114,11 +120,13 @@ import Foundation
     /// Import can temporarily remove the workspace from all AX attributes.
     /// Wait only for that condition; permission, dialog and identity failures
     /// propagate immediately. This never redelivers XML or confirms Replace.
-    static func forImport(allowImportDialog: Bool = true, allowEmptyTimeline: Bool) async throws -> FinalCutAXSession {
+    static func forImport(allowImportDialog: Bool = true, allowEmptyTimeline: Bool,
+                          inheritingWorkflowFrom previous: FinalCutAXSession? = nil) async throws -> FinalCutAXSession {
         let deadline = ProcessInfo.processInfo.systemUptime + 3
         while true {
             try Task.checkCancellation()
-            do { return try Self(allowImportDialog: allowImportDialog, allowEmptyTimeline: allowEmptyTimeline) }
+            do { return try Self(allowImportDialog: allowImportDialog, allowEmptyTimeline: allowEmptyTimeline,
+                                 inheritingWorkflowFrom: previous) }
             catch FinalCutCaptureError.projectWindowUnavailable {
                 guard ProcessInfo.processInfo.systemUptime < deadline else { throw FinalCutCaptureError.projectWindowUnavailable }
                 try await Task.sleep(for: .milliseconds(150))
@@ -347,7 +355,8 @@ import Foundation
                     title: title, recordedTitle: $0.title,
                     sameElement: CFEqual(window, $0.element))
             }
-            let review = modal == false || filePanel ? false : (retainedReview || isSilentSnipReviewWindow(window))
+            let review = modal == false || filePanel ? false : (retainedReview || isSilentSnipReviewWindow(window)
+                || isBoundWorkflowReviewWindow(window))
             if FinalCutWindowPolicy.isBlockingDialog(role: role, subrole: subrole, modal: modal, containsSilentSnipReview: review) {
                 blockers.append(window)
             }
