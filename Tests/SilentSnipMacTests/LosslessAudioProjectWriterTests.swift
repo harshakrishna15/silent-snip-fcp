@@ -16,8 +16,10 @@ final class LosslessAudioProjectWriterTests: XCTestCase {
         let output = try write(fixture(camera: false, music: true), audio: audio)
         let document = try TimelineParser.parse(data: output.xmlData)
         let audible = document.clips.filter { $0.enabled && $0.hasAudio }
-        XCTAssertEqual(audible.count, 2) // continuous spans; no split at visual primary boundaries
+        XCTAssertEqual(audible.count, 2) // continuous spans; no split at old primary boundaries
         XCTAssertTrue(audible.allSatisfy { $0.mediaURL == audio.url && !$0.hasVideo })
+        XCTAssertTrue(audible.allSatisfy { $0.isPrimaryStoryline && $0.lane == 0 && $0.parentID == nil },
+                      "The kept sound must occupy the primary storyline, rather than connect below gap anchors")
         XCTAssertEqual(audible.map(\.timelineRange), [range(0, 3), range(3, 9)])
         XCTAssertEqual(audible.map(\.sourceStart), [RationalTime(0), RationalTime(4)])
         XCTAssertEqual(audible.map { $0.timelineRange.duration }, [RationalTime(3), RationalTime(6)])
@@ -27,6 +29,267 @@ final class LosslessAudioProjectWriterTests: XCTestCase {
         XCTAssertTrue(try tree.nodes(forXPath: "//project/sequence/spine//adjust-volume").isEmpty)
         XCTAssertTrue(document.clips.filter { $0.mediaURL?.path == "/fixtures/music.wav" }.allSatisfy { !$0.hasAudio })
         XCTAssertEqual(try Data(contentsOf: audio.url), originalBytes)
+        try audio.validate()
+    }
+
+    func testAudioOnlyFullMixPreservesMarkersAndMutedConnectedMusicOnThePrimarySound() throws {
+        let input = fixture(camera: false, music: true)
+        let original = try TimelineParser.parse(data: input)
+        let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+        let output = try write(input, audio: audio)
+        let document = try TimelineParser.parse(data: output.xmlData)
+        let audible = document.clips.filter { $0.enabled && $0.hasAudio }
+        XCTAssertTrue(audible.allSatisfy { $0.isPrimaryStoryline && $0.parentID == nil })
+        XCTAssertEqual(document.projectTimecodeStart, RationalTime(3600))
+        XCTAssertEqual(document.frameDuration, original.frameDuration)
+        XCTAssertEqual(document.projectRange, range(0, 9))
+
+        let music = document.clips.filter { $0.mediaURL?.path == "/fixtures/music.wav" }
+        XCTAssertEqual(music.map(\.timelineRange), [range(2, 3), range(3, 7)])
+        XCTAssertEqual(music.map(\.sourceStart), [RationalTime(0), RationalTime(2)])
+        XCTAssertTrue(music.allSatisfy { !$0.isPrimaryStoryline && !$0.enabled && !$0.hasAudio && $0.lane == -1 })
+        let marker = try XCTUnwrap(document.markers.first { $0.value == "Keep me" })
+        XCTAssertEqual(document.markers.filter { $0.value == "Keep me" }.count, 1)
+        XCTAssertEqual(marker.timelinePosition, RationalTime(9, 4))
+
+        let tree = try XMLDocument(data: output.xmlData)
+        XCTAssertTrue(try tree.nodes(forXPath: "//project/sequence/spine/gap").isEmpty,
+                      "Original silent lead-in/out belongs to the captured mix, not empty primary anchors")
+        XCTAssertEqual(try TimelineParser.parse(data: input).fingerprint, original.fingerprint)
+    }
+
+    func testAudioOnlyFullMixPutsPacingGapBetweenPrimarySoundSegments() throws {
+        let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+        let gap = RationalTime(1, 2)
+        let output = try EditedProjectWriter.write(projectData: fixture(camera: false, music: true),
+            selection: selection, selectedRanges: cuts, outputName: "Primary sound with pause",
+            replacementGaps: [cuts[0]: gap], losslessAudio: audio)
+        let document = try TimelineParser.parse(data: output.xmlData)
+        let primary = document.clips.filter(\.isPrimaryStoryline)
+        let audible = document.clips.filter { $0.enabled && $0.hasAudio }
+        let silentGap = TimeRange(start: RationalTime(3), end: RationalTime(7, 2))
+        XCTAssertEqual(primary.map(\.kind), ["asset-clip", "gap", "asset-clip"])
+        XCTAssertEqual(primary.map(\.timelineRange), [range(0, 3), silentGap,
+                       .init(start: RationalTime(7, 2), end: RationalTime(19, 2))])
+        XCTAssertEqual(audible.map(\.sourceStart), [RationalTime(0), RationalTime(4)])
+        XCTAssertTrue(audible.allSatisfy { $0.isPrimaryStoryline && $0.parentID == nil && $0.mediaURL == audio.url })
+        XCTAssertTrue(audible.allSatisfy { $0.timelineRange.intersection(silentGap) == nil })
+        XCTAssertEqual(document.projectRange.end, RationalTime(19, 2))
+        XCTAssertEqual(output.report.insertedGapDuration, gap)
+
+        let music = document.clips.filter { $0.mediaURL?.path == "/fixtures/music.wav" }
+        XCTAssertEqual(music.map(\.timelineRange), [range(2, 3),
+                       .init(start: RationalTime(7, 2), end: RationalTime(15, 2))])
+        XCTAssertEqual(music.map(\.sourceStart), [RationalTime(0), RationalTime(2)])
+        XCTAssertTrue(music.allSatisfy { !$0.enabled && !$0.hasAudio })
+    }
+
+    func testFullMixPreservesConnectedVideoAttachedToAnAudioOnlySource() throws {
+        for enabled in [true, false] {
+            let input = Data(String(decoding: fixture(camera: false, music: true, connectedVideo: true), as: UTF8.self)
+                .replacingOccurrences(of: "name=\"Context\" lane=\"1\"",
+                                      with: "name=\"Context\" lane=\"1\" enabled=\"\(enabled ? 1 : 0)\"").utf8)
+            let original = try TimelineParser.parse(data: input)
+            let originalVideo = try XCTUnwrap(original.clips.first { $0.mediaURL?.path == "/fixtures/context.mov" })
+            let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+            let output = try write(input, audio: audio)
+            let document = try TimelineParser.parse(data: output.xmlData)
+            let video = try XCTUnwrap(document.clips.first { $0.mediaURL == originalVideo.mediaURL })
+            XCTAssertEqual(document.clips.filter { $0.mediaURL == originalVideo.mediaURL }.count, 1)
+            XCTAssertEqual(video.timelineRange, originalVideo.timelineRange)
+            XCTAssertEqual(video.sourceStart, originalVideo.sourceStart)
+            XCTAssertEqual(video.lane, originalVideo.lane)
+            XCTAssertEqual(video.enabled, originalVideo.enabled)
+            XCTAssertEqual(video.effectsFingerprint, originalVideo.effectsFingerprint)
+            XCTAssertTrue(video.hasVideo)
+            XCTAssertFalse(video.hasAudio)
+            XCTAssertTrue(document.clips.filter { $0.enabled && $0.hasAudio }
+                .allSatisfy { $0.mediaURL == audio.url && !$0.isPrimaryStoryline },
+                "Visible or disabled video must retain the existing visual layout and connected mix")
+        }
+    }
+
+    func testHostDemotionOfPrimaryPCMToConnectedAudioFailsStrictRoundTripVerification() throws {
+        let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+        let output = try write(fixture(camera: false, music: true), audio: audio)
+        let expected = try TimelineParser.parse(data: output.xmlData)
+        let expectedSound = expected.clips.filter { $0.enabled && $0.hasAudio }
+        XCTAssertEqual(expectedSound.count, 2)
+        XCTAssertTrue(expectedSound.allSatisfy(\.isPrimaryStoryline))
+        XCTAssertTrue(try ProjectRoundTripVerification.compare(expected: output.xmlData,
+            actual: output.xmlData, allowHostAssignedIdentity: true).verified)
+
+        let xml = try XMLDocument(data: output.xmlData)
+        let spine = try XCTUnwrap(xml.nodes(forXPath: "//project/sequence/spine").first as? XMLElement)
+        let primarySound = spine.elements(forName: "asset-clip").filter {
+            $0.attribute(forName: "ref")?.stringValue == expectedSound.first?.assetID
+        }
+        XCTAssertEqual(primarySound.count, expectedSound.count)
+        for clip in primarySound {
+            let position = clip.index
+            let sourceStart = try XCTUnwrap(clip.attribute(forName: "start")?.stringValue)
+            let gap = XMLElement(name: "gap")
+            for (key, value) in ["name": "Demoted sound anchor",
+                                 "offset": try XCTUnwrap(clip.attribute(forName: "offset")?.stringValue),
+                                 "start": sourceStart,
+                                 "duration": try XCTUnwrap(clip.attribute(forName: "duration")?.stringValue)] {
+                gap.addAttribute(XMLNode.attribute(withName: key, stringValue: value) as! XMLNode)
+            }
+            clip.detach()
+            clip.attribute(forName: "offset")?.stringValue = sourceStart
+            if let lane = clip.attribute(forName: "lane") { lane.stringValue = "-1" }
+            else { clip.addAttribute(XMLNode.attribute(withName: "lane", stringValue: "-1") as! XMLNode) }
+            gap.addChild(clip)
+            spine.insertChild(gap, at: position)
+        }
+        let actual = try TimelineParser.parse(data: xml.xmlData)
+        let actualSound = actual.clips.filter { $0.enabled && $0.hasAudio }
+        XCTAssertEqual(actualSound.map(\.timelineRange), expectedSound.map(\.timelineRange))
+        XCTAssertEqual(actualSound.map(\.sourceStart), expectedSound.map(\.sourceStart))
+        XCTAssertEqual(actualSound.map(\.mediaURL), expectedSound.map(\.mediaURL))
+        XCTAssertTrue(actualSound.allSatisfy { !$0.isPrimaryStoryline && $0.lane == -1 })
+        let report = try ProjectRoundTripVerification.compare(expected: output.xmlData,
+            actual: xml.xmlData, allowHostAssignedIdentity: true)
+        XCTAssertFalse(report.verified, "Identical sound is insufficient when the host changes the requested storyline placement")
+        XCTAssertNotEqual(report.expectedFingerprint, report.actualFingerprint)
+        let reportURL = audio.url.deletingLastPathComponent().appendingPathComponent("Demoted-Import-Verification.json")
+        XCTAssertThrowsError(try ProjectRoundTripVerification.verify(expected: output.xmlData,
+            actual: xml.xmlData, reportURL: reportURL, allowHostAssignedIdentity: true)) { error in
+            guard case EditedProjectWriterError.verificationFailed = error else {
+                return XCTFail("Expected strict imported-topology rejection, received \(error)")
+            }
+        }
+        let saved = try JSONDecoder().decode(ProjectRoundTripReport.self, from: Data(contentsOf: reportURL))
+        XCTAssertFalse(saved.verified)
+    }
+
+    func testAudioOnlyFullMixOrdersMutedRolesFromDifferentOriginalParentsByLane() throws {
+        let input = Data(String(decoding: fixture(camera: false, music: true), as: UTF8.self)
+            .replacingOccurrences(of: "name=\"Music\" lane=\"-1\"", with: "name=\"Music\" lane=\"-2\"")
+            .replacingOccurrences(of: "<effect id=\"fx\"", with: """
+            <asset id="room" name="Room Tone" start="0s" duration="10s" hasAudio="1" audioSources="1" audioChannels="2"><media-rep kind="original-media" src="file:///fixtures/room.wav"/></asset>
+            <effect id="fx"
+            """)
+            .replacingOccurrences(of: "<gap name=\"Lead in\" offset=\"3600s\" start=\"3600s\" duration=\"2s\"/>", with: """
+            <gap name="Lead in" offset="3600s" start="3600s" duration="2s"><asset-clip ref="room" name="Room Tone" lane="-1" offset="3600s" start="0s" duration="3/2s" audioRole="effects.roomtone"><filter-audio ref="fx"/></asset-clip></gap>
+            """).utf8)
+        let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+        let output = try write(input, audio: audio)
+        let document = try TimelineParser.parse(data: output.xmlData)
+        let sound = document.clips.filter { $0.enabled && $0.hasAudio }
+        XCTAssertEqual(sound.map(\.timelineRange), [range(0, 3), range(3, 9)])
+        XCTAssertTrue(sound.allSatisfy { $0.isPrimaryStoryline && $0.mediaURL == audio.url })
+        let music = document.clips.filter { $0.mediaURL?.path == "/fixtures/music.wav" }
+        XCTAssertEqual(music.map(\.timelineRange), [range(2, 3), range(3, 7)])
+        XCTAssertEqual(music.map(\.sourceStart), [RationalTime(0), RationalTime(2)])
+        XCTAssertTrue(music.allSatisfy { !$0.enabled && !$0.hasAudio && $0.lane == -2 })
+        let room = try XCTUnwrap(document.clips.first { $0.mediaURL?.path == "/fixtures/room.wav" })
+        XCTAssertEqual(room.timelineRange, .init(start: .zero, end: RationalTime(3, 2)))
+        XCTAssertEqual(room.sourceStart, .zero)
+        XCTAssertEqual(room.lane, -1)
+        XCTAssertFalse(room.enabled)
+        XCTAssertFalse(room.hasAudio)
+        let xml = try XMLDocument(data: output.xmlData)
+        let firstPrimary = try XCTUnwrap(xml.nodes(forXPath: "//project/sequence/spine/asset-clip").first as? XMLElement)
+        XCTAssertEqual(firstPrimary.elements(forName: "asset-clip").compactMap {
+            Int($0.attribute(forName: "lane")?.stringValue ?? "")
+        }, [-2, -1], "Merging old parent children must preserve Final Cut's native lane order")
+    }
+
+    func testAudioOnlyFullMixMergesClipNotesAndDeduplicatesIdenticalMetadata() throws {
+        let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+        let output = try write(fixtureWithMergedClipNotes(voiceMetadataValue: "same"), audio: audio)
+        let xml = try XMLDocument(data: output.xmlData)
+        let first = try XCTUnwrap(xml.nodes(forXPath: "//project/sequence/spine/asset-clip").first as? XMLElement)
+        let note = try XCTUnwrap(first.elements(forName: "note").first?.stringValue)
+        XCTAssertEqual(first.elements(forName: "note").count, 1)
+        XCTAssertTrue(note.contains("Lead-in note"))
+        XCTAssertTrue(note.contains("Voice note"))
+        let metadata = try XCTUnwrap(first.elements(forName: "metadata").first)
+        let shared = metadata.elements(forName: "md").filter {
+            $0.attribute(forName: "key")?.stringValue == "com.silentsnip.test.shared"
+        }
+        XCTAssertEqual(shared.count, 1, "Equivalent entries from merged source clips must not become duplicate keys")
+        XCTAssertEqual(shared.first?.attribute(forName: "value")?.stringValue, "same")
+        let children = (first.children ?? []).compactMap { $0 as? XMLElement }
+        XCTAssertEqual(children.first?.name, "note")
+        XCTAssertEqual(children.last?.name, "metadata")
+        XCTAssertTrue(try ProjectRoundTripVerification.compare(expected: output.xmlData, actual: output.xmlData).verified)
+    }
+
+    func testAudioOnlyFullMixRejectsConflictingMetadataInsteadOfDiscardingIt() throws {
+        let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+        XCTAssertThrowsError(try write(fixtureWithMergedClipNotes(voiceMetadataValue: "different"), audio: audio)) { error in
+            guard case EditedProjectWriterError.unsupported(let reason) = error else {
+                return XCTFail("Expected an explicit metadata conflict, received \(error)")
+            }
+            XCTAssertTrue(reason.contains("incompatible metadata"))
+            XCTAssertTrue(reason.contains("com.silentsnip.test.shared"))
+            XCTAssertTrue(reason.contains("not discarded"))
+        }
+        try audio.validate()
+    }
+
+    func testAudioOnlyFullMixPreservesZeroDurationKeywordAndRatingAtFinalEndpoint() throws {
+        let input = Data(String(decoding: fixture(camera: false), as: UTF8.self)
+            .replacingOccurrences(of: "<gap name=\"Lead out\" offset=\"3608s\" start=\"3600s\" duration=\"2s\"/>", with: """
+            <gap name="Lead out" offset="3608s" start="3600s" duration="2s"><keyword start="3602s" duration="0s" value="At end"/><rating start="3602s" duration="0s" value="favorite" note="At end"/></gap>
+            """).utf8)
+        let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+        let output = try write(input, audio: audio)
+        let document = try TimelineParser.parse(data: output.xmlData)
+        XCTAssertEqual(document.projectRange.end, RationalTime(9))
+        let xml = try XMLDocument(data: output.xmlData)
+        for (name, value) in [("keyword", "At end"), ("rating", "favorite")] {
+            let nodes = try xml.nodes(forXPath: "//project/sequence/spine/asset-clip/\(name)")
+            XCTAssertEqual(nodes.count, 1, "A zero-length \(name) at the project end must survive")
+            let annotation = try XCTUnwrap(nodes.first as? XMLElement)
+            XCTAssertEqual(annotation.attribute(forName: "value")?.stringValue, value)
+            XCTAssertEqual(try RationalTime.parse(try XCTUnwrap(annotation.attribute(forName: "duration")?.stringValue)), .zero)
+            let parent = try XCTUnwrap(annotation.parent as? XMLElement)
+            let offset = try RationalTime.parse(try XCTUnwrap(parent.attribute(forName: "offset")?.stringValue))
+            let sourceStart = try RationalTime.parse(try XCTUnwrap(parent.attribute(forName: "start")?.stringValue))
+            let localStart = try RationalTime.parse(try XCTUnwrap(annotation.attribute(forName: "start")?.stringValue))
+            let timelinePosition = try offset.subtracting(document.projectTimecodeStart)
+                .adding(localStart.subtracting(sourceStart))
+            XCTAssertEqual(timelinePosition, document.projectRange.end)
+        }
+    }
+
+    func testAudioOnlyFullMixKeepsFractionalPhysicalTailAsAnExactGapWithoutExtendingPCM() throws {
+        let frame = RationalTime(1001, 30_000)
+        let end = try frame.multiplied(by: RationalTime(1796))
+        let cut = TimeRange(start: try frame.multiplied(by: RationalTime(15)),
+                            end: try frame.multiplied(by: RationalTime(20)))
+        let input = Data("""
+        <fcpxml version="1.14"><resources>
+        <format id="f" frameDuration="1001/30000s"/>
+        <asset id="a" start="0s" duration="120s" hasAudio="1" audioSources="1" audioChannels="2"><media-rep kind="original-media" src="file:///fixtures/voice.wav"/></asset>
+        </resources><library><event><project name="Fractional audio" uid="AAAA0000-0000-4000-8000-000000000001"><sequence format="f" duration="\(time(end))" tcStart="3600s" audioLayout="stereo" audioRate="48k"><spine>
+        <asset-clip ref="a" offset="3600s" start="0s" duration="\(time(end))" audioRole="dialogue"/>
+        </spine></sequence></project></event></library></fcpxml>
+        """.utf8)
+        let audio = try pcm(frames: 2_876_473, timelineRange: .init(start: .zero, end: end), scope: .projectMix)
+        let output = try EditedProjectWriter.write(projectData: input,
+            selection: .init(timelineRange: .init(start: .zero, end: end)), selectedRanges: [cut],
+            outputName: "Fractional primary sound", losslessAudio: audio)
+        let document = try TimelineParser.parse(data: output.xmlData)
+        let rendered = document.clips.filter { $0.mediaURL == audio.url }
+        XCTAssertEqual(rendered.count, 2)
+        XCTAssertTrue(rendered.allSatisfy { $0.isPrimaryStoryline && $0.parentID == nil && $0.lane == 0 })
+        let last = try XCTUnwrap(rendered.last)
+        XCTAssertEqual(try last.sourceStart.adding(last.timelineRange.checkedDuration()), RationalTime(2_876_473, 48_000))
+        let totalPCM = try rendered.reduce(RationalTime.zero) { try $0.adding($1.timelineRange.checkedDuration()) }
+        XCTAssertEqual(totalPCM, RationalTime(2_868_465, 48_000))
+        let gap = try XCTUnwrap(document.clips.first { $0.isPrimaryStoryline && $0.kind == "gap" })
+        XCTAssertEqual(document.clips.filter { $0.isPrimaryStoryline && $0.kind == "gap" }.count, 1)
+        XCTAssertEqual(gap.timelineRange.start, last.timelineRange.end)
+        XCTAssertEqual(gap.timelineRange.end, document.projectRange.end)
+        XCTAssertEqual(try gap.timelineRange.checkedDuration(), RationalTime(1, 80_000))
+        XCTAssertTrue(try gap.timelineRange.checkedDuration() < RationalTime(1, audio.sampleRate))
+        XCTAssertEqual(document.projectRange.end, try end.subtracting(cut.checkedDuration()))
+        XCTAssertEqual(document.projectTimecodeStart, RationalTime(3600))
+        XCTAssertEqual(document.frameDuration, frame)
         try audio.validate()
     }
 
@@ -236,9 +499,50 @@ final class LosslessAudioProjectWriterTests: XCTestCase {
         XCTAssertNil(explicitNil.report.losslessAudio)
     }
 
+    func testAudioOnlyPrimaryRebuildRefusesToDiscardAnUnhandledMarkerOnAnUntouchedGap() throws {
+        let input = Data(String(decoding: fixture(camera: false), as: UTF8.self)
+            .replacingOccurrences(of: "<gap name=\"Lead in\" offset=\"3600s\" start=\"3600s\" duration=\"2s\"/>",
+                with: "<gap name=\"Lead in\" offset=\"3600s\" start=\"3600s\" duration=\"2s\"><hidden-clip-marker/></gap>").utf8)
+        let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+        XCTAssertThrowsError(try write(input, audio: audio)) { error in
+            guard case EditedProjectWriterError.unsupported(let reason) = error else {
+                return XCTFail("Expected explicit preservation refusal, received \(error)")
+            }
+            XCTAssertTrue(reason.contains("hidden-clip-marker"))
+            XCTAssertTrue(reason.contains("cannot be preserved"))
+        }
+    }
+
+    func testAudioOnlyPrimarySoundUsesCapturedChannelRoutingWithoutApplyingItAgain() throws {
+        let input = Data(String(decoding: fixture(camera: false, music: true), as: UTF8.self)
+            .replacingOccurrences(of: "<marker start=\"421/4s\" value=\"Keep me\"/><filter-audio ref=\"fx\">",
+                with: "<marker start=\"421/4s\" value=\"Keep me\"/><audio-channel-source srcCh=\"1\" enabled=\"1\" role=\"dialogue.voice\"/><filter-audio ref=\"fx\">").utf8)
+        let original = try TimelineParser.parse(data: input)
+        XCTAssertTrue(try original.selectedTarget(selection, requireExistingMedia: false).hasAudio)
+        let audio = try pcm(seconds: 10, start: 0, scope: .projectMix)
+        let output = try write(input, audio: audio)
+        let result = try TimelineParser.parse(data: output.xmlData)
+        let audible = result.clips.filter { $0.enabled && $0.hasAudio }
+        XCTAssertEqual(audible.map(\.timelineRange), [range(0, 3), range(3, 9)])
+        XCTAssertEqual(audible.map(\.sourceStart), [RationalTime(0), RationalTime(4)])
+        XCTAssertTrue(audible.allSatisfy { $0.isPrimaryStoryline && $0.mediaURL == audio.url })
+        let xml = try XMLDocument(data: output.xmlData)
+        XCTAssertTrue(try xml.nodes(forXPath: "//project/sequence/spine/asset-clip/audio-channel-source").isEmpty)
+        XCTAssertEqual(try TimelineParser.parse(data: input).fingerprint, original.fingerprint)
+    }
+
     private func write(_ input: Data, audio: LosslessRenderedAudio) throws -> EditedProjectOutput {
         try EditedProjectWriter.write(projectData: input, selection: selection,
             selectedRanges: cuts, outputName: "Baked result", losslessAudio: audio)
+    }
+
+    private func fixtureWithMergedClipNotes(voiceMetadataValue: String) -> Data {
+        Data(String(decoding: fixture(camera: false), as: UTF8.self)
+            .replacingOccurrences(of: "<gap name=\"Lead in\" offset=\"3600s\" start=\"3600s\" duration=\"2s\"/>", with: """
+            <gap name="Lead in" offset="3600s" start="3600s" duration="2s"><note>Lead-in note</note><metadata><md key="com.silentsnip.test.shared" value="same"/></metadata></gap>
+            """)
+            .replacingOccurrences(of: "audioRole=\"dialogue.voice\"><adjust-volume", with: "audioRole=\"dialogue.voice\"><note>Voice note</note><adjust-volume")
+            .replacingOccurrences(of: "</filter-audio></asset-clip>", with: "</filter-audio><metadata><md key=\"com.silentsnip.test.shared\" value=\"\(voiceMetadataValue)\"/></metadata></asset-clip>").utf8)
     }
 
     private func fixture(camera: Bool, music: Bool = false, connectedVideo: Bool = false) -> Data {

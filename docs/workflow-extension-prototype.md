@@ -2,17 +2,36 @@
 
 November 4, 2026. Branch: `codex/workflow-extension-prototype`.
 
-**Installed frontend 8 / worker 52 passed native Analyze → review → Apply and exact PCM verification.** The one-minute delay/detector/connected-role fixture produced a verified 59.7-second result in **34.4365 seconds of helper processing**. Earlier frontend 7 / worker 51 five-minute gap and one-minute removal runs remain separately versioned below. The three-second complete-flow target remains unmet.
+**Installed frontend 8 / worker 53 passed native removal and gap output with processed PCM directly in the audio-only primary storyline.** Both generated results passed strict imported-layout checks, independent exact native PCM comparison, and fresh post-Apply original-project verification. Video projects keep the existing video-primary path. The three-second complete-flow target remains unmet; prior version-52/51 evidence is retained separately below.
 
 **Milestone 1 passed native validation in build 5** for the hosted window, project/library/playhead observation, independent per-project settings, restart/reopen persistence, and reachable controls. Those checks remain historical evidence; they did not run audio analysis, Share, or timeline edits.
 
+## Worker 53: audio-only PCM in the primary storyline
+
+Fresh Apply output places retained processed PCM clips directly in the primary storyline only when the entire timeline has **no video occurrences**, including disabled and connected video. Gap mode inserts real pacing gaps between those clips. Projects containing video keep their existing primary storyline and rendered-audio routing. The original project and its live effects stay unchanged; existing cleaned projects are not rearranged retroactively. Frontend **8**, Audio Unit **29**, and the hosted Analyze → review → Apply flow are unchanged.
+
+Worker 53 passed **645 Swift tests** (14 Workflow, 563 Mac, 68 Core; three existing opt-in skips, zero failures) and **120 Python tests**. Regressions cover primary PCM and real gaps, supported attached metadata/connections, rejected conflicting or unknown metadata, fractional physical audio tails, and rejection of a host-imported result that demotes PCM from the primary storyline.
+
+Both native runs used a disposable generated **60-second Gate → Limiter → AUDelay → Silent Snip Audio** project with connected audio roles in the required `Cutdown Integration.fcpbundle`:
+
+| Mode / request | Native primary layout | Result | Exact native stereo PCM | Helper time |
+| --- | --- | ---: | ---: | ---: |
+| Remove / `EA77C09E` | 2 direct PCM clips, no gaps or connected PCM | 59.7 s | 2,865,600 frames | 33.8701 s |
+| Gaps / `62BC31C0` | 2 direct PCM clips + one real 1-second gap, no connected PCM | 60.7 s | 2,913,600 frames: 2,865,600 retained + 48,000 positive-zero frames | 33.2739 s |
+
+The native **24-bit stereo 48 kHz** exports matched each request's captured continuous mix exactly, without tolerance, timing shift, or requested resampling. Expected, imported-verification, and native-export XML all retain direct primary PCM. The source note remains on both PCM segments; the marker maps to **0.7 seconds** in removal and **1.7 seconds** with the gap. Initial, final pre-import, and fresh post-both-Apply original XML match except regenerated media bookmarks, while media URLs, encoded hashes, and all saved identity/mutation stamps match independently. The original effects/roles and actual bare detector remain intact; native nondefault detector-state preservation and cross-render determinism are not established.
+
+Combined facts are recorded in `build/PrimaryStoryline53/Combined-Native-Facts.json`. Per-request evidence is under `build/PrimaryStoryline53/Native-{Remove-EA77C09E,Gaps-62BC31C0}`, including `Native-Summary.json`, `Native-PCM-vs-Captured-Mix.json`, fresh `Original-After-Apply.fcpxml`, and evidence manifests. `Package53.json`, `Package53-Archive.json`, and `Install53.json` pin the installed worker/ZIP and unchanged frontend/AU. Post-export `After-Final-Native53-Preservation.json` passed worker/ZIP hashes, unchanged frontend 8/AU29 bytes, preserved worker directory identity, deep signatures, the existing AU registration path, and accessible command-set/export-preset fingerprints. Protected preferences were not retried; selected command set, default destination, and complete preference equality remain unverified. These worker-53 native checks used audio-only fixtures; a new native video run was not part of this validation. Helper times exclude frontend/startup latency and human review; no three-second, general speedup, or universal-effect claim follows.
+
 ## Milestone 2 checkpoint
 
-Frontend **8** and worker **52** are installed and match their verified package hashes; Audio Unit **29** remains byte-identical to build 47. The frontend provides explicit **Analyze Audio**, cut review/selection, **Apply**, **Cancel**, and existing-result **Retry Verification**. It delegates processing to `local.silentsnip.app` using workflow protocol **1**; the extension's SDK access remains inspection-only. Explicit Analyze, Apply, and Retry actions activate and wait for the exact Final Cut process before dispatch. Worker authorization still requires the native window/gesture, project identity, selected clip, and fresh project XML; settings edits invalidate an idle review, busy temporary projects defer rebinding, and retryable imported results retain recovery.
+Frontend **8** and worker **53** are installed and match their verified package hashes; Audio Unit **29** remains byte-identical to build 47. The frontend provides explicit **Analyze Audio**, cut review/selection, **Apply**, **Cancel**, and existing-result **Retry Verification**. It delegates processing to `local.silentsnip.app` using workflow protocol **1**; the extension's SDK access remains inspection-only. Explicit Analyze, Apply, and Retry actions activate and wait for the exact Final Cut process before dispatch. Worker authorization still requires the native window/gesture, project identity, selected clip, and fresh project XML; settings edits invalidate an idle review, busy temporary projects defer rebinding, and retryable imported results retain recovery.
 
-Automated checks passed **634 Swift tests** (14 Workflow, 552 Mac, 68 Core; **three existing opt-in skips**, zero failures), **120 Python tests**, **25 controller groups / 376 assertions**, and **14 review-client groups / 131 assertions**. These include no-detector analysis, preservation of different serialized detector settings, activation/cancellation, stale callbacks, and recovery guards. The controller/client harnesses use fake dependencies without live Final Cut, helper launches, distributed notifications, or settings files.
+Current automated checks passed **645 Swift tests** (14 Workflow, 563 Mac, 68 Core; **three existing opt-in skips**, zero failures), **120 Python tests**, **25 controller groups / 376 assertions**, and **14 review-client groups / 131 assertions**. These include no-detector analysis, preservation of different serialized detector settings, activation/cancellation, stale callbacks, and recovery guards. The controller/client harnesses use fake dependencies without live Final Cut, helper launches, distributed notifications, or settings files.
 
-### Final installed native flow: frontend 8 / worker 52
+### Historical frontend 8 / worker 52 native flow
+
+Worker 52’s recorded full suite passed **634 Swift tests** (14 Workflow, 552 Mac, 68 Core; three existing skips) and **120 Python tests**.
 
 Request `D2DCF0E7-38FC-4FB1-BF1E-C61ECC565381` completed hosted Analyze → review → Apply in the required library using **-45 dBFS / 0.3 s minimum / 0.1 s before / 0.1 s after / Remove Silence**. The 60-second **Gate → Limiter → AUDelay → Silent Snip Audio** project included connected Music and custom Room Tone. One selected **0.3-second** cut produced **59.7 seconds**. Every one of the native **2,865,600 stereo 24-bit/48 kHz output frames** matched this request's captured continuous mix exactly, with no tolerance, shift, or requested resampling. Expected and actual decoded PCM SHA-256 is `f90b844a70e88334bc94eb98fc8ad11ce39c1701ce26143c2b2ee6c08a3fb4b4`.
 
@@ -42,9 +61,9 @@ Helper timing was **13.6420 seconds Analyze + 20.5065 seconds verified Apply = 3
 
 ### Installation, earlier failures, and preservation
 
-`Package-Frontend8-Worker52.json` and `Install-Frontend8-Worker52.json` in `build/WorkflowPrototype/Milestone2` record the current package/deep-signature checks, installed hash equality, and preserved outer app-directory inodes. The earlier `Package-Frontend7-Worker51.json` / `Install-Frontend7-Worker51.json` records remain attached to the two full native fidelity runs. Existing containing-app directory inodes and the worker/Share receiver path were preserved; no shortcut or Share destination was added. The user authenticated and refreshed the existing worker control-access grant. Earlier worker-49 permission failures and worker-50/51 foreground failures remain recorded separately; they were not successful analysis. Frontend 7 resolved the observed foreground handoff for these two complete native runs.
+`Package-Frontend8-Worker52.json` and `Install-Frontend8-Worker52.json` in `build/WorkflowPrototype/Milestone2` record the historical version-52 package/deep-signature checks, installed hash equality, and preserved outer app-directory inodes. The earlier `Package-Frontend7-Worker51.json` / `Install-Frontend7-Worker51.json` records remain attached to the two full native fidelity runs. Existing containing-app directory inodes and the worker/Share receiver path were preserved; no shortcut or Share destination was added. The user authenticated and refreshed the existing worker control-access grant. Earlier worker-49 permission failures and worker-50/51 foreground failures remain recorded separately; they were not successful analysis. Frontend 7 resolved the observed foreground handoff for these two complete native runs.
 
-`After-Final-Native8-Worker52-Preservation.json`, captured after the final exports, confirms that installed worker 52 and the new ZIP match the verified package, Audio Unit 29 bytes match build 47, and its single registration remains at the same installed path. Accessible command-set/export-preset file sets and bytes are unchanged; identical encoded bytes establish unchanged parsed values. Protected Final Cut preferences were **not retried**. Current selected command set, default Share destination, global import preferences, and complete preference equality remain unverified by this read-only audit. Earlier installed contents and failed diagnostic reports remain preserved. The earlier two native runs remain scoped to frontend 7 / worker 51; the final run is independently recorded for frontend 8 / worker 52.
+`After-Final-Native8-Worker52-Preservation.json`, captured after the historical version-52 exports, confirmed that its installed worker and ZIP matched the verified package, Audio Unit 29 bytes match build 47, and its single registration remains at the same installed path. Accessible command-set/export-preset file sets and bytes are unchanged; identical encoded bytes establish unchanged parsed values. Protected Final Cut preferences were **not retried**. Current selected command set, default Share destination, global import preferences, and complete preference equality remain unverified by this read-only audit. Earlier installed contents and failed diagnostic reports remain preserved. The earlier two native runs remain scoped to frontend 7 / worker 51; the final run is independently recorded for frontend 8 / worker 52.
 
 ## Scope and host support
 
@@ -58,7 +77,7 @@ The first native host connection returned Apple Event permission error `-1743` w
 
 ## Build and evidence
 
-`Scripts/build-workflow-prototype.sh` builds the model with the shared `build/swift` cache and assembles `build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app`. It does not install or register that app. Worker builds separately produce `build/App/Silent Snip.app` and `dist/Silent Snip.zip`. The final installation moved both staged apps' contents into their existing installed directories; those staging app copies are now absent. Current verification uses the installed executables, recorded package hashes, and worker ZIP. Frontend 8 is paired here with compatible worker 52; an inert staging bundle does not advertise the Workflow capability.
+`Scripts/build-workflow-prototype.sh` builds the model with the shared `build/swift` cache and assembles `build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app`. It does not install or register that app. Worker builds separately produce `build/App/Silent Snip.app` and `dist/Silent Snip.zip`. The final installation moved both staged apps' contents into their existing installed directories; those staging app copies are now absent. Current verification uses the installed executables, recorded package hashes, and worker ZIP. Frontend 8 is now paired with compatible worker 53; an inert staging bundle does not advertise the Workflow capability.
 
 For a local developer build:
 
@@ -98,7 +117,7 @@ In final build-5 testing, B restored **-32 / 0.8 / 0.2 / 0.25 / Gaps** and **0.0
 
 Recorded automated checks passed **614 Swift tests** with **three existing opt-in skips and zero failures**, **117 Python tests**, and the final **11 controller groups / 181 assertions**. The controller harness uses no Final Cut instance, windows, events, or settings files. Its late-callback, permission, layout, and persistence guards are separate from the native observations above. Library-identity isolation and pending-operation races have offline coverage; they were not tested in another live library or represented as native timing-race tests.
 
-Evidence is retained under `build/WorkflowPrototype`: final `Native-M1.json`, `Install-5.json`, `Package-Verification-5.json`, `Baseline.json`, `After-Preservation.json`, `UI-Baseline.json`, `Swift-Tests.log`, `Python-Tests.log`, `Controller-Tests-Final.log`, and the earlier installation/package/native-connection records. Build 5's verified container hash begins `a09caa0c` and ends `61440`; its extension hash begins `1df54a55` and ends `1f5500`. The installed build-5 extension matched its verified package. `Install-5.json` records the earlier installation stage; `Native-M1.json` supplies the later final native result. These build-5 preservation checks precede the separate worker-52 installation recorded above.
+Evidence is retained under `build/WorkflowPrototype`: final `Native-M1.json`, `Install-5.json`, `Package-Verification-5.json`, `Baseline.json`, `After-Preservation.json`, `UI-Baseline.json`, `Swift-Tests.log`, `Python-Tests.log`, `Controller-Tests-Final.log`, and the earlier installation/package/native-connection records. Build 5's verified container hash begins `a09caa0c` and ends `61440`; its extension hash begins `1df54a55` and ends `1f5500`. The installed build-5 extension matched its verified package. `Install-5.json` records the earlier installation stage; `Native-M1.json` supplies the later final native result. These build-5 preservation checks precede the later worker-53 installation recorded above.
 
 ## Regression protocol
 
@@ -119,14 +138,15 @@ If protected preference access later becomes available, compare parsed values se
 | --- | --- |
 | Apple Workflow Extensions SDK 1.0.3 installed | Verified metadata |
 | Production build-47 preservation baseline | Recorded before prototype installation |
-| Prototype packaging/build validation | Frontend 8 / worker 52 passed; installed/ZIP hashes, deep signatures, and preservation verified; build 5 retained historically |
+| Prototype packaging/build validation | Frontend 8 / worker 53 passed; installed/ZIP hashes, deep signatures, and post-export preservation verified |
 | Native Final Cut extension load and project/playhead observation | Build 5 passed; earlier functional checks retained |
 | Native per-project settings persistence and isolation | Build 5 passed A/B save/switch/reopen; build 3 passed host restart |
 | Native layout and complete control reachability | Build 5 passed at 840 × 477 points using public AX scrolling; earlier failures retained |
-| Automated model, packaging, controller, and client checks | 634 Swift / 120 Python / 25 controller groups / 14 client groups passed as scoped above |
+| Automated model, packaging, controller, and client checks | Worker 53: 645 Swift / 120 Python; unchanged frontend: 25 controller groups / 14 client groups |
 | Native setup/preference comparison | Production/setup-file checks passed; protected preferences and active command-set selection remain limited |
 | Native Workflow Analyze → review → Apply and audio fidelity | Frontend 7 / worker 51 passed five-minute Gate → Limiter/no-detector gaps and one-minute delay/detector/connected-role removal, with exact native PCM |
-| Final frontend 8 / worker 52 native load/Analyze/Apply check | Passed with exact native PCM, 30-check original/source audit, no-selection error check, and settings restoration through project navigation; close/reopen unverified |
+| Worker 53 audio-only primary PCM | Removal and real-gap modes passed native layout, exact PCM, metadata/source, and fresh post-Apply original checks |
+| Historical frontend 8 / worker 52 native flow | Passed as recorded; frontend-8 close/reopen remains unverified |
 | Three-second complete-flow target and universal effect compatibility | Not established |
 
-Milestone 1 remains complete for its recorded window/observation/settings scope. Milestone 2 is validated for the recorded hosted Analyze/review/Apply fixtures, including final frontend 8 / worker 52. The throughput goal and universal effect compatibility remain unestablished.
+Milestone 1 remains complete for its recorded window/observation/settings scope. Milestone 2 is validated for the recorded hosted Analyze/review/Apply fixtures, including worker 53 primary-PCM removal and gaps. The throughput goal and universal effect compatibility remain unestablished.

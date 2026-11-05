@@ -13,6 +13,11 @@ enum LosslessAudioProjectWriter {
         let original: TimeRange
         let result: TimeRange
     }
+    private struct PrimaryAudioPiece {
+        let range: TimeRange
+        let sourceStart: RationalTime
+        let node: XMLElement
+    }
     private struct VideoEvidence: Equatable {
         let range: TimeRange
         let sourceStart: RationalTime
@@ -77,6 +82,10 @@ enum LosslessAudioProjectWriter {
         }
         let wantedVideo = try videoEvidence(before, spine: spine)
         let sourceStreams = SourceStreams(resources: resources)
+        // An audio-only project has no picture edit to keep in the primary
+        // storyline. Its continuous retained PCM should be the primary edit,
+        // rather than connected sound underneath otherwise empty gap anchors.
+        let primaryMix = audio.scope == .projectMix && !before.clips.contains(where: \.hasVideo)
         let assetID = "silentsnip-processed-" + UUID().uuidString
         let asset = XMLElement(name: "asset")
         for (key, value) in ["id": assetID, "name": "Original sound", "start": "0s",
@@ -95,54 +104,59 @@ enum LosslessAudioProjectWriter {
         if audio.scope == .projectMix {
             let mappings = try projectMappings(original.projectRange,
                 cuts: base.report.selectedRanges, gaps: replacementGaps)
-            // Resolve source nodes before changing paths or adding new children.
-            let roots = children(spine)
-            let primary = before.clips.filter(\.isPrimaryStoryline)
-            guard primary.count == roots.count else {
-                throw EditedProjectWriterError.verificationFailed("processed mix primary items are ambiguous")
-            }
-            var parents: [(clip: TimelineClip, node: XMLElement)] = []
-            for (clip, oldNode) in zip(primary, roots) {
-                let parent: XMLElement
-                if clip.hasVideo && clip.enabled {
-                    parent = oldNode
-                    try muteOriginalTree(parent, sources: sourceStreams)
-                } else if clip.kind == "gap" && clip.enabled {
-                    parent = oldNode
-                    try muteOriginalTree(parent, sources: sourceStreams)
-                } else {
-                    // Audio-only originals cannot become video-only assets.
-                    // An enabled gap provides a neutral anchor for the native
-                    // mix. A previously disabled video's complete node remains
-                    // disabled inside it, preserving its invisible source edit.
-                    parent = try gap(replacing: oldNode, clip: clip, sources: sourceStreams)
-                    let index = oldNode.index
-                    oldNode.detach()
-                    spine.insertChild(parent, at: index)
+            if primaryMix {
+                expectedAudio = try replaceAudioOnlyPrimary(spine: spine, document: before,
+                    mappings: mappings, assetID: assetID, audio: audio, sources: sourceStreams)
+            } else {
+                // Resolve source nodes before changing paths or adding new children.
+                let roots = children(spine)
+                let primary = before.clips.filter(\.isPrimaryStoryline)
+                guard primary.count == roots.count else {
+                    throw EditedProjectWriterError.verificationFailed("processed mix primary items are ambiguous")
                 }
-                parents.append((clip, parent))
-            }
-            // Visual frame boundaries need not fall on audio samples (29.97
-            // fps is a common example). Keep each continuous retained mix span
-            // intact and anchor it once, allowing normal connected audio to
-            // extend across subsequent primary clips. Only reviewed cut-grid
-            // boundaries may split the native PCM.
-            for mapping in mappings {
-                let resultFrame = try mapping.result.start.multiplied(by: RationalTime(audio.sampleRate))
-                guard resultFrame.denominator == 1 else {
-                    throw EditedProjectWriterError.unsupported("the pacing gap places preserved sound between native PCM samples; no resampling or shifted audio was generated")
+                var parents: [(clip: TimelineClip, node: XMLElement)] = []
+                for (clip, oldNode) in zip(primary, roots) {
+                    let parent: XMLElement
+                    if clip.hasVideo && clip.enabled {
+                        parent = oldNode
+                        try muteOriginalTree(parent, sources: sourceStreams)
+                    } else if clip.kind == "gap" && clip.enabled {
+                        parent = oldNode
+                        try muteOriginalTree(parent, sources: sourceStreams)
+                    } else {
+                        // Audio-only originals cannot become video-only assets.
+                        // An enabled gap provides a neutral anchor for the native
+                        // mix. A previously disabled video's complete node remains
+                        // disabled inside it, preserving its invisible source edit.
+                        parent = try gap(replacing: oldNode, clip: clip, sources: sourceStreams)
+                        let index = oldNode.index
+                        oldNode.detach()
+                        spine.insertChild(parent, at: index)
+                    }
+                    parents.append((clip, parent))
                 }
-                guard let parent = parents.first(where: { $0.clip.timelineRange.contains(mapping.result.start) }) else {
-                    throw EditedProjectWriterError.verificationFailed("the retained native mix has no surviving primary attachment")
+                // Visual frame boundaries need not fall on audio samples (29.97
+                // fps is a common example). Keep each continuous retained mix span
+                // intact and anchor it once, allowing normal connected audio to
+                // extend across subsequent primary clips. Only reviewed cut-grid
+                // boundaries may split the native PCM.
+                for mapping in mappings {
+                    let resultFrame = try mapping.result.start.multiplied(by: RationalTime(audio.sampleRate))
+                    guard resultFrame.denominator == 1 else {
+                        throw EditedProjectWriterError.unsupported("the pacing gap places preserved sound between native PCM samples; no resampling or shifted audio was generated")
+                    }
+                    guard let parent = parents.first(where: { $0.clip.timelineRange.contains(mapping.result.start) }) else {
+                        throw EditedProjectWriterError.verificationFailed("the retained native mix has no surviving primary attachment")
+                    }
+                    let source = try audio.sourceRange(for: mapping.original)
+                    let offset = try nodeTime(parent.node, "start")
+                        .adding(mapping.result.start.subtracting(parent.clip.timelineRange.start))
+                    let physicalRange = TimeRange(start: mapping.result.start,
+                        end: try mapping.result.start.adding(source.checkedDuration()))
+                    try attachAudio(to: parent.node, assetID: assetID, offset: offset,
+                                    source: source, role: "dialogue")
+                    expectedAudio.append((physicalRange, source))
                 }
-                let source = try audio.sourceRange(for: mapping.original)
-                let offset = try nodeTime(parent.node, "start")
-                    .adding(mapping.result.start.subtracting(parent.clip.timelineRange.start))
-                let physicalRange = TimeRange(start: mapping.result.start,
-                    end: try mapping.result.start.adding(source.checkedDuration()))
-                try attachAudio(to: parent.node, assetID: assetID, offset: offset,
-                                source: source, role: "dialogue")
-                expectedAudio.append((physicalRange, source))
             }
         } else {
             for segment in base.report.retainedSegments {
@@ -206,6 +220,7 @@ enum LosslessAudioProjectWriter {
                 $0.timelineRange == expected.range && $0.sourceStart == expected.source.start
                     && $0.hasAudio && !$0.hasVideo && $0.enabled && $0.mediaURL == audio.url
                     && $0.audioFadeIn == .zero && $0.audioFadeOut == .zero
+                    && (!primaryMix || ($0.isPrimaryStoryline && $0.parentID == nil && $0.lane == 0))
             }), let renderedNode = node(at: rendered[index].id, spine: afterSpine),
                   !children(renderedNode).contains(where: { audioNodes.contains($0.name ?? "") }) else {
                 throw EditedProjectWriterError.verificationFailed("processed replacement changed PCM source mapping or applied additional processing")
@@ -222,10 +237,246 @@ enum LosslessAudioProjectWriter {
             guard after.clips.filter({ $0.enabled && $0.hasAudio }).allSatisfy({ $0.assetID == assetID }) else {
                 throw EditedProjectWriterError.verificationFailed("original audio would play alongside the processed project mix")
             }
+            if primaryMix { try verifyAudioOnlyContext(before: before, after: after) }
         }
         var report = base.report
         report.losslessAudio = audio
         return EditedProjectOutput(xmlData: data, report: report)
+    }
+
+    private static func replaceAudioOnlyPrimary(spine: XMLElement, document: TimelineDocument,
+                                                mappings: [Mapping], assetID: String,
+                                                audio: LosslessRenderedAudio, sources: SourceStreams) throws
+        -> [(range: TimeRange, source: TimeRange)] {
+        let roots = children(spine)
+        let primary = document.clips.filter(\.isPrimaryStoryline)
+        guard roots.count == primary.count else {
+            throw EditedProjectWriterError.verificationFailed("processed mix primary items are ambiguous")
+        }
+        var pieces: [PrimaryAudioPiece] = []
+        var expected: [(range: TimeRange, source: TimeRange)] = []
+        var cursor = document.projectRange.start
+        func appendGap(until end: RationalTime) throws {
+            guard end >= cursor else {
+                throw EditedProjectWriterError.verificationFailed("processed primary sound overlaps another retained interval")
+            }
+            guard end > cursor else { return }
+            let node = XMLElement(name: "gap")
+            set(node, "name", "Gap")
+            try set(node, "offset", cursor.adding(document.projectTimecodeStart))
+            try set(node, "start", RationalTime(3600))
+            try set(node, "duration", end.subtracting(cursor))
+            pieces.append(.init(range: .init(start: cursor, end: end), sourceStart: RationalTime(3600), node: node))
+            cursor = end
+        }
+        for mapping in mappings {
+            let resultFrame = try mapping.result.start.multiplied(by: RationalTime(audio.sampleRate))
+            guard resultFrame.denominator == 1 else {
+                throw EditedProjectWriterError.unsupported("the pacing gap places preserved sound between native PCM samples; no resampling or shifted audio was generated")
+            }
+            try appendGap(until: mapping.result.start)
+            let source = try audio.sourceRange(for: mapping.original)
+            let end = try mapping.result.start.adding(source.checkedDuration())
+            guard end <= mapping.result.end else {
+                throw EditedProjectWriterError.verificationFailed("processed primary sound exceeds its retained project interval")
+            }
+            let node = XMLElement(name: "asset-clip")
+            set(node, "name", "Original sound")
+            set(node, "ref", assetID)
+            set(node, "audioRole", "dialogue")
+            try set(node, "offset", mapping.result.start.adding(document.projectTimecodeStart))
+            try set(node, "start", source.start)
+            try set(node, "duration", source.checkedDuration())
+            let physicalRange = TimeRange(start: mapping.result.start, end: end)
+            pieces.append(.init(range: physicalRange, sourceStart: source.start, node: node))
+            expected.append((physicalRange, source))
+            cursor = end
+        }
+        // The native WAV can end less than one sample before a fractional
+        // project tail. Keep that exact logical remainder as a gap, without
+        // extending, rounding, or resampling the preserved sound.
+        try appendGap(until: document.projectRange.end)
+        guard !pieces.isEmpty else {
+            throw EditedProjectWriterError.verificationFailed("processed primary sound has no retained samples")
+        }
+        func owner(at position: RationalTime) throws -> Int {
+            if let index = pieces.firstIndex(where: { $0.range.contains(position) }) { return index }
+            if position == document.projectRange.end { return pieces.count - 1 }
+            throw EditedProjectWriterError.unsupported("an existing annotation or connection lies outside the cleaned project")
+        }
+        let connections = document.clips.filter { !$0.isPrimaryStoryline }
+        for clip in connections {
+            guard primary.contains(where: { $0.id == clip.parentID }), clip.kind == "asset-clip", clip.lane != 0,
+                  let original = node(at: clip.id, spine: spine),
+                  !children(original).contains(where: { anchors.contains($0.name ?? "") }) else {
+                throw EditedProjectWriterError.unsupported("nested connected items cannot be moved onto primary processed sound safely")
+            }
+            let index = try owner(at: clip.timelineRange.start)
+            let parent = pieces[index]
+            let copy = original.copy() as! XMLElement
+            try set(copy, "offset", parent.sourceStart.adding(clip.timelineRange.start.subtracting(parent.range.start)))
+            if !clip.enabled { set(copy, "enabled", "0") }
+            try muteOriginalTree(copy, sources: sources)
+            parent.node.addChild(copy)
+        }
+        for (index, clip) in connections.enumerated() {
+            guard !connections.dropFirst(index + 1).contains(where: {
+                $0.lane == clip.lane && $0.timelineRange.intersection(clip.timelineRange) != nil
+            }) else {
+                throw EditedProjectWriterError.unsupported("overlapping connected lanes cannot be merged onto primary processed sound safely")
+            }
+        }
+        var notes: [Int: [String]] = [:]
+        var metadata: [Int: [XMLElement]] = [:]
+        var metadataKeys: [Int: [String: String]] = [:]
+        for (clip, root) in zip(primary, roots) {
+            let index = try owner(at: clip.timelineRange.start)
+            for child in children(root) {
+                let name = child.name ?? ""
+                if name == "note" {
+                    notes[index, default: []].append(child.stringValue ?? "")
+                } else if name == "metadata" {
+                    for item in children(child) {
+                        guard item.name == "md", let key = item.attribute(forName: "key")?.stringValue, !key.isEmpty else {
+                            throw EditedProjectWriterError.unsupported("existing clip metadata cannot be merged without a unique metadata key")
+                        }
+                        let signature = canonicalMetadata(item)
+                        if let old = metadataKeys[index]?[key] {
+                            guard old == signature else {
+                                throw EditedProjectWriterError.unsupported("existing clips have incompatible metadata for key ‘\(key)’; their metadata was not discarded")
+                            }
+                            continue
+                        }
+                        metadataKeys[index, default: [:]][key] = signature
+                        metadata[index, default: []].append(item.copy() as! XMLElement)
+                    }
+                } else if annotations.contains(name) {
+                    let sourceStart: RationalTime
+                    if child.attribute(forName: "start") == nil { sourceStart = clip.sourceStart }
+                    else { sourceStart = try nodeTime(child, "start") }
+                    let position = try clip.timelineRange.start.adding(sourceStart.subtracting(clip.sourceStart))
+                    if ["marker", "chapter-marker"].contains(name) {
+                        let destination = try owner(at: position)
+                        let parent = pieces[destination]
+                        let copy = child.copy() as! XMLElement
+                        try set(copy, "start", parent.sourceStart.adding(position.subtracting(parent.range.start)))
+                        parent.node.addChild(copy)
+                    } else {
+                        let duration: RationalTime
+                        if child.attribute(forName: "duration") == nil {
+                            duration = try clip.timelineRange.end.subtracting(position)
+                        } else { duration = try nodeTime(child, "duration") }
+                        guard duration >= .zero else {
+                            throw EditedProjectWriterError.unsupported("an existing annotation has invalid timing")
+                        }
+                        let annotation = TimeRange(start: position, end: try position.adding(duration))
+                        guard annotation.start >= document.projectRange.start, annotation.end <= document.projectRange.end else {
+                            throw EditedProjectWriterError.unsupported("an existing annotation extends outside the cleaned project")
+                        }
+                        if duration == .zero {
+                            let parent = pieces[try owner(at: position)]
+                            let copy = child.copy() as! XMLElement
+                            try set(copy, "start", parent.sourceStart.adding(position.subtracting(parent.range.start)))
+                            try set(copy, "duration", .zero)
+                            parent.node.addChild(copy)
+                            continue
+                        }
+                        for parent in pieces {
+                            guard let kept = parent.range.intersection(annotation) else { continue }
+                            let copy = child.copy() as! XMLElement
+                            try set(copy, "start", parent.sourceStart.adding(kept.start.subtracting(parent.range.start)))
+                            try set(copy, "duration", kept.checkedDuration())
+                            parent.node.addChild(copy)
+                        }
+                    }
+                } else if anchors.contains(name) || audioNodes.contains(name)
+                    || name.hasPrefix("adjust-") || name.hasPrefix("filter-")
+                    || ["conform-rate", "timeMap"].contains(name) {
+                    // Connections were copied above. Original processing and
+                    // timing are already baked into the continuous native mix.
+                    continue
+                } else {
+                    throw EditedProjectWriterError.unsupported("the audio-only primary item contains \(name), whose clip semantics cannot be preserved when combining the rendered sound")
+                }
+            }
+        }
+        for (index, piece) in pieces.enumerated() {
+            let content = children(piece.node)
+            var connected: [(node: XMLElement, lane: Int, offset: RationalTime)] = []
+            var markers: [(node: XMLElement, start: RationalTime, order: Int)] = []
+            for (order, child) in content.enumerated() {
+                if anchors.contains(child.name ?? "") {
+                    guard let lane = Int(child.attribute(forName: "lane")?.stringValue ?? "0") else {
+                        throw EditedProjectWriterError.verificationFailed("an existing connection has an invalid lane")
+                    }
+                    connected.append((child, lane, try nodeTime(child, "offset")))
+                } else if annotations.contains(child.name ?? "") {
+                    markers.append((child, try nodeTime(child, "start"), order))
+                }
+            }
+            connected.sort {
+                if $0.lane != $1.lane { return $0.lane < $1.lane }
+                return $0.offset < $1.offset
+            }
+            markers.sort {
+                if $0.start != $1.start { return $0.start < $1.start }
+                return $0.order < $1.order
+            }
+            piece.node.setChildren([])
+            if let values = notes[index] {
+                piece.node.addChild(XMLElement(name: "note", stringValue: values.joined(separator: "\n\n")))
+            }
+            for entry in connected { piece.node.addChild(entry.node) }
+            for entry in markers { piece.node.addChild(entry.node) }
+            if let values = metadata[index], !values.isEmpty {
+                let node = XMLElement(name: "metadata")
+                for value in values { node.addChild(value) }
+                piece.node.addChild(node)
+            }
+        }
+        spine.setChildren(pieces.map(\.node))
+        return expected
+    }
+
+    private static func verifyAudioOnlyContext(before: TimelineDocument, after: TimelineDocument) throws {
+        var returned = after.clips.filter { !$0.isPrimaryStoryline }
+        let connections = before.clips.filter { !$0.isPrimaryStoryline }
+        guard returned.count == connections.count else {
+            throw EditedProjectWriterError.verificationFailed("primary processed sound changed the connected occurrence count")
+        }
+        for clip in connections {
+            guard let index = returned.firstIndex(where: {
+                $0.name == clip.name && $0.timelineRange == clip.timelineRange && $0.sourceStart == clip.sourceStart
+                    && $0.mediaURL == clip.mediaURL && $0.assetID == clip.assetID && $0.lane == clip.lane
+                    && !$0.hasVideo && !$0.hasAudio && !$0.enabled
+            }) else {
+                throw EditedProjectWriterError.verificationFailed("primary processed sound changed an original connected source or its timing")
+            }
+            returned.remove(at: index)
+        }
+        var markers = after.markers
+        for marker in before.markers {
+            guard let index = markers.firstIndex(where: {
+                $0.timelinePosition == marker.timelinePosition && $0.kind == marker.kind && $0.value == marker.value
+                    && $0.note == marker.note && $0.duration == marker.duration && $0.completed == marker.completed
+            }) else {
+                throw EditedProjectWriterError.verificationFailed("primary processed sound changed an original marker")
+            }
+            markers.remove(at: index)
+        }
+        guard markers.isEmpty else {
+            throw EditedProjectWriterError.verificationFailed("primary processed sound introduced an extra marker")
+        }
+    }
+
+    private static func canonicalMetadata(_ node: XMLElement) -> String {
+        let attributes = (node.attributes ?? []).sorted { ($0.name ?? "") < ($1.name ?? "") }
+            .map { ($0.name ?? "") + "=" + ($0.stringValue ?? "") }
+        let elements = children(node)
+        let text = (node.children ?? []).filter { $0.kind == .text }.compactMap(\.stringValue).joined()
+        let payload = elements.isEmpty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? text : ""
+        let parts = [node.name ?? ""] + attributes + [payload] + elements.map(canonicalMetadata)
+        return parts.map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
     }
 
     private static func projectMappings(_ project: TimeRange, cuts: [TimeRange],
