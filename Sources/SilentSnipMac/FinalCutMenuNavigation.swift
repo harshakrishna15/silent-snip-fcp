@@ -4,6 +4,100 @@ import SilentSnipCore
 import Foundation
 
 extension FinalCutAXSession {
+    /// Diagnostic-only action on the retained CLOSED Share hierarchy. This
+    /// function sends no menu-opening, keyboard, Return, or coordinate input.
+    /// A native result (including an error) consumes its one permitted attempt.
+    func invokeClosedShareAX(probe: DirectShareAXProbe, timing: AnalysisTiming, prefix: String) throws -> [AXUIElement] {
+        try probe.configuration.verify(workflowOrigin)
+        guard projectName == probe.configuration.projectName else { throw DirectShareAXError.preflight("The pinned project changed.") }
+        try assertClosedProjectInputForShareProbe(probe)
+        guard let expected = reviewOwnership.active, try selectionSnapshot() == expected else {
+            throw DirectShareAXError.preflight("The analyzed clip selection could not be reverified.")
+        }
+        guard let windows = attribute(root, kAXWindowsAttribute) as? [AXUIElement], windows.count <= 32,
+              let bar = Self.elementAttribute(root, kAXMenuBarAttribute) else {
+            throw DirectShareAXError.preflight("The host windows or retained menu bar could not be bounded.")
+        }
+        typealias Command = ClosedShareAXCommand<AXUIElement>
+        func resolve(_ bar: AXUIElement) throws -> Command {
+            let deadline = ProcessInfo.processInfo.systemUptime + 5
+            return try Command.resolve(menuBar: bar, read: { element in
+                var owner: pid_t = 0
+                guard AXUIElementGetPid(element, &owner) == .success, owner == self.application.processIdentifier else {
+                    throw DirectShareAXError.preflight("A retained menu object is not owned by the pinned Final Cut process.")
+                }
+                let values = FinalCutAXAttributes.read(element, names: [kAXRoleAttribute, kAXTitleAttribute,
+                    kAXEnabledAttribute, kAXChildrenAttribute])
+                return Command.Node(role: values[kAXRoleAttribute] as? String,
+                    title: values[kAXTitleAttribute] as? String,
+                    enabled: (values[kAXEnabledAttribute] as? NSNumber)?.boolValue,
+                    children: values[kAXChildrenAttribute] as? [AXUIElement] ?? [])
+            }, actions: { element in
+                var actions: CFArray?
+                guard AXUIElementCopyActionNames(element, &actions) == .success,
+                      let available = actions as? [String] else { throw DirectShareAXError.preflight("The command's advertised actions could not be read.") }
+                return available
+            }, shouldContinue: { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline })
+        }
+        let retained = try resolve(bar)
+        probe.update {
+            $0.advertisedActions = retained.actions
+            $0.selectedAction = retained.action
+            $0.foregroundBefore = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            $0.projectBefore = String(self.projectName.prefix(512))
+        }
+        try assertClosedProjectInputForShareProbe(probe)
+        try probe.configuration.verify(workflowOrigin)
+        guard try selectionSnapshot() == expected,
+              let currentBar = Self.elementAttribute(root, kAXMenuBarAttribute), CFEqual(currentBar, bar) else {
+            throw DirectShareAXError.preflight("The project selection or menu bar changed before dispatch.")
+        }
+        let fresh = try resolve(currentBar)
+        guard retained.isSame(as: fresh, equals: { CFEqual($0, $1) }) else {
+            throw DirectShareAXError.preflight("The retained menu hierarchy or advertised action changed before dispatch.")
+        }
+        try assertClosedProjectInputForShareProbe(probe)
+        guard try selectionSnapshot() == expected else { throw DirectShareAXError.preflight("The clip changed immediately before dispatch.") }
+        probe.update { $0.uniqueMatchedPath = true }
+        try timing.measure(prefix + ".directAX.dispatch") {
+            try probe.dispatch(action: fresh.action) {
+                AXUIElementPerformAction(fresh.item, fresh.action as CFString).rawValue
+            }
+        }
+        return windows
+    }
+
+    private func assertClosedProjectInputForShareProbe(_ probe: DirectShareAXProbe) throws {
+        try assertCurrentProject()
+        guard currentSheet() == nil, application.isActive,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
+              let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute), CFEqual(focused, mainWindow),
+              let main = Self.elementAttribute(root, kAXMainWindowAttribute), CFEqual(main, mainWindow),
+              let bar = Self.elementAttribute(root, kAXMenuBarAttribute) else {
+            throw DirectShareAXError.preflight("The unobstructed pinned project does not own input.")
+        }
+        let selected = attribute(bar, kAXSelectedChildrenAttribute) as? [AXUIElement]
+        probe.update { $0.menuBarTrackingStateAvailable = selected != nil }
+        guard selected?.isEmpty != false else { throw DirectShareAXError.preflight("A menu is already tracking input.") }
+        try refreshTimeline()
+        var element = Self.elementAttribute(root, kAXFocusedUIElementAttribute)
+        var timelineOwnsInput = false
+        for _ in 0..<24 {
+            guard let current = element else { break }
+            let role = string(current, kAXRoleAttribute)
+            guard ![kAXMenuRole, kAXMenuItemRole, kAXMenuBarRole, kAXMenuBarItemRole].contains(role ?? "") else {
+                throw DirectShareAXError.preflight("A menu already owns keyboard focus.")
+            }
+            if CFEqual(current, timeline) { timelineOwnsInput = true }
+            if CFEqual(current, mainWindow) {
+                guard timelineOwnsInput else { throw DirectShareAXError.preflight("The pinned timeline does not own input; a browser clip must not be shared.") }
+                return
+            }
+            element = Self.elementAttribute(current, kAXParentAttribute)
+        }
+        throw DirectShareAXError.preflight("Focused input could not be bound to the closed-menu project workspace.")
+    }
+
     /// Use only the shortcut advertised by this exact retained menu command.
     /// A missing, disabled, or changing assignment falls back before any input;
     /// a dispatched or uncertain keyboard event must never trigger a retry.

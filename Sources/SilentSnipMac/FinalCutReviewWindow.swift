@@ -325,7 +325,8 @@ extension FinalCutAXSession {
     func makePreviewReader() -> FinalCutPreviewReader? {
         guard let expected = activeReviewSelection else { return nil }
         return FinalCutPreviewReader(pid: application.processIdentifier, root: root,
-            mainWindow: mainWindow, projectName: projectName, expected: expected)
+            mainWindow: mainWindow, projectName: projectName, expected: expected,
+            effectRemovalPolicy: workflowOrigin == nil ? .legacyAudioUnit : .workflowExtension)
     }
 
 }

@@ -15,6 +15,9 @@ import Foundation
     private let projectLookup: FinalCutAXLookup<AXUIElement>
     private let timelineLookup: FinalCutAXLookup<AXUIElement>
     private let windowTitle: String
+    private var activationChecks = 0
+    private var activationReadySkips = 0
+    private var activationRequests = 0
     var operationStage = "Reading the selected timeline clip"
     var lastXMLShareDirectory: URL?
 #if DEBUG
@@ -25,6 +28,7 @@ import Foundation
     var knownReviewWindows: [(element: AXUIElement, title: String)] = []
     var workflowOrigin: WorkflowReviewOrigin?
     var retainedWorkflowWindow: AXUIElement?
+    var workflowReviewLookups: WorkflowReviewAXLookups<AXUIElement>?
     typealias SuspendedReview = FinalCutReviewOwnership.Suspended
     var reviewOwnership = FinalCutReviewOwnership()
     var suspendedReview: SuspendedReview? {
@@ -141,7 +145,7 @@ import Foundation
     }
     func children(_ element: AXUIElement) -> [AXUIElement] { attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] }
 
-    private static func rawAttribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+    static func rawAttribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         var result: CFTypeRef?
         return AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success ? result : nil
     }
@@ -216,7 +220,13 @@ import Foundation
         let stats = projectLookup.statistics
         return ["capture.projectLookup.searches": stats.searches, "capture.projectLookup.cacheHits": stats.cacheHits,
             "capture.projectLookup.invalidations": stats.invalidations, "capture.projectLookup.visitedNodes": stats.visitedNodes,
-            "capture.projectLookup.pathChecks": stats.pathChecks]
+            "capture.projectLookup.pathChecks": stats.pathChecks,
+            "capture.activation.checks": activationChecks, "capture.activation.readySkips": activationReadySkips,
+            "capture.activation.requests": activationRequests]
+    }
+
+    var activationCounters: [String: Int] {
+        ["checks": activationChecks, "readySkips": activationReadySkips, "requests": activationRequests]
     }
 
     func assertCurrentProject() throws {
@@ -244,16 +254,34 @@ import Foundation
     func activate() async throws {
         try assertCurrentProject()
         guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut dialog before continuing.") }
-        requestActivation()
-        try await waitUntil(timeout: 3) { NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier }
-        // Analyze originates in the AU's floating panel. Activate the pinned
-        // project window explicitly so subsequent shortcuts target its timeline.
-        // Do not raise the project over the user’s progress window.
-        _ = AXUIElementSetAttributeValue(mainWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
-        _ = AXUIElementSetAttributeValue(mainWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        try await waitUntil(timeout: 3) {
-            guard let focused = Self.elementAttribute(self.root, kAXFocusedWindowAttribute) else { return false }
-            return CFEqual(focused, self.mainWindow)
+        activationChecks += 1
+        let alreadyFocused = FinalCutActivationReadiness.alreadyFocused(
+            hostPID: application.processIdentifier, mainWindow: mainWindow,
+            readApplication: {
+                .init(active: self.application.isActive,
+                    foregroundPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+            }, readWindows: {
+                let values = FinalCutAXAttributes.read(self.root, names: [kAXFocusedWindowAttribute, kAXMainWindowAttribute])
+                func window(_ name: String) -> AXUIElement? {
+                    guard let value = values[name], CFGetTypeID(value as CFTypeRef) == AXUIElementGetTypeID() else { return nil }
+                    return value as! AXUIElement
+                }
+                return (window(kAXFocusedWindowAttribute), window(kAXMainWindowAttribute))
+            }, equals: { CFEqual($0, $1) })
+        if alreadyFocused {
+            activationReadySkips += 1
+        } else {
+            activationRequests += 1
+            requestActivation()
+            try await waitUntil(timeout: 3) { NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier }
+            // A floating review or another native window still requires the
+            // ordinary one-shot activation of the pinned project workspace.
+            _ = AXUIElementSetAttributeValue(mainWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
+            _ = AXUIElementSetAttributeValue(mainWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            try await waitUntil(timeout: 3) {
+                guard let focused = Self.elementAttribute(self.root, kAXFocusedWindowAttribute) else { return false }
+                return CFEqual(focused, self.mainWindow)
+            }
         }
 #if DEBUG
         if let lease = QuietSharePrototype.pluginLease {

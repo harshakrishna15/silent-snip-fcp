@@ -8,21 +8,26 @@
 #import "WorkflowReviewClient.h"
 #import "WorkflowWindowClient.h"
 
+static NSColor *SSWorkflowGray(CGFloat value) {
+    return [NSColor colorWithSRGBRed:value green:value blue:value alpha:1];
+}
+
 @interface SSWorkflowDocument : NSStackView
 @end
 @implementation SSWorkflowDocument
 - (BOOL)isFlipped { return YES; }
 @end
 
-@interface SSWorkflowCard : SSWorkflowDocument
+// Final Cut's inspector uses flat charcoal sections. Keep AppKit responsible
+// for text, focus rings, menus and control states inside those surfaces.
+@interface SSWorkflowSection : SSWorkflowDocument
 @end
-@implementation SSWorkflowCard
+@implementation SSWorkflowSection
 - (BOOL)wantsUpdateLayer { return YES; }
 - (void)updateLayer {
-    self.layer.backgroundColor = NSColor.controlBackgroundColor.CGColor;
-    self.layer.borderColor = NSColor.separatorColor.CGColor;
-    self.layer.borderWidth = 0.5;
-    self.layer.cornerRadius = 8;
+    self.layer.backgroundColor = SSWorkflowGray(0.145).CGColor;
+    self.layer.borderWidth = 0;
+    self.layer.cornerRadius = 0;
 }
 - (void)viewDidChangeEffectiveAppearance {
     [super viewDidChangeEffectiveAppearance];
@@ -161,7 +166,7 @@
 }
 
 - (NSStackView *)cardWithViews:(NSArray<NSView *> *)views {
-    NSStackView *card = [SSWorkflowCard stackViewWithViews:views];
+    NSStackView *card = [SSWorkflowSection stackViewWithViews:views];
     card.wantsLayer = YES;
     card.orientation = NSUserInterfaceLayoutOrientationVertical;
     card.alignment = NSLayoutAttributeLeading;
@@ -179,6 +184,9 @@
     // The SDK owns the window size. Keep the root frame-driven so its remote
     // viewport can resize it without introducing preferred-size constraints.
     self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 480, 640)];
+    self.view.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    self.view.wantsLayer = YES;
+    self.view.layer.backgroundColor = SSWorkflowGray(0.12).CGColor;
     self.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.settings = [SSWorkflowSettingsBridge new];
     self.viewID = NSUUID.UUID.UUIDString;
@@ -187,6 +195,10 @@
     [self.view addSubview:self.contentColumn];
     self.headerView = [NSView new];
     self.footerView = [NSView new];
+    for (NSView *chrome in @[self.headerView, self.footerView]) {
+        chrome.wantsLayer = YES;
+        chrome.layer.backgroundColor = SSWorkflowGray(0.145).CGColor;
+    }
     self.scroll = [NSScrollView new];
     self.scroll.drawsBackground = NO;
     self.scroll.hasVerticalScroller = YES;
@@ -200,7 +212,7 @@
     self.connectButton = [NSButton buttonWithTitle:@"Connect to Final Cut Pro" target:self action:@selector(requestConnection:)];
     self.connectButton.accessibilityIdentifier = @"silentsnip.workflow.connect";
     self.connectButton.hidden = YES;
-    self.projectLabel = [self label:@"Connecting to Final Cut Pro…" size:17 weight:NSFontWeightSemibold];
+    self.projectLabel = [self label:@"Connecting to Final Cut Pro…" size:13 weight:NSFontWeightSemibold];
     self.projectLabel.maximumNumberOfLines = 1;
     self.projectLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.projectLabel.accessibilityIdentifier = @"silentsnip.workflow.project";
@@ -215,19 +227,36 @@
     project.alignment = NSLayoutAttributeLeading;
     project.spacing = 3;
     NSMutableArray *headerItems = [NSMutableArray new];
-    NSImage *icon = [[NSBundle bundleForClass:SSWorkflowViewController.class] imageForResource:@"WorkflowBadge"];
+    NSImage *icon = [NSImage imageWithSystemSymbolName:@"waveform" accessibilityDescription:nil];
     if (icon) {
         NSImageView *image = [NSImageView imageViewWithImage:icon];
         image.imageScaling = NSImageScaleProportionallyUpOrDown;
-        [image.widthAnchor constraintEqualToConstant:28].active = YES;
-        [image.heightAnchor constraintEqualToConstant:28].active = YES;
+        image.contentTintColor = NSColor.secondaryLabelColor;
+        [image.widthAnchor constraintEqualToConstant:18].active = YES;
+        [image.heightAnchor constraintEqualToConstant:18].active = YES;
         [headerItems addObject:image];
     }
     [headerItems addObjectsFromArray:@[project, self.connectButton]];
     NSStackView *header = [NSStackView stackViewWithViews:headerItems];
-    header.spacing = 12;
+    header.spacing = 8;
     header.translatesAutoresizingMaskIntoConstraints = NO;
     [self.headerView addSubview:header];
+    NSBox *headerRule = [NSBox new];
+    NSBox *footerRule = [NSBox new];
+    headerRule.boxType = footerRule.boxType = NSBoxSeparator;
+    for (NSBox *rule in @[headerRule, footerRule]) rule.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.headerView addSubview:headerRule];
+    [self.footerView addSubview:footerRule];
+    [NSLayoutConstraint activateConstraints:@[
+        [headerRule.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor],
+        [headerRule.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor],
+        [headerRule.bottomAnchor constraintEqualToAnchor:self.headerView.bottomAnchor],
+        [headerRule.heightAnchor constraintEqualToConstant:1],
+        [footerRule.leadingAnchor constraintEqualToAnchor:self.footerView.leadingAnchor],
+        [footerRule.trailingAnchor constraintEqualToAnchor:self.footerView.trailingAnchor],
+        [footerRule.topAnchor constraintEqualToAnchor:self.footerView.topAnchor],
+        [footerRule.heightAnchor constraintEqualToConstant:1]
+    ]];
 
     NSMutableArray *fields = [NSMutableArray new];
     NSMutableArray *groups = [NSMutableArray new];
@@ -235,13 +264,15 @@
     NSArray *units = @[@"dBFS", @"sec", @"sec", @"sec"];
     for (NSUInteger index = 0; index < labels.count; ++index) {
         NSTextField *field = [NSTextField textFieldWithString:@""];
-        field.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
+        field.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+        field.controlSize = NSControlSizeSmall;
+        field.bezelStyle = NSTextFieldSquareBezel;
         field.alignment = NSTextAlignmentRight;
         field.accessibilityLabel = labels[index];
         field.accessibilityIdentifier = [NSString stringWithFormat:@"silentsnip.workflow.setting.%lu", (unsigned long)index];
         field.delegate = self;
         [field.widthAnchor constraintEqualToConstant:64].active = YES;
-        NSTextField *name = [self label:labels[index] size:12 weight:NSFontWeightRegular];
+        NSTextField *name = [self label:labels[index] size:11 weight:NSFontWeightRegular];
         name.maximumNumberOfLines = 1;
         NSTextField *unit = [self label:units[index] size:11 weight:NSFontWeightRegular];
         unit.textColor = NSColor.secondaryLabelColor;
@@ -270,7 +301,9 @@
     self.settingsGroups.alignment = NSLayoutAttributeLeading;
     self.settingsGroups.spacing = 8;
     self.output = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    self.output.font = [NSFont systemFontOfSize:12];
+    self.output.font = [NSFont systemFontOfSize:11];
+    self.output.controlSize = NSControlSizeSmall;
+    self.output.bezelStyle = NSBezelStyleAccessoryBarAction;
     [self.output addItemsWithTitles:@[@"Remove Silence", @"Replace with 1-Second Gaps"]];
     self.output.accessibilityLabel = @"Output";
     self.output.accessibilityIdentifier = @"silentsnip.workflow.output";
@@ -279,9 +312,8 @@
     [self.output setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [self.output setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.saveButton = [NSButton buttonWithTitle:@"Save Settings" target:self action:@selector(saveSettings:)];
-    self.saveButton.bezelStyle = NSBezelStyleRounded;
     self.saveButton.accessibilityIdentifier = @"silentsnip.workflow.save";
-    NSTextField *outputLabel = [self label:@"Output" size:12 weight:NSFontWeightRegular];
+    NSTextField *outputLabel = [self label:@"Output" size:11 weight:NSFontWeightRegular];
     outputLabel.maximumNumberOfLines = 1;
     [outputLabel.widthAnchor constraintEqualToConstant:42].active = YES;
     [self.saveButton setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -291,7 +323,7 @@
     outputRow.spacing = 10;
     self.settingsPanel = [self cardWithViews:@[self.settingsGroups, outputRow]];
 
-    self.statusLabel = [self label:@"" size:12 weight:NSFontWeightRegular];
+    self.statusLabel = [self label:@"" size:11 weight:NSFontWeightRegular];
     self.statusLabel.textColor = NSColor.secondaryLabelColor;
     self.statusLabel.maximumNumberOfLines = 2;
     self.statusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -302,7 +334,7 @@
     self.detailsButton.font = [NSFont systemFontOfSize:11];
     self.detailsButton.accessibilityIdentifier = @"silentsnip.workflow.details";
     self.detailsButton.hidden = YES;
-    self.statusDetails = [self label:self.statusLabel.stringValue size:12 weight:NSFontWeightRegular];
+    self.statusDetails = [self label:self.statusLabel.stringValue size:11 weight:NSFontWeightRegular];
     self.statusDetails.textColor = NSColor.secondaryLabelColor;
     self.statusDetails.accessibilityIdentifier = @"silentsnip.workflow.status-details";
     self.statusDetails.hidden = YES;
@@ -312,7 +344,6 @@
     self.updateButton.accessibilityIdentifier = @"silentsnip.workflow.update";
     self.verifyButton = [NSButton buttonWithTitle:@"Verify Existing Result…" target:self action:@selector(verifyExistingResult:)];
     self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
-    self.verifyButton.bezelStyle = NSBezelStyleInline;
     [self.settingsPanel addArrangedSubview:self.verifyButton];
     self.settingsPanel.spacing = 4;
     self.applyButton = [NSButton buttonWithTitle:@"Apply Cuts" target:self action:@selector(applyCuts:)];
@@ -323,6 +354,12 @@
     self.cancelButton.accessibilityIdentifier = [@"silentsnip.workflow.review." stringByAppendingString:self.viewID];
     self.retryButton = [NSButton buttonWithTitle:@"Retry Verification" target:self action:@selector(retryVerification:)];
     self.retryButton.hidden = YES;
+    for (NSButton *button in @[self.connectButton, self.saveButton, self.verifyButton,
+        self.analyzeButton, self.updateButton, self.applyButton, self.retryButton, self.cancelButton]) {
+        button.controlSize = NSControlSizeSmall;
+        button.bezelStyle = NSBezelStyleAccessoryBarAction;
+        button.font = [NSFont systemFontOfSize:11];
+    }
     NSView *actionSpring = [NSView new];
     [actionSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSStackView *actions = [NSStackView stackViewWithViews:@[actionSpring, self.analyzeButton, self.updateButton, self.applyButton, self.retryButton, self.cancelButton]];
@@ -360,13 +397,16 @@
     [self.navigateMenu addItemWithTitle:@"Go to Cut"];
     self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
     self.navigateMenu.controlSize = NSControlSizeSmall;
+    self.navigateMenu.bezelStyle = NSBezelStyleAccessoryBarAction;
+    self.navigateMenu.font = [NSFont systemFontOfSize:11];
     for (NSButton *button in @[self.allButton, self.noneButton]) {
         button.controlSize = NSControlSizeSmall;
         button.font = [NSFont systemFontOfSize:11];
+        button.bezelStyle = NSBezelStyleAccessoryBarAction;
     }
     NSView *reviewSpring = [NSView new];
     [reviewSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[[self label:@"Cut review" size:14 weight:NSFontWeightSemibold], reviewSpring, self.navigateMenu, self.allButton, self.noneButton]];
+    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[[self label:@"Cut review" size:12 weight:NSFontWeightSemibold], reviewSpring, self.navigateMenu, self.allButton, self.noneButton]];
     reviewActions.spacing = 6;
     self.cutList = [SSWorkflowDocument stackViewWithViews:@[]];
     self.cutList.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -376,7 +416,8 @@
     self.cutList.translatesAutoresizingMaskIntoConstraints = YES;
     self.cutList.autoresizingMask = NSViewWidthSizable;
     self.reviewScroll = [NSScrollView new];
-    self.reviewScroll.drawsBackground = NO;
+    self.reviewScroll.drawsBackground = YES;
+    self.reviewScroll.backgroundColor = SSWorkflowGray(0.105);
     self.reviewScroll.hasVerticalScroller = YES;
     self.reviewScroll.hasHorizontalScroller = NO;
     self.reviewScroll.autohidesScrollers = YES;
@@ -418,7 +459,7 @@
     self.scroll.documentView = self.content;
     self.settingsPanelWidthConstraint = [self.settingsPanel.widthAnchor constraintEqualToConstant:448];
     self.reviewPanelWidthConstraint = [self.reviewPanel.widthAnchor constraintEqualToConstant:448];
-    self.footerHeightConstraint = [self.footerView.heightAnchor constraintEqualToConstant:76];
+    self.footerHeightConstraint = [self.footerView.heightAnchor constraintEqualToConstant:64];
     [NSLayoutConstraint activateConstraints:@[
         self.settingsPanelWidthConstraint, self.reviewPanelWidthConstraint,
         [self.settingsGroups.widthAnchor constraintEqualToAnchor:self.settingsPanel.widthAnchor constant:-24],
@@ -433,7 +474,7 @@
         [self.headerView.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
         [self.headerView.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
         [self.headerView.topAnchor constraintEqualToAnchor:self.contentColumn.topAnchor],
-        [self.headerView.heightAnchor constraintEqualToConstant:56],
+        [self.headerView.heightAnchor constraintEqualToConstant:44],
         [header.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:16],
         [header.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-16],
         [header.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
@@ -484,7 +525,7 @@
         self.settingsWideLayout = settingsWide;
     }
     self.settingsBottomRow.hidden = settingsWide;
-    self.footerHeightConstraint.constant = 76;
+    self.footerHeightConstraint.constant = 64;
     self.footerStatusWidthConstraint.active = YES;
     self.footerActionsWidthConstraint.active = YES;
     self.footerMainRow.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -957,7 +998,8 @@
             row.startValue = [cut[@"start"] description];
             row.endValue = [cut[@"end"] description];
             row.durationValue = [cut[@"duration"] description];
-            row.textFont = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+            row.controlSize = NSControlSizeSmall;
+            row.textFont = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
             row.accessibilityLabel = title;
             row.tag = (NSInteger)index;
             row.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;

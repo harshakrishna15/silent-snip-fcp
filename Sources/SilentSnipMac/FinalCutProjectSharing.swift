@@ -20,25 +20,30 @@ extension FinalCutAXSession {
             }
         }
         lastXMLShareDirectory = delivered.deletingLastPathComponent().standardizedFileURL
-        try assertCurrentProject()
-        _ = try TimelineParser.parse(url: delivered)
+        let output = try timing.measure("share.xml.deliveryValidation") { () throws -> URL in
+            try assertCurrentProject()
+            _ = try TimelineParser.parse(url: delivered)
 #if DEBUG
-        if QuietSharePrototype.pluginLease != nil { try QuietSharePrototype.verifyLibrary(delivered) }
+            if QuietSharePrototype.pluginLease != nil { try QuietSharePrototype.verifyLibrary(delivered) }
 #endif
-        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        // Keep the caller's capture format stable without a Save dialog.
-        let input = delivered.pathExtension.lowercased() == "fcpxmld"
-            ? delivered.appendingPathComponent("Info.fcpxml") : delivered
-        let output: URL
-        if destination.pathExtension.lowercased() == "fcpxmld" {
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
-            output = destination.appendingPathComponent("Info.fcpxml")
-        } else { output = destination }
-        try Data(contentsOf: input).write(to: output, options: .withoutOverwriting)
-        try await waitUntil(timeout: 5, context: "the completed XML exchange") { self.currentSheet() == nil }
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            // Keep the caller's capture format stable without a Save dialog.
+            let input = delivered.pathExtension.lowercased() == "fcpxmld"
+                ? delivered.appendingPathComponent("Info.fcpxml") : delivered
+            let output: URL
+            if destination.pathExtension.lowercased() == "fcpxmld" {
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+                output = destination.appendingPathComponent("Info.fcpxml")
+            } else { output = destination }
+            try Data(contentsOf: input).write(to: output, options: .withoutOverwriting)
+            return output
+        }
+        try await timing.measure("share.xml.panelClose") {
+            try await waitUntil(timeout: 5, context: "the completed XML exchange") { self.currentSheet() == nil }
+        }
         // The host's Open Document message may activate this accessory helper.
         // Return input to the pinned project before checking the same selection.
-        try await activate()
+        try await restoreProjectFocusAfterShare(timing: timing, prefix: "share.xml")
         return output
     }
 
@@ -89,7 +94,7 @@ extension FinalCutAXSession {
             // The real Open Document delivery can activate the accessory helper.
             // Direct rendering stays in this project, so there is no return-project
             // navigation to restore focus on its behalf.
-            try await activate()
+            try await restoreProjectFocusAfterShare(timing: timing, prefix: "share.render.postDelivery")
             if let renderSelection {
                 preparedRange = false // Never retry an uncertain Clear command.
                 try await timing.measure("share.render.restoreClipSelection") { try await clearRenderedClipRange(selection: renderSelection) }
@@ -109,6 +114,18 @@ extension FinalCutAXSession {
         }
     }
 
+    private func restoreProjectFocusAfterShare(timing: AnalysisTiming, prefix: String) async throws {
+        let before = activationCounters
+        defer {
+            let prior = timing.report(outcome: "in progress").counters
+            timing.recordCounters(Dictionary(uniqueKeysWithValues: activationCounters.map {
+                let name = prefix + ".activation." + $0.key
+                return (name, (prior[name] ?? 0) + $0.value - (before[$0.key] ?? 0))
+            }))
+        }
+        try await timing.measure(prefix + ".restoreProjectFocus") { try await activate() }
+    }
+
     private func beginShare(renderAudio: Bool, timing: AnalysisTiming,
                             renderSelection: FinalCutSelectionSnapshot? = nil,
                             mixScope: FinalCutAudioMixScope = .dialogue) async throws {
@@ -126,50 +143,112 @@ extension FinalCutAXSession {
         defer { quietPrototypeMenu = previousPrototypeMenu }
 #endif
         let prefix = renderAudio ? "share.render" : "share.xml"
-        try assertCurrentProject()
-        guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the current dialog before sharing.") }
-        try await timing.measure(prefix + ".focus") { try await focusTimeline() }
+        let confirmationControls = FinalCutShareConfirmationControls<AXUIElement>(
+            read: { FinalCutAXAttributes.read($0, names: $1) },
+            children: { self.children($0) }, equals: { CFEqual($0, $1) })
+        defer {
+            let prior = timing.report(outcome: "in progress").counters
+            timing.recordCounters(Dictionary(uniqueKeysWithValues: confirmationControls.counters.map {
+                let name = prefix + "." + $0.key
+                return (name, (prior[name] ?? 0) + $0.value)
+            }))
+        }
+        var observedPanel: AXUIElement?
+        let integration = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Silent Snip/Integration", isDirectory: true).standardizedFileURL
+        let probe: DirectShareAXProbe?
+        do {
+            probe = try DirectShareAXConfiguration.load(directory: integration, origin: workflowOrigin).map {
+                DirectShareAXProbe(configuration: $0, directory: integration,
+                    request: timing.report(outcome: "in progress").request, phase: prefix)
+            }
+        } catch {
+            DirectShareAXProbe.rejected(request: timing.report(outcome: "failed").request,
+                phase: prefix, error: error, directory: integration)
+            timing.recordCounters([prefix + ".directAX.enabled": 1, prefix + ".directAX.configurationRejected": 1,
+                prefix + ".directAX.attempts": 0, prefix + ".directAX.fallbacks": 0])
+            throw error
+        }
+        defer { probe?.record(timing: timing, prefix: prefix) }
         var ownsPanel = false
         do {
+            probe?.update {
+                $0.foregroundBefore = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                $0.projectBefore = self.currentProjectTitle().map { String($0.prefix(512)) }
+            }
+            try assertCurrentProject()
+            guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the current dialog before sharing.") }
+            if probe == nil {
+                try await timing.measure(prefix + ".focus") { try await focusTimeline() }
+            }
             try await timing.measure(prefix + ".openPanel") {
-                let usedShortcut = try await FinalCutShareInvocation.perform(shortcut: {
-#if DEBUG
-                    // Explicit legacy probes and the processed-audio prototype
-                    // select visible menu input before dispatch. Preserve that
-                    // choice without disabling the normal Release shortcut.
-                    if (self.quietPrototypeStage != nil || QuietSharePrototype.pluginLease != nil),
-                       !self.quietPrototypeMenu {
-                        self.quietPrototypeInvocation?("File → Share → Silent Snip…: legacy-visible-menu")
-                        return false
+                if let probe {
+                    let existing = try invokeClosedShareAX(probe: probe, timing: timing, prefix: prefix)
+                    try await timing.measure(prefix + ".directAX.observePanel") {
+                        do {
+                            try await waitUntil(timeout: 10, context: "a new owned Share panel after the single closed-menu AX action") {
+                                guard let panel = self.currentSheet() else { return false }
+                                var owner: pid_t = 0
+                                let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                                let observation = DirectShareAXPanelObservation(
+                                    existedBeforeDispatch: existing.contains { CFEqual($0, panel) },
+                                    ownedByPinnedHost: AXUIElementGetPid(panel, &owner) == .success && owner == self.application.processIdentifier,
+                                    title: self.string(panel, kAXTitleAttribute),
+                                    enabledNextFound: confirmationControls.next(in: panel, shouldContinue: { !Task.isCancelled }) != nil,
+                                    projectMatches: self.currentProjectTitle() == self.projectName,
+                                    foregroundIsHostOrHelper: foreground == self.application.processIdentifier || foreground == NSRunningApplication.current.processIdentifier)
+                                guard observation.provesCompletion else { return false }
+                                observedPanel = panel
+                                probe.update { $0.observedOwnedPanel = true }
+                                return true
+                            }
+                        } catch {
+                            if error is CancellationError || Task.isCancelled { throw error }
+                            throw DirectShareAXError.uncertain(String(error.localizedDescription.prefix(1_024)))
+                        }
                     }
-#endif
-                    let used = try self.pressAdvertisedMenuShortcut(path: ["File", "Share", "Silent Snip…"])
+                } else {
+                    let usedShortcut = try await FinalCutShareInvocation.perform(shortcut: {
 #if DEBUG
-                    if used { self.quietPrototypeInvocation?("File → Share → Silent Snip…: advertised-shortcut") }
+                        // Explicit legacy probes and the processed-audio prototype
+                        // select visible menu input before dispatch. Preserve that
+                        // choice without disabling the normal Release shortcut.
+                        if (self.quietPrototypeStage != nil || QuietSharePrototype.pluginLease != nil),
+                           !self.quietPrototypeMenu {
+                            self.quietPrototypeInvocation?("File → Share → Silent Snip…: legacy-visible-menu")
+                            return false
+                        }
 #endif
-                    return used
-                }, menu: {
-                    let observed = try await FinalCutShareInvocation.performMenu(menu: { markFinalAttempt in
-                        try await self.pressMenu(path: ["File", "Share", "Silent Snip…"],
-                            onFinalDispatchAttempt: markFinalAttempt)
-                    }, observeCompletion: {
-                        try await self.observePendingShareConfirmation()
+                        let used = try self.pressAdvertisedMenuShortcut(path: ["File", "Share", "Silent Snip…"])
+#if DEBUG
+                        if used { self.quietPrototypeInvocation?("File → Share → Silent Snip…: advertised-shortcut") }
+#endif
+                        return used
+                    }, menu: {
+                        let observed = try await FinalCutShareInvocation.performMenu(menu: { markFinalAttempt in
+                            try await self.pressMenu(path: ["File", "Share", "Silent Snip…"],
+                                onFinalDispatchAttempt: markFinalAttempt)
+                        }, observeCompletion: {
+                            try await self.observePendingShareConfirmation()
+                        })
+                        if observed { timing.recordCounters([prefix + ".panelObservedAfterFinalMenuAttempt": 1]) }
                     })
-                    if observed { timing.recordCounters([prefix + ".panelObservedAfterFinalMenuAttempt": 1]) }
-                })
-                timing.recordCounters([prefix + ".advertisedShortcut": usedShortcut ? 1 : 0])
-                try await waitUntil(timeout: 10, context: "Silent Snip Share confirmation") {
+                    timing.recordCounters([prefix + ".advertisedShortcut": usedShortcut ? 1 : 0])
+                    try await waitUntil(timeout: 10, context: "Silent Snip Share confirmation") {
 #if DEBUG
-                    if self.quietPrototypeStage != nil,
-                       ShareDestinationManager.shared.prototypeShareHasResponse(projectName: self.projectName) { return true }
+                        if self.quietPrototypeStage != nil,
+                           ShareDestinationManager.shared.prototypeShareHasResponse(projectName: self.projectName) { return true }
 #endif
-                    guard let panel = self.currentSheet() else { return false }
-                    return self.string(panel, kAXTitleAttribute) == "Silent Snip"
-                        && self.find(in: panel, role: kAXButtonRole, title: "Next…") != nil
+                        guard let panel = self.currentSheet() else { return false }
+                        guard self.string(panel, kAXTitleAttribute) == "Silent Snip",
+                              confirmationControls.next(in: panel, shouldContinue: { !Task.isCancelled }) != nil else { return false }
+                        observedPanel = panel
+                        return true
+                    }
                 }
             }
 #if DEBUG
-            if quietPrototypeStage != nil, ShareDestinationManager.shared.prototypeShareHasResponse(projectName: projectName) {
+            if probe == nil, quietPrototypeStage != nil, ShareDestinationManager.shared.prototypeShareHasResponse(projectName: projectName) {
                 // Some hosts complete XML without showing a confirmation. A
                 // rendered response cannot stand in for verified live settings.
                 guard !renderAudio else { throw FinalCutDialogueExport.ExportError.unverifiedDialogueOutput }
@@ -178,7 +257,9 @@ extension FinalCutAXSession {
             }
 #endif
             ownsPanel = true
-            guard let panel = currentSheet() else { throw FinalCutCaptureError.unavailable("Share panel disappeared.") }
+            // restoreOwnShareActivation immediately revalidates this panel's
+            // ownership; reuse the successful readiness observation here.
+            guard let panel = observedPanel else { throw FinalCutCaptureError.unavailable("Share panel disappeared.") }
             try await restoreOwnShareActivation(panel: panel)
             if renderAudio { try await FinalCutDialogueExport.configureShare(panel, session: self, timing: timing, mixScope: mixScope) }
             if let renderSelection,
@@ -201,19 +282,22 @@ extension FinalCutAXSession {
             quietPrototypeStage?("beforeConfirmation")
             try Task.checkCancellation()
 #endif
-            guard let next = find(in: panel, role: kAXButtonRole, title: "Next…") else {
+            try await restoreOwnShareActivation(panel: panel)
+            guard let next = confirmationControls.next(in: panel, shouldContinue: { !Task.isCancelled }) else {
                 throw FinalCutCaptureError.unavailable("The Share confirmation is unavailable.")
             }
-            try await restoreOwnShareActivation(panel: panel)
             _ = try timing.measure(prefix + ".confirm") { try press(next) }
             ownsPanel = false
+            probe?.finish(foreground: NSWorkspace.shared.frontmostApplication?.processIdentifier, project: currentProjectTitle())
 #if DEBUG
             quietPrototypeStage?("delivery")
 #endif
         } catch {
+            probe?.finish(error: error, foreground: NSWorkspace.shared.frontmostApplication?.processIdentifier, project: currentProjectTitle())
             if ownsPanel {
                 await Task { @MainActor in
                     if let panel = self.currentSheet(), self.string(panel, kAXTitleAttribute) == "Silent Snip",
+                       probe == nil || observedPanel.map({ CFEqual($0, panel) }) == true,
                        let cancel = self.find(in: panel, role: kAXButtonRole, title: "Cancel") {
                         try? await self.restoreOwnShareActivation(panel: panel)
                         _ = try? self.press(cancel)

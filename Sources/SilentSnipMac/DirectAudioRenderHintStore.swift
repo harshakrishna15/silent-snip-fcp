@@ -39,7 +39,8 @@ struct DirectAudioRenderHintStore: Sendable {
                   data.count == before.st_size else { return nil }
             var after = stat()
             guard fstat(file, &after) == 0, sameFileAndContents(before, after),
-                  let record = try? JSONDecoder().decode(Record.self, from: data), record.version == 1,
+                  let record = try? JSONDecoder().decode(Record.self, from: data),
+                  (record.version == 2 || (record.version == 1 && record.hint.workflowIdentity == nil)),
                   record.hint.isValidRoutingHint,
                   record.hint.sourceByteCount() != nil else { return nil }
             // Failure to unlink must be an ordinary miss. Otherwise a readable
@@ -56,8 +57,9 @@ struct DirectAudioRenderHintStore: Sendable {
               hint.sourceByteCount() != nil else { return false }
         // Duplicate raw-source references carry no routing information.
         let bounded = DirectAudioRenderHint(selection: hint.selection,
-            sourceURLs: Array(Set(hint.sourceURLs)).sorted { $0.absoluteString < $1.absoluteString }, scope: hint.scope)
-        guard let data = try? JSONEncoder().encode(Record(version: 1, hint: bounded)),
+            sourceURLs: Array(Set(hint.sourceURLs)).sorted { $0.absoluteString < $1.absoluteString },
+            scope: hint.scope, workflowIdentity: hint.workflowIdentity)
+        guard let data = try? JSONEncoder().encode(Record(version: 2, hint: bounded)),
               data.count <= Self.maximumBytes else { return false }
         return withDirectory(create: true) { directory in
             guard safeDestination(directory: directory) else { return false }

@@ -139,7 +139,7 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         let saved = await store.save(try hint())
         XCTAssertTrue(saved)
         let valid = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        var unknown = valid; unknown["version"] = 2
+        var unknown = valid; unknown["version"] = 3
         var invalidScope = valid
         var fields = try XCTUnwrap(invalidScope["hint"] as? [String: Any])
         fields["scope"] = "assume-current-audio"; invalidScope["hint"] = fields

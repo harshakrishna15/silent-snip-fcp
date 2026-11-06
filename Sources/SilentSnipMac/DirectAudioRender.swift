@@ -8,10 +8,89 @@ import FoundationXML
 /// An optional routing hint, never an authorization or effects cache. The
 /// next manual Analyze must prove scope again using its new rendered XML.
 struct DirectAudioRenderHint: Codable, Sendable, Equatable {
+    /// Routing identity only. A current Workflow request must still pass the
+    /// native gesture check before this record can start any host operation.
+    /// View and gesture UUIDs deliberately never enter the persisted hint.
+    struct WorkflowIdentity: Codable, Sendable, Equatable {
+        let libraryURL: URL
+        let projectUID: String
+        let projectName: String
+
+        init(origin: WorkflowReviewOrigin) {
+            libraryURL = URL(fileURLWithPath: origin.libraryURL.standardizedFileURL.resolvingSymlinksInPath().path,
+                isDirectory: false)
+            projectUID = origin.projectUID
+            projectName = origin.projectName
+        }
+
+        private static func validName(_ value: String) -> Bool {
+            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && value.utf8.count <= 4_096 && value.rangeOfCharacter(from: .controlCharacters) == nil
+        }
+
+        private static func canonicalLibrary(_ url: URL) -> URL? {
+            guard url.isFileURL, url.host == nil || url.host == "" || url.host == "localhost",
+                  url.path.hasPrefix("/"), url.query == nil, url.fragment == nil,
+                  url.user == nil, url.password == nil, url.port == nil,
+                  url.pathExtension.lowercased() == "fcpbundle", validName(url.path) else { return nil }
+            let canonical = URL(fileURLWithPath: url.path, isDirectory: false)
+                .standardizedFileURL.resolvingSymlinksInPath()
+            return URL(fileURLWithPath: canonical.path, isDirectory: false)
+        }
+
+        var isValid: Bool {
+            Self.validName(projectUID) && Self.validName(projectName)
+                && Self.canonicalLibrary(libraryURL) == libraryURL
+        }
+
+        func matches(_ origin: WorkflowReviewOrigin) -> Bool {
+            guard isValid, let canonical = Self.canonicalLibrary(origin.libraryURL),
+                  // Fresh XML origin verification deliberately compares the
+                  // SDK's literal library path. Do not speculate through an
+                  // alias that could deliver a canonical, nonmatching path.
+                  origin.libraryURL.path == canonical.path else { return false }
+            return canonical == libraryURL && origin.projectUID == projectUID && origin.projectName == projectName
+        }
+
+        func verify(projectData: Data) throws {
+            let actual = try XMLReplacementTarget(projectData: projectData)
+            guard isValid, Self.canonicalLibrary(actual.libraryURL) == libraryURL,
+                  actual.originalProjectUID == projectUID, actual.projectName == projectName else {
+                throw FinalCutCaptureError.changedProject
+            }
+        }
+    }
+
     let selection: FinalCutSelectionSnapshot
     let sourceURLs: [URL]
     let scope: DirectAudioRender.Scope
-    func matches(_ current: FinalCutSelectionSnapshot) -> Bool { current == selection }
+    let workflowIdentity: WorkflowIdentity?
+
+    init(selection: FinalCutSelectionSnapshot, sourceURLs: [URL], scope: DirectAudioRender.Scope,
+         workflowIdentity: WorkflowIdentity? = nil) {
+        self.selection = selection
+        self.sourceURLs = sourceURLs
+        self.scope = scope
+        self.workflowIdentity = workflowIdentity
+    }
+
+    func matches(_ current: FinalCutSelectionSnapshot, workflowOrigin: WorkflowReviewOrigin? = nil) -> Bool {
+        guard current == selection else { return false }
+        switch (workflowIdentity, workflowOrigin) {
+        case (nil, nil): return true
+        case let (identity?, origin?): return identity.matches(origin) && origin.projectName == selection.projectName
+        default: return false // Legacy AU hints never seed Workflow capture, or vice versa.
+        }
+    }
+
+    /// Called only after the current request's native gesture is authorized.
+    /// Identity/selection misses are ordinary XML capture before dispatch.
+    func prepareSourceRead(matching current: FinalCutSelectionSnapshot, workflowOrigin: WorkflowReviewOrigin?,
+                           prepare: ([URL]) throws -> MediaContentSnapshot.ReadGuard = MediaContentSnapshot.prepareRead) throws -> MediaContentSnapshot.ReadGuard? {
+        try Task.checkCancellation()
+        guard matches(current, workflowOrigin: workflowOrigin) else { return nil }
+        return try prepareSourceRead(prepare: prepare)
+    }
 
     /// A hint can outlive its sources. Failure before any host dispatch selects
     /// the ordinary XML capture, never a retry of a render that may have started.
@@ -70,6 +149,9 @@ struct DirectAudioRenderHint: Codable, Sendable, Equatable {
               timecode(selection.trailingTimecode, permitsDropFrame: true),
               timecode(selection.durationTimecode, permitsDropFrame: false),
               !sourceURLs.isEmpty, sourceURLs.count <= 256 else { return false }
+        if let workflowIdentity {
+            guard workflowIdentity.isValid, workflowIdentity.projectName == selection.projectName else { return false }
+        }
         return sourceURLs.allSatisfy { url in
             url.isFileURL && (url.host == nil || url.host == "") && url.query == nil && url.fragment == nil
                 && url.user == nil && url.password == nil && url.path.hasPrefix("/")
@@ -78,7 +160,14 @@ struct DirectAudioRenderHint: Codable, Sendable, Equatable {
         }
     }
 
-    func accepts(projectData: Data, selection: TimelineSelection, media: MediaContentSnapshot) throws -> Bool {
+    func accepts(projectData: Data, selection: TimelineSelection, media: MediaContentSnapshot,
+                 workflowOrigin: WorkflowReviewOrigin? = nil) throws -> Bool {
+        if let identity = workflowIdentity {
+            guard let origin = workflowOrigin, identity.matches(origin) else { throw FinalCutCaptureError.changedProject }
+            // An identity failure after Share is terminal, never another Share.
+            try origin.verify(projectData: projectData)
+            try identity.verify(projectData: projectData)
+        } else if workflowOrigin != nil { throw FinalCutCaptureError.changedProject }
         let document = try TimelineParser.parse(data: projectData)
         guard media.covers(document.clips.filter(\.enabled).compactMap(\.mediaURL)) else { return false }
         return try DirectAudioRender.scope(projectData: projectData, selection: selection) == scope

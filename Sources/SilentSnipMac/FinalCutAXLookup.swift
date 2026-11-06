@@ -122,7 +122,8 @@ final class FinalCutAXLookup<Element> {
         self.root = root; self.query = query; self.read = read; self.children = children; self.equals = equals
     }
 
-    func resolve(shouldContinue: () -> Bool = { !Task.isCancelled }) -> FinalCutAXMatch<Element>? {
+    func resolve(maxDepth: Int = 24, maxNodes: Int = 600,
+                 shouldContinue: () -> Bool = { !Task.isCancelled }) -> FinalCutAXMatch<Element>? {
         if let path {
             statistics.pathChecks += 1
             if mounted(path, shouldContinue: shouldContinue), let element = path.last {
@@ -136,7 +137,7 @@ final class FinalCutAXLookup<Element> {
         }
         guard shouldContinue() else { return nil }
         statistics.searches += 1
-        let result = FinalCutAXSearch.find(root: root, query: query, read: read, children: children,
+        let result = FinalCutAXSearch.find(root: root, query: query, maxDepth: maxDepth, maxNodes: maxNodes, read: read, children: children,
             equals: equals, shouldContinue: shouldContinue, visited: { self.statistics.visitedNodes += 1 })
         path = result?.path
         return result

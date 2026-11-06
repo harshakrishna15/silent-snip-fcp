@@ -85,11 +85,11 @@ import Foundation
         }
         let xml: URL
         let hintedRead: MediaContentSnapshot.ReadGuard?
-        if let hint = directRenderHint, hint.matches(selected) {
+        if let hint = directRenderHint {
             // Pin source identities BEFORE any render. Full hashes overlap the
             // same host exchange and must join before its PCM/XML is accepted.
             hintedRead = try timing.measure("capture.sourceValidationBeforeRender") {
-                try hint.prepareSourceRead()
+                try hint.prepareSourceRead(matching: selected, workflowOrigin: workflowOrigin)
             }
         } else { hintedRead = nil }
         if let hint = directRenderHint, let hintedRead {
@@ -136,7 +136,7 @@ import Foundation
         }
         let (selection, target) = try selected.resolve(in: document)
         if let receipt = rendered, let hint = directRenderHint, let sourceMedia = media,
-           !(try hint.accepts(projectData: data, selection: selection, media: sourceMedia)) {
+           !(try hint.accepts(projectData: data, selection: selection, media: sourceMedia, workflowOrigin: workflowOrigin)) {
             // The hint was stale. These fresh XML bytes still provide the normal
             // capture, but this full-project audio cannot represent the target.
             try ShareDestinationManager.shared.cleanupRenderedMedia(receipt: receipt)

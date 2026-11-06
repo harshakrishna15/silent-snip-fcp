@@ -142,9 +142,10 @@ import Foundation
         try Task.checkCancellation()
         let persistedHint = await timing.measure("capture.routingHintLookup") { await routingHintStore.consume() }
         try Task.checkCancellation()
-        // Historical hints bind a selection, not the Workflow SDK's library
-        // and project identity. Workflow entry first obtains fresh XML.
-        let renderHint = request.workflowOrigin == nil ? (directRenderHint ?? persistedHint) : nil
+        // Capture accepts Workflow hints only when their library/project
+        // identity matches this freshly authorized request and AX selection.
+        // Legacy selection-only hints remain exclusive to the AU entry path.
+        let renderHint = directRenderHint ?? persistedHint
         directRenderHint = nil // A failed/stale hint must not loop on the next click.
         let capture: CapturedFinalCutProject
         do {
@@ -372,13 +373,14 @@ import Foundation
             }
             timing.begin("restoreControls")
             let notice = await capture.presentReviewWindow()
+            timing.recordCounters(capture.session.workflowReviewLookupCounters())
             recordPresentation(notice, in: directory)
             try Task.checkCancellation()
             if renderedInOriginal, key == nil, let selection = capture.session.reviewOwnership.active,
                let scope = try DirectAudioRender.scope(projectData: projectData, selection: capture.selection) {
                 directRenderHint = DirectAudioRenderHint(selection: selection,
                     sourceURLs: capture.document.clips.filter(\.enabled).compactMap(\.mediaURL),
-                    scope: scope)
+                    scope: scope, workflowIdentity: request.workflowOrigin.map { .init(origin: $0) })
                 if let directRenderHint {
                     _ = await timing.measure("capture.routingHintStorage") { await routingHintStore.save(directRenderHint) }
                     try Task.checkCancellation()

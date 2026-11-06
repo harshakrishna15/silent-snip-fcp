@@ -3,6 +3,194 @@ import XCTest
 @testable import SilentSnipMac
 
 final class TimelineCutPreviewTests: XCTestCase {
+    private final class ScalingPanel: NSPanel {
+        var testScale: CGFloat = 1
+        override var backingScaleFactor: CGFloat { testScale }
+    }
+
+    @MainActor func testRemovalTintRequiresOneValidIncludedBoundaryPair() {
+        let boundaries: [CutBoundaryView.Boundary] = [
+            .init(fraction: 0.1, isStart: true, number: 2), .init(fraction: 0.2, isStart: false, number: 2),
+            .init(fraction: 0.6, isStart: true, number: 7), .init(fraction: 0.9, isStart: false, number: 7),
+            .init(fraction: 0.3, isStart: true, number: 3), // No end.
+            .init(fraction: 0.4, isStart: true, number: 4), .init(fraction: 0.5, isStart: false, number: 4),
+            .init(fraction: 0.45, isStart: true, number: 4), // Ambiguous duplicate.
+            .init(fraction: 0.8, isStart: true, number: 5), .init(fraction: 0.7, isStart: false, number: 5),
+            .init(fraction: .nan, isStart: true, number: 6), .init(fraction: 0.7, isStart: false, number: 6)
+        ]
+        XCTAssertEqual(CutBoundaryView.removalRanges(from: boundaries), [
+            .init(start: 0.1, end: 0.2, number: 2), .init(start: 0.6, end: 0.9, number: 7)
+        ])
+    }
+
+    @MainActor func testRangeSpanningViewportIsShadedWithoutEitherBoundaryOnscreen() {
+        let range = CutBoundaryView.RemovalRange(start: 0.2, end: 0.8, number: 12)
+        let index = CutBoundaryView.RangeIndex([range, .init(start: 0.05, end: 0.4, number: 1),
+                                              .init(start: 0.5, end: 0.6, number: 2)])
+        let visible = index.visible(origin: -400, clipWidth: 1000, viewportWidth: 100)
+        XCTAssertEqual(visible, [range], "Touching a viewport edge alone does not create a tinted interval")
+        XCTAssertEqual(CutBoundaryView.visibleRangeRect(range, origin: -400, clipWidth: 1000,
+            bounds: CGRect(x: 0, y: 0, width: 100, height: 80)), CGRect(x: 0, y: 0, width: 100, height: 80))
+        let endpoints: [CutBoundaryView.Boundary] = [.init(fraction: 0.2, isStart: true, number: 12),
+                                                   .init(fraction: 0.8, isStart: false, number: 12)]
+        XCTAssertTrue(CutBoundaryView.visibleBoundaries(endpoints, origin: -400, clipWidth: 1000, viewportWidth: 100).isEmpty)
+    }
+
+    @MainActor func testRangeIndexSkipsThousandsOfOffscreenRangesIncludingLongSpanningRange() {
+        var ranges = (0..<10_000).map { CutBoundaryView.RemovalRange(start: Double($0) / 10_000,
+            end: (Double($0) + 0.5) / 10_000, number: $0 + 1) }
+        ranges.append(.init(start: 0.1, end: 0.9, number: 20_000))
+        let index = CutBoundaryView.RangeIndex(ranges)
+        var visits = 0
+        let visible = index.visible(origin: -50_000, clipWidth: 100_000, viewportWidth: 500, visited: { visits += 1 })
+        XCTAssertEqual(visible.count, 51)
+        XCTAssertEqual(Set(visible.map(\.number)), Set(Array(5001...5050) + [20_000]))
+        XCTAssertLessThan(visits, 150, "A spanning range must not force a scan through every preceding cut")
+    }
+
+    @MainActor func testNumberBadgesStayInsideViewportAndOmitCrowdedNeighbors() {
+        let bounds = CGRect(x: 0, y: 0, width: 300, height: 80)
+        let frames = CutBoundaryView.labelFrames([
+            .init(number: 2, visibleRange: CGRect(x: 0, y: 0, width: 4, height: 80), width: 18),
+            .init(number: 5, visibleRange: CGRect(x: 9, y: 0, width: 2, height: 80), width: 18),
+            .init(number: 9, visibleRange: CGRect(x: 297, y: 0, width: 3, height: 80), width: 18)
+        ], bounds: bounds, scale: 2)
+        XCTAssertEqual(Set(frames.keys), [2, 9])
+        for frame in frames.values {
+            XCTAssertTrue(bounds.contains(frame))
+            XCTAssertEqual(frame.minX * 2, (frame.minX * 2).rounded())
+        }
+        XCTAssertGreaterThanOrEqual(frames[9]!.minX - frames[2]!.maxX, 4)
+        XCTAssertTrue(CutBoundaryView.labelFrames([.init(number: 2, visibleRange: bounds, width: 18)],
+            bounds: CGRect(x: 0, y: 0, width: 12, height: 80), scale: 1).isEmpty)
+    }
+
+    @MainActor func testThinStrokesAlignTheirEdgesAtEachBackingScale() {
+        for scale in [CGFloat(1), 2, 3] {
+            for exact in [CGFloat(0), 1.2, 59.4683, 200, 499.9] {
+                let stroke = CutBoundaryView.alignedStroke(at: exact, scale: scale)
+                XCTAssertEqual((stroke.position - stroke.width / 2) * scale,
+                    ((stroke.position - stroke.width / 2) * scale).rounded(), accuracy: 0.000001)
+                XCTAssertEqual(stroke.width * scale, (stroke.width * scale).rounded(), accuracy: 0.000001)
+                XCTAssertLessThanOrEqual(abs(stroke.position - exact), 0.5 / scale + 0.000001)
+                XCTAssertEqual(stroke.width, 1)
+            }
+        }
+    }
+
+    @MainActor func testExactViewportEdgesRetainDotsAtOneAndTwoTimesScale() throws {
+        let panel = ScalingPanel(contentRect: CGRect(x: 0, y: 0, width: 100, height: 120),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        let view = CutBoundaryView(frame: CGRect(x: 0, y: 0, width: 100, height: 120))
+        view.wantsLayer = true; panel.contentView = view; view.clipWidth = 100
+        view.boundaries = [.init(fraction: 0, isStart: true, number: 1), .init(fraction: 1, isStart: false, number: 1)]
+        for scale in [CGFloat(1), 2] {
+            panel.testScale = scale; view.viewDidChangeBackingProperties()
+            let bitmap = try XCTUnwrap(view.renderBitmap(scale: scale))
+            for x in [0, bitmap.pixelsWide - 1] {
+                let alphas = (Int(20 * scale)..<Int(100 * scale)).compactMap { bitmap.colorAt(x: x, y: $0)?.alphaComponent }
+                XCTAssertGreaterThan(alphas.filter { $0 > 0.2 }.count, Int(5 * scale), "Exact endpoints must not be clipped away")
+                XCTAssertGreaterThan(alphas.filter { $0 < 0.12 }.count, Int(10 * scale))
+            }
+        }
+    }
+
+    @MainActor func testScaleChangesReuseDrawingLayersAndRenderRetinaPixels() throws {
+        let panel = ScalingPanel(contentRect: CGRect(x: 0, y: 0, width: 300, height: 120),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        let view = CutBoundaryView(frame: CGRect(x: 0, y: 0, width: 300, height: 120))
+        view.wantsLayer = true; panel.contentView = view; view.clipWidth = 300
+        view.boundaries = [.init(fraction: 0.2, isStart: true, number: 4), .init(fraction: 0.8, isStart: false, number: 4)]
+        view.updateLayer()
+        let identities = view.lineLayerIdentities
+        XCTAssertTrue(view.managedLayerScales.allSatisfy { $0 == 1 })
+        panel.testScale = 2; view.viewDidChangeBackingProperties()
+        XCTAssertTrue(view.managedLayerScales.allSatisfy { $0 == 2 })
+        XCTAssertEqual(view.lineLayerIdentities, identities)
+        let bitmap = try XCTUnwrap(view.renderBitmap(scale: 2))
+        XCTAssertEqual(bitmap.pixelsWide, 600); XCTAssertEqual(bitmap.pixelsHigh, 240)
+        view.layer = CALayer(); view.updateLayer()
+        XCTAssertEqual(view.lineLayerIdentities, identities)
+        XCTAssertTrue(view.managedLayerScales.allSatisfy { $0 == 2 })
+        XCTAssertGreaterThan(try XCTUnwrap(view.renderBitmap(scale: 2)?.colorAt(x: 300, y: 120)?.alphaComponent), 0.03)
+    }
+
+    @MainActor func testSpanningTintAndBadgeAreClippedByTheSharedOcclusionMask() throws {
+        let view = CutBoundaryView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+        view.wantsLayer = true; view.clipWidth = 1000; view.clipOriginX = -400
+        view.boundaries = [.init(fraction: 0.2, isStart: true, number: 12), .init(fraction: 0.8, isStart: false, number: 12)]
+        view.updateLayer()
+        XCTAssertEqual(view.vectorLayerCount, 0)
+        XCTAssertEqual(view.renderedRanges.map(\.number), [12])
+        XCTAssertEqual(Set(view.renderedLabelFrames.keys), [12])
+        let initial = try XCTUnwrap(view.renderBitmap())
+        XCTAssertGreaterThan(try XCTUnwrap(initial.colorAt(x: 50, y: 50)?.alphaComponent), 0.03)
+        view.occlusions = [CGRect(x: 100, y: 0, width: 100, height: 100)]; view.updateLayer()
+        let covered = try XCTUnwrap(view.renderBitmap())
+        XCTAssertEqual(covered.colorAt(x: 150, y: 50)?.alphaComponent, 0)
+        XCTAssertGreaterThan(try XCTUnwrap(covered.colorAt(x: 50, y: 50)?.alphaComponent), 0.03)
+        view.occlusions = [view.bounds]; view.updateLayer()
+        let hidden = try XCTUnwrap(view.renderBitmap())
+        for y in 0..<100 { for x in 0..<200 { XCTAssertEqual(hidden.colorAt(x: x, y: y)?.alphaComponent, 0) } }
+    }
+
+    @MainActor func testHiddenPooledBoundariesReceiveNewHeightAndDotPhaseWhenVisibleAgain() throws {
+        let panel = ScalingPanel(contentRect: CGRect(x: 0, y: 0, width: 500, height: 120),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        let view = CutBoundaryView(frame: CGRect(x: 0, y: 0, width: 500, height: 120))
+        view.wantsLayer = true; panel.contentView = view; view.clipWidth = 500
+        view.boundaries = [0.1, 0.3, 0.5, 0.7, 0.9].enumerated().map {
+            .init(fraction: $0.element, isStart: true, number: $0.offset + 1)
+        }
+        view.updateLayer()
+        let identities = view.lineLayerIdentities
+        XCTAssertEqual(identities.count, 5)
+        view.clipWidth = 2000; view.updateLayer()
+        XCTAssertEqual(view.vectorLayerCount, 1)
+        panel.testScale = 2; view.setFrameSize(CGSize(width: 500, height: 210))
+        view.viewDidChangeBackingProperties()
+        view.clipWidth = 500; view.updateLayer()
+        XCTAssertEqual(view.lineLayerIdentities, identities)
+        XCTAssertTrue(view.managedLayerScales.allSatisfy { $0 == 2 })
+        let bitmap = try XCTUnwrap(view.renderBitmap(scale: 2))
+        let rows = 60..<180
+        let reference = rows.map { bitmap.colorAt(x: 100, y: $0)?.alphaComponent ?? 0 }
+        XCTAssertGreaterThan(reference.filter { $0 > 0.2 }.count, 10)
+        for x in [300, 500, 700, 900] {
+            let revived = rows.map { bitmap.colorAt(x: x, y: $0)?.alphaComponent ?? 0 }
+            XCTAssertEqual(revived, reference, "Every revived layer must use the current full-height path and dot phase")
+        }
+    }
+
+    @MainActor func testCompactRangePreviewProducesSeparatedRoundDotsAtOneAndTwoTimesScale() throws {
+        let panel = ScalingPanel(contentRect: CGRect(x: 0, y: 0, width: 1151, height: 210),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        let view = CutBoundaryView(frame: CGRect(x: 0, y: 0, width: 1151, height: 210))
+        view.wantsLayer = true; panel.contentView = view; view.clipWidth = 1151
+        view.boundaries = [.init(fraction: 3.1 / 60, isStart: true, number: 1), .init(fraction: 13.4 / 60, isStart: false, number: 1)]
+        for number in 2...18 {
+            let start = 15.6 + Double(number - 2) * 2.5
+            view.boundaries += [.init(fraction: start / 60, isStart: true, number: number),
+                                .init(fraction: (start + 0.3) / 60, isStart: false, number: number)]
+        }
+        for scale in [CGFloat(1), 2] {
+            panel.testScale = scale; view.viewDidChangeBackingProperties()
+            let bitmap = try XCTUnwrap(view.renderBitmap(scale: scale))
+            XCTAssertEqual(view.vectorLayerCount, 36)
+            XCTAssertEqual(view.renderedLabelFrames.count, 18)
+            let position = CutBoundaryView.alignedStroke(at: 3.1 / 60 * 1151, scale: scale).position
+            let x = Int(floor(position * scale))
+            let alphas = (Int(25 * scale)..<Int(185 * scale)).compactMap { bitmap.colorAt(x: x, y: $0)?.alphaComponent }
+            XCTAssertGreaterThan(alphas.filter { $0 > 0.2 }.count, Int(20 * scale), "Round dots must reach the backing layer")
+            XCTAssertGreaterThan(alphas.filter { $0 < 0.12 }.count, Int(50 * scale), "The thin stroke must retain visible gaps")
+            if let path = ProcessInfo.processInfo.environment["SILENT_SNIP_PREVIEW_RENDER_OUTPUT"] {
+                let directory = URL(fileURLWithPath: path, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("Preview-\(Int(scale))x.png"))
+            }
+        }
+    }
+
     @MainActor func testZoomedPreviewAllocatesOnlyVisibleBoundariesAndRetainsGlobalNumbers() {
         let view = CutBoundaryView(frame: CGRect(x: 0, y: 0, width: 500, height: 120))
         view.wantsLayer = true

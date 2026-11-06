@@ -1,6 +1,28 @@
 import Foundation
 import CoreGraphics
 
+/// Timer checks are bounded, while an owned panel's occlusion notification
+/// can repair ordering immediately. Ordering may synchronously notify again;
+/// keep that nested callback out until the current check finishes.
+struct PreviewPresentationPacer {
+    private var lastCheck = Date.distantPast
+    private var checking = false
+
+    mutating func begin(at now: Date, urgent: Bool = false) -> Bool {
+        guard !checking, urgent || now.timeIntervalSince(lastCheck) >= 1.0 / 30 else { return false }
+        checking = true
+        lastCheck = now
+        return true
+    }
+
+    mutating func finish() { checking = false }
+
+    mutating func reset() {
+        lastCheck = .distantPast
+        checking = false
+    }
+}
+
 /// A failed accessibility read is not evidence that the analyzed clip moved.
 /// Keep the last verified drawing through host rebuilds and require sustained,
 /// matching evidence before hiding for a different project or scroll viewport.

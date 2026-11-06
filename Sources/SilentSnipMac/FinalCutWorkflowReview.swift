@@ -91,16 +91,14 @@ extension FinalCutAXSession {
         let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute)
         let expectedID = "silentsnip.workflow.\(action).requested.\(origin.gesture.uuidString)"
         let window = windows.first
-        let button = window.flatMap {
-            find(in: $0, role: kAXButtonRole, identifier: expectedID, maxDepth: 24, maxNodes: 3000)
-        }
+        let button = window.flatMap { workflowAction(in: $0, identifier: expectedID) }
         let foreground = NSWorkspace.shared.frontmostApplication
         let observation = WorkflowAnalyzeObservation(matchingWindows: windows.count,
             focusedMatches: focused.map { focused in window.map { CFEqual(focused, $0) } ?? false },
             hostIsActive: foreground?.processIdentifier == application.processIdentifier,
             buttonFound: button != nil,
-            pendingIDMatches: button.map { string($0, kAXIdentifierAttribute) == expectedID } ?? false,
-            buttonEnabled: button.flatMap { (attribute($0, kAXEnabledAttribute) as? NSNumber)?.boolValue },
+            pendingIDMatches: button.map { $0.values[kAXIdentifierAttribute] as? String == expectedID } ?? false,
+            buttonEnabled: button.flatMap { ($0.values[kAXEnabledAttribute] as? NSNumber)?.boolValue },
             helperIsActive: foreground?.processIdentifier == NSRunningApplication.current.processIdentifier,
             foregroundBundleIdentifier: foreground?.bundleIdentifier)
         guard observation.failureReason == nil, let window else {
@@ -123,14 +121,15 @@ extension FinalCutAXSession {
     }
 
     func isBoundWorkflowReviewWindow(_ window: AXUIElement) -> Bool {
-        guard let origin = workflowOrigin,
-              string(window, kAXRoleAttribute) != kAXSheetRole,
-              !["save-panel", "open-panel", "GoToWindow"].contains(string(window, kAXIdentifierAttribute) ?? "") else { return false }
-        return find(in: window, role: kAXButtonRole,
-            identifier: "silentsnip.workflow.review.\(origin.view.uuidString)", maxDepth: 24, maxNodes: 3000) != nil
+        guard let origin = workflowOrigin else { return false }
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        return workflowLookups.matches(window, excluding: mainWindow,
+            markerIdentifier: "silentsnip.workflow.review.\(origin.view.uuidString)",
+            shouldContinue: { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline })
     }
 
     private func workflowReviewWindows() -> [AXUIElement] {
+        guard let origin = workflowOrigin else { return [] }
         // AXWindows can repeat the same native reference. Only CFEqual copies
         // are collapsed; two actual windows carrying a view remain ambiguous.
         var candidates = WorkflowReviewWindowIdentity.distinct(
@@ -139,7 +138,32 @@ extension FinalCutAXSession {
         for window in [Self.elementAttribute(root, kAXFocusedWindowAttribute), retainedWorkflowWindow].compactMap({ $0 }) {
             if !candidates.contains(where: { CFEqual($0, window) }) { candidates.append(window) }
         }
-        return candidates.filter { isBoundWorkflowReviewWindow($0) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        return workflowLookups.matchingWindows(candidates, excluding: mainWindow,
+            markerIdentifier: "silentsnip.workflow.review.\(origin.view.uuidString)",
+            shouldContinue: { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline })
+    }
+
+    private var workflowLookups: WorkflowReviewAXLookups<AXUIElement> {
+        if let workflowReviewLookups { return workflowReviewLookups }
+        let lookups = WorkflowReviewAXLookups<AXUIElement>(read: { FinalCutAXAttributes.read($0, names: $1) },
+            children: { Self.rawAttribute($0, kAXChildrenAttribute) as? [AXUIElement] ?? [] },
+            equals: { CFEqual($0, $1) })
+        workflowReviewLookups = lookups
+        return lookups
+    }
+
+    private func workflowAction(in window: AXUIElement, identifier: String) -> FinalCutAXMatch<AXUIElement>? {
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        return workflowLookups.action(in: window, identifier: identifier,
+            shouldContinue: { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline })
+    }
+
+    func workflowReviewLookupCounters() -> [String: Int] {
+        guard let counters = workflowReviewLookups?.statistics else { return [:] }
+        return ["workflowReview.searches": counters.searches, "workflowReview.cacheHits": counters.cacheHits,
+            "workflowReview.invalidations": counters.invalidations, "workflowReview.visitedNodes": counters.visitedNodes,
+            "workflowReview.pathChecks": counters.pathChecks, "workflowReview.mainWindowSkips": counters.mainWindowSkips]
     }
 
     private func workflowForegroundIsOwned() -> Bool {
@@ -148,19 +172,34 @@ extension FinalCutAXSession {
     }
 
     func workflowReconnectFailure(view: UUID) -> String? {
-        guard let origin = workflowOrigin, origin.view == view else { return "The requesting Workflow Extension view changed." }
-        do { try assertCurrentProject() } catch { return "The original project is no longer active." }
-        guard currentSheet() == nil else { return "A Final Cut dialog is blocking review." }
+        workflowConnection(view: view).failure
+    }
+
+    /// One synchronous observation supplies both authorization and its window.
+    /// Do not carry this observation across activation, focus changes or awaits.
+    private func workflowConnection(view: UUID, requireFocused: Bool = true, requireForeground: Bool = true,
+                                    projectAlreadyChecked: Bool = false) -> (window: AXUIElement?, failure: String?) {
+        guard let origin = workflowOrigin, origin.view == view else { return (nil, "The requesting Workflow Extension view changed.") }
+        if !projectAlreadyChecked {
+            do { try assertCurrentProject() } catch { return (nil, "The original project is no longer active.") }
+        }
+        guard currentSheet() == nil else { return (nil, "A Final Cut dialog is blocking review.") }
         guard let expected = reviewOwnership.active, (try? selectionSnapshot()) == expected else {
-            return "The original selected clip is no longer available. Analyze again."
+            return (nil, "The original selected clip is no longer available. Analyze again.")
         }
         let windows = workflowReviewWindows()
-        guard windows.count == 1, let window = windows.first,
-              let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute), CFEqual(focused, window) else {
-            return "The requesting Workflow Extension is not the unique focused view."
+        guard windows.count == 1, let window = windows.first else {
+            return (nil, "The requesting Workflow Extension is not the unique focused view.")
         }
-        guard workflowForegroundIsOwned() else { return "Another application owns the foreground; return to Final Cut before applying." }
-        return nil
+        if requireFocused {
+            guard let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute), CFEqual(focused, window) else {
+                return (nil, "The requesting Workflow Extension is not the unique focused view.")
+            }
+        }
+        guard !requireForeground || workflowForegroundIsOwned() else {
+            return (nil, "Another application owns the foreground; return to Final Cut before applying.")
+        }
+        return (window, nil)
     }
 
     func canAuthorizeWorkflowApply(view: UUID, gesture: UUID) -> Bool {
@@ -172,11 +211,12 @@ extension FinalCutAXSession {
     }
 
     private func canAuthorizeWorkflowAction(view: UUID, gesture: UUID, action: String) -> Bool {
-        guard workflowReconnectFailure(view: view) == nil, let window = workflowReviewWindows().first,
-              let button = find(in: window, role: kAXButtonRole,
-                identifier: "silentsnip.workflow.\(action).requested.\(gesture.uuidString)", maxDepth: 24, maxNodes: 3000) else { return false }
-        return WorkflowReviewGesture.pending(identifier: string(button, kAXIdentifierAttribute),
-            enabled: (attribute(button, kAXEnabledAttribute) as? NSNumber)?.boolValue, gesture: gesture, action: action)
+        let connection = workflowConnection(view: view)
+        guard connection.failure == nil, let window = connection.window,
+              let button = workflowAction(in: window,
+                identifier: "silentsnip.workflow.\(action).requested.\(gesture.uuidString)") else { return false }
+        return WorkflowReviewGesture.pending(identifier: button.values[kAXIdentifierAttribute] as? String,
+            enabled: (button.values[kAXEnabledAttribute] as? NSNumber)?.boolValue, gesture: gesture, action: action)
     }
 
     func restoreWorkflowReview(bringToFront: Bool, document: TimelineDocument?, target: TimelineClip?) async -> String? {
@@ -185,9 +225,9 @@ extension FinalCutAXSession {
         guard let expected = reviewOwnership.active else { return nil }
         let guidance = "Reopen the Silent Snip Workflow Extension and select the original clip to review these results."
         do {
-            try assertCurrentProject()
-            guard currentSheet() == nil else { return guidance }
             if bringToFront {
+                try assertCurrentProject()
+                guard currentSheet() == nil else { return guidance }
                 requestActivation()
                 try await waitUntil(timeout: 3, context: "Final Cut activation for workflow review") {
                     NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier
@@ -196,23 +236,34 @@ extension FinalCutAXSession {
                     try await selectTimelineClip(target, document: document, restoring: expected)
                 }
             }
-            guard (try? selectionSnapshot()) == expected,
-                  workflowForegroundIsOwned() else { return guidance }
-            return try await raiseWorkflowReview() ? nil : guidance
+            guard let origin = workflowOrigin else { return guidance }
+            let connection = workflowConnection(view: origin.view, requireFocused: false)
+            guard connection.failure == nil, let window = connection.window,
+                  raiseWorkflowReviewWindow(window) else { return guidance }
+            return try await awaitWorkflowReviewPresentation() ? nil : guidance
         } catch { return "\(guidance) (\(error.localizedDescription))" }
     }
 
     func raiseWorkflowReview() async throws -> Bool {
         try assertCurrentProject()
-        guard currentSheet() == nil, let expected = reviewOwnership.active,
-              (try? selectionSnapshot()) == expected else { return false }
-        let windows = workflowReviewWindows()
-        guard windows.count == 1, let window = windows.first else { return false }
+        guard let origin = workflowOrigin else { return false }
+        let connection = workflowConnection(view: origin.view, requireFocused: false, requireForeground: false,
+            projectAlreadyChecked: true)
+        guard connection.failure == nil, let window = connection.window,
+              raiseWorkflowReviewWindow(window) else { return false }
+        return try await awaitWorkflowReviewPresentation()
+    }
+
+    private func raiseWorkflowReviewWindow(_ window: AXUIElement) -> Bool {
         requestActivation()
         _ = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
         guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else { return false }
         _ = AXUIElementSetAttributeValue(root, kAXFocusedWindowAttribute as CFString, window)
         _ = AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        return true
+    }
+
+    private func awaitWorkflowReviewPresentation() async throws -> Bool {
         let deadline = ProcessInfo.processInfo.systemUptime + 0.6
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()

@@ -11,6 +11,23 @@ struct PreviewGeometry: Equatable {
     var diagnosticSurfaces: [String] = []
 }
 
+/// Only the legacy effect frontend owns a controller on the analyzed clip.
+/// A Workflow review must neither inspect for nor depend on that absent AU.
+enum PreviewEffectRemovalPolicy {
+    case legacyAudioUnit
+    case workflowExtension
+
+    var requiresAudioUnit: Bool {
+        if case .legacyAudioUnit = self { return true }
+        return false
+    }
+
+    func inspectIfRequired<Inspection>(_ read: () -> Inspection) -> Inspection? {
+        guard requiresAudioUnit else { return nil }
+        return read()
+    }
+}
+
 /// All mutable state and AX reads belong to this one serial queue. AX handles
 /// are retained references, not AppKit views; no window drawing occurs here.
 final class FinalCutPreviewReader: @unchecked Sendable {
@@ -21,6 +38,7 @@ final class FinalCutPreviewReader: @unchecked Sendable {
     let mainWindow: AXUIElement
     private let projectName: String
     private let expected: FinalCutSelectionSnapshot
+    private let effectRemovalPolicy: PreviewEffectRemovalPolicy
     private let queue = DispatchQueue(label: "local.silentsnip.preview.geometry", qos: .userInteractive)
     private var timeline: AXUIElement?
     private var clip: AXUIElement?
@@ -61,9 +79,11 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Silent Snip/Integration/EnablePreviewDiagnostics").path)
 
-    init(pid: pid_t, root: AXUIElement, mainWindow: AXUIElement, projectName: String, expected: FinalCutSelectionSnapshot) {
+    init(pid: pid_t, root: AXUIElement, mainWindow: AXUIElement, projectName: String, expected: FinalCutSelectionSnapshot,
+         effectRemovalPolicy: PreviewEffectRemovalPolicy = .legacyAudioUnit) {
         self.pid = pid; self.root = root; self.mainWindow = mainWindow
         self.projectName = projectName; self.expected = expected
+        self.effectRemovalPolicy = effectRemovalPolicy
         let timeline = Self.search(mainWindow, role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true)
         let scroll = timeline.flatMap { Self.elementAttribute($0, kAXParentAttribute) }
         let controls = scroll.flatMap { Self.rawAttribute($0, kAXChildrenAttribute) as? [AXUIElement] } ?? []
@@ -188,7 +208,7 @@ final class FinalCutPreviewReader: @unchecked Sendable {
 
     private func read() throws -> PreviewGeometry {
         dispatchPrecondition(condition: .onQueue(queue))
-        if effectLifetime.removed { throw FinalCutPreviewError.effectRemoved }
+        if effectRemovalPolicy.requiresAudioUnit, effectLifetime.removed { throw FinalCutPreviewError.effectRemoved }
         let now = Date()
         if timeline == nil || clip == nil {
             try validate()
@@ -239,12 +259,14 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         var geometry = PreviewGeometry(frame: frame, visibleFrame: visibleFrame, occlusions: [],
             projectWindowNumber: windowSnapshot.projectNumber,
             windowOrder: refreshedWindowSnapshot ? windowSnapshot.order : [])
-        if Date().timeIntervalSince(effectDate) >= (effectInspectionProgress == nil ? 1.0 : 0.1) {
-            // Bound each Inspector slice so it cannot monopolize tracking.
-            // Partial snapshots resume on later samples and remain unknown,
-            // never evidence that the effect was removed.
-            nextDeadline = Date().addingTimeInterval(0.012)
-            let inspection = inspectEffect(timeline: timeline, clip: clip)
+        if Date().timeIntervalSince(effectDate) >= (effectInspectionProgress == nil ? 1.0 : 0.1),
+           let inspection = effectRemovalPolicy.inspectIfRequired({
+               // Bound each legacy Inspector slice so it cannot monopolize
+               // tracking. Workflow never enters this closure or reads it.
+               // Partial snapshots remain unknown, not deletion evidence.
+               nextDeadline = Date().addingTimeInterval(0.012)
+               return inspectEffect(timeline: timeline, clip: clip)
+           }) {
             effectDate = Date()
             switch inspection {
             case .notSelected:

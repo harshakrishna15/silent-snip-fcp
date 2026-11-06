@@ -86,7 +86,35 @@ extension FinalCutAXSession {
         var acknowledged: [AXUIElement] = []
         var lastDialog: FinalCutImportDialog?
         let reportURL = importedXML.deletingLastPathComponent().appendingPathComponent("Import-Dialogs.json")
+        let browserLookups = FinalCutImportBrowserLookups(root: mainWindow,
+            read: { FinalCutAXAttributes.read($0, names: $1) },
+            children: { self.children($0) }, equals: { CFEqual($0, $1) })
+        var polls = 0, observations = 0, nodeReads = 0, unknownObservations = 0
+        var outcome = "failed"
+        defer {
+            var counters = browserLookups.counters
+            counters["polls"] = polls; counters["observations"] = observations; counters["nodeReads"] = nodeReads
+            counters["unknownObservations"] = unknownObservations
+            let report: [String: Any] = ["outcome": Task.isCancelled ? "cancelled" : outcome,
+                "elapsedSeconds": Date().timeIntervalSince(started), "counters": counters]
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: importedXML.deletingLastPathComponent().appendingPathComponent("Import-Performance.json"), options: .atomic)
+            }
+        }
+        func observe(_ element: AXUIElement) throws -> FinalCutImportObservation<AXUIElement> {
+            observations += 1
+            return try importObservation(in: element) { nodeReads += 1 }
+        }
+        func markUnknownObservation() {
+            unknownObservations += 1
+            let elapsed = Date().timeIntervalSince(started)
+            // An AX rebuild is neither a completed import nor evidence that
+            // browser navigation is needed. Restart both quiet intervals.
+            _ = readiness.observe(projectVisible: false, hasDialog: true, elapsed: elapsed)
+            _ = browserReveal.observe(projectVisible: false, originalProjectCurrent: false, hasDialog: true, elapsed: elapsed)
+        }
         while Date().timeIntervalSince(started) < 30 {
+            polls += 1
             try Task.checkCancellation()
             guard !application.isTerminated else { throw FinalCutCaptureError.changedProject }
             // Import may itself open the result. Permit only the original or
@@ -98,14 +126,16 @@ extension FinalCutAXSession {
             }
             let panel = currentSheet()
             if let panel {
-                let elements = importElements(in: panel)
-                let buttons = elements.filter { string($0, kAXRoleAttribute) == kAXButtonRole }
-                let dialog = FinalCutImportDialog(title: string(panel, kAXTitleAttribute) ?? "Untitled Final Cut dialog",
-                    text: elements.flatMap { element -> [String] in
-                        guard [kAXStaticTextRole, kAXRowRole, kAXTextAreaRole].contains(string(element, kAXRoleAttribute) ?? "") else { return [] }
-                        return [string(element, kAXTitleAttribute), string(element, kAXValueAttribute), string(element, kAXDescriptionAttribute)]
-                            .compactMap { $0 }.filter { !$0.isEmpty }
-                    }, buttons: buttons.compactMap { string($0, kAXTitleAttribute) })
+                let observation: FinalCutImportObservation<AXUIElement>
+                do { observation = try observe(panel) }
+                catch {
+                    try Task.checkCancellation()
+                    markUnknownObservation()
+                    try await Task.sleep(for: .milliseconds(150))
+                    continue
+                }
+                let buttons = observation.buttons
+                let dialog = observation.dialog
                 lastDialog = dialog
                 if observed.last != dialog {
                     observed.append(dialog)
@@ -116,8 +146,8 @@ extension FinalCutAXSession {
                    currentName == replacement.projectName,
                    (try? assertReplacementEvent(replacement)) != nil,
                    dialog.isReplacementConfirmation(libraryName: replacement.libraryURL.deletingPathExtension().lastPathComponent),
-                   let replace = buttons.first(where: { string($0, kAXTitleAttribute) == "Replace" }),
-                   (attribute(replace, kAXEnabledAttribute) as? NSNumber)?.boolValue == true {
+                   let replace = buttons.first(where: { $0.title == "Replace" }),
+                   (attribute(replace.element, kAXEnabledAttribute) as? NSNumber)?.boolValue == true {
                     application.activate(options: [])
                     if NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
                        let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute), isExpectedInputWindow(focused),
@@ -130,7 +160,7 @@ extension FinalCutAXSession {
                             libraryName: replacement.libraryURL.deletingPathExtension().lastPathComponent)
                         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                         try encoder.encode(confirmation).write(to: confirmationURL, options: .atomic)
-                        let result = AXUIElementPerformAction(replace, kAXPressAction as CFString)
+                        let result = AXUIElementPerformAction(replace.element, kAXPressAction as CFString)
                         confirmation.axResult = result.rawValue
                         try encoder.encode(confirmation).write(to: confirmationURL, options: .atomic)
                         guard result == .success else {
@@ -140,7 +170,7 @@ extension FinalCutAXSession {
                 }
                 if dialog.isCompletedWarning(for: importedXML.lastPathComponent), buttons.count == 1,
                    !acknowledged.contains(where: { CFEqual($0, panel) }),
-                   let ok = buttons.first, (attribute(ok, kAXEnabledAttribute) as? NSNumber)?.boolValue == true {
+                   let ok = buttons.first, (attribute(ok.element, kAXEnabledAttribute) as? NSNumber)?.boolValue == true {
                     application.activate(options: [])
                     // Use only this identified panel's OK action, once. Import
                     // navigation intentionally cannot use assertCurrentProject.
@@ -148,21 +178,33 @@ extension FinalCutAXSession {
                        let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute), isExpectedInputWindow(focused),
                        let current = currentSheet(), CFEqual(current, panel) {
                         acknowledged.append(panel)
-                        let result = AXUIElementPerformAction(ok, kAXPressAction as CFString)
+                        let result = AXUIElementPerformAction(ok.element, kAXPressAction as CFString)
                         guard result == .success else {
                             throw FinalCutCaptureError.unavailable("Could not acknowledge the completed XML import warning (AX error \(result.rawValue)). Warning details: \(reportURL.path)")
                         }
                     }
                 }
             } else { lastDialog = nil }
-            let browser = Self.search(mainWindow, role: kAXScrollAreaRole, description: "organizer", containersOnly: true)
-                ?? Self.search(mainWindow, role: kAXScrollAreaRole, description: "Organizer filmlist scroll view", containersOnly: true)
-            let visible = currentName == name || browser.map { browser in
-                importElements(in: browser).contains { element in
-                    [kAXImageRole, kAXTextFieldRole].contains(string(element, kAXRoleAttribute) ?? "")
-                        && [string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute), string(element, kAXValueAttribute)].contains(name)
+            let lookupDeadline = Date().addingTimeInterval(2)
+            let browser = browserLookups.resolve(currentProject: currentName, importedProject: name,
+                shouldContinue: { !Task.isCancelled && Date() < lookupDeadline })
+            guard browserLookups.lastResolutionComplete else {
+                try Task.checkCancellation()
+                markUnknownObservation()
+                try await Task.sleep(for: .milliseconds(150))
+                continue
+            }
+            var browserVisible = false
+            if let browser {
+                do { browserVisible = try observe(browser).containsProject(named: name) }
+                catch {
+                    try Task.checkCancellation()
+                    markUnknownObservation()
+                    try await Task.sleep(for: .milliseconds(150))
+                    continue
                 }
-            } == true
+            }
+            let visible = currentName == name || browserVisible
             // Some deliveries complete without leaving the confirmation visible
             // to us. Closing the original timeline is also an import transition;
             // the subsequent export must still prove a new UID and exact edits.
@@ -175,7 +217,10 @@ extension FinalCutAXSession {
             if readiness.observe(projectVisible: visible, hasDialog: panel != nil, elapsed: Date().timeIntervalSince(started),
                                  awaitingReplacement: acceptReplacement, replacementConfirmed: replacementAccepted,
                                  originalTimelineClosed: timelineTransitionObserved,
-                                 requiresTimelineTransition: acceptReplacement && originalTimelineSignature != nil) { return }
+                                 requiresTimelineTransition: acceptReplacement && originalTimelineSignature != nil) {
+                outcome = "ready"
+                return
+            }
             if replacement == nil, browserReveal.observe(projectVisible: visible, originalProjectCurrent: currentName == projectName,
                                      hasDialog: panel != nil, elapsed: Date().timeIntervalSince(started)) {
                 // The generated project may open between sampling the toolbar
@@ -202,6 +247,29 @@ extension FinalCutAXSession {
             throw FinalCutCaptureError.unavailable("Verification is blocked by Final Cut’s ‘\(dialog.title)’ dialog. Close it before checking the existing result. Details: \(reportURL.path)")
         }
         throw FinalCutCaptureError.unavailable("Final Cut did not finish presenting the imported project ‘\(name)’ within 30 seconds. Open the result in its event before retrying verification.")
+    }
+
+    private func importObservation(in element: AXUIElement, didReadNode: () -> Void) throws -> FinalCutImportObservation<AXUIElement> {
+        let deadline = Date().addingTimeInterval(2)
+        return try FinalCutImportObservation.capture(root: element, read: { item in
+            didReadNode()
+            let values = FinalCutAXAttributes.read(item, names: [kAXRoleAttribute, kAXTitleAttribute,
+                kAXValueAttribute, kAXDescriptionAttribute, kAXChildrenAttribute])
+            guard let role = values[kAXRoleAttribute] as? String else {
+                throw FinalCutImportObservation<AXUIElement>.CaptureError.incomplete
+            }
+            let children = values[kAXChildrenAttribute] as? [AXUIElement]
+            if children == nil && [kAXSheetRole, kAXGroupRole, kAXScrollAreaRole, kAXSplitGroupRole,
+                                  kAXWindowRole, kAXRowRole, kAXOutlineRole, kAXTableRole].contains(role) {
+                throw FinalCutImportObservation<AXUIElement>.CaptureError.incomplete
+            }
+            let raw = values[kAXValueAttribute]
+            let control = FinalCutImportObservation<AXUIElement>.Control(element: item, role: role,
+                title: values[kAXTitleAttribute] as? String,
+                value: (raw as? String) ?? (raw as? NSNumber)?.stringValue,
+                description: values[kAXDescriptionAttribute] as? String)
+            return (control, children ?? [])
+        }, shouldContinue: { !Task.isCancelled && Date() < deadline })
     }
 
     /// Reveal the current project before delivery. Replacement by name must

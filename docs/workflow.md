@@ -90,11 +90,11 @@ The helper checks whether the proposed edits can be represented in an editable o
 
 Verified cut rows may arrive with “Preview ready” while temporary-project cleanup finishes. Apply, cut selection, and navigation remain disabled until the operation returns to review. Cancellation discards this early result. Each job records time to preview separately from completion time; restoring the Workflow window can still delay when the user sees it.
 
-Read the summary and proposed start/end times and durations. Ineligible ranges are marked unavailable. The timeline automatically shows numbered boundaries for the included cuts: green START lines and orange END lines. These are helper overlays, not native markers or edits.
+Read the summary and proposed start/end times and durations. Ineligible ranges are marked unavailable. Included cuts have thin rounded dotted boundaries: green at the start and orange at the end, with small inward brackets and faint shading across the removal range. Compact number badges match the review rows; crowded badges are omitted at dense zoom levels while the boundaries remain. These are helper overlays, not native markers or edits.
 
 Unchanged status polls keep the connection alive without rebuilding the cut list.
 
-Closing the Workflow window invalidates its review and clears the preview. Applying, cancelling, replacing the review, or editing settings also clears its old preview. The overlay is ordered immediately above the verified project window, so macOS composites overlapping windows naturally. Geometry that cannot be verified hides the overlay.
+Closing the Workflow window invalidates its review and clears the preview. Applying, cancelling, replacing the review, or editing settings also clears its old preview. The overlay stays above the verified project during hover redraws. Switching to another app immediately hides it while retaining the review; returning to Final Cut restores it from fresh geometry. Other normal Final Cut windows restore project-relative ordering, and floating panels and menus remain above it. Geometry that cannot be verified hides the overlay.
 
 Choose a range from the **Go to Cut** menu to move the playhead to its start. The worker checks the current project and selected occurrence without another Share; navigation cannot run alongside Apply. It uses [Final Cut's timecode navigation](https://support.apple.com/guide/final-cut-pro/ver1632d762/mac), including project start timecode and drop-frame formatting. It does not change inclusion choices or edit the timeline.
 
