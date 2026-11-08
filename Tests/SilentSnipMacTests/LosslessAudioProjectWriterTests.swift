@@ -358,7 +358,13 @@ final class LosslessAudioProjectWriterTests: XCTestCase {
 
     func testSelectedTargetAVKeepsOriginalVideoAndAddsOnlyOneRenderedAudioLayer() throws {
         let audio = try pcm(seconds: 6, start: 2, scope: .selectedTarget)
-        let output = try write(fixture(camera: true, music: true), audio: audio)
+        let input = fixture(camera: true, music: true)
+        // Legacy selected-target serialization leaves the connected Music
+        // effect editable. Its XML cannot authorize reconstruction/import.
+        let output = try EditedProjectWriter.serializationExpectation(projectData: input,
+            selection: selection, selectedRanges: cuts, outputName: "Baked result", losslessAudio: audio)
+        XCTAssertThrowsError(try write(input, audio: audio),
+            "A retained connected effect must still block the public import writer")
         let document = try TimelineParser.parse(data: output.xmlData)
         let camera = document.clips.filter { $0.isPrimaryStoryline && $0.hasVideo }
         XCTAssertEqual(camera.map(\.sourceStart), [RationalTime(105), RationalTime(107)])
@@ -488,15 +494,20 @@ final class LosslessAudioProjectWriterTests: XCTestCase {
         }
     }
 
-    func testNilProvenanceRetainsExistingEditableOutputExactly() throws {
+    func testNilProvenanceRetainsSerializedEditableOutputExactlyWithoutAuthorizingImport() throws {
         let input = fixture(camera: true, music: true)
         let project = UUID(), event = UUID()
-        let original = try EditedProjectWriter.write(projectData: input, selection: selection,
+        // This checks the optional argument's serialization contract only.
+        // Equal XML does not establish complete original effect state.
+        let original = try EditedProjectWriter.serializationExpectation(projectData: input, selection: selection,
             selectedRanges: cuts, outputName: "Editable", projectUID: project, eventUID: event)
-        let explicitNil = try EditedProjectWriter.write(projectData: input, selection: selection,
+        let explicitNil = try EditedProjectWriter.serializationExpectation(projectData: input, selection: selection,
             selectedRanges: cuts, outputName: "Editable", projectUID: project, eventUID: event, losslessAudio: nil)
         XCTAssertEqual(original.xmlData, explicitNil.xmlData)
         XCTAssertNil(explicitNil.report.losslessAudio)
+        XCTAssertThrowsError(try EditedProjectWriter.write(projectData: input, selection: selection,
+            selectedRanges: cuts, outputName: "Editable", projectUID: project, eventUID: event, losslessAudio: nil),
+            "Nil rendered-audio provenance cannot authorize rebuilding the retained effects")
     }
 
     func testAudioOnlyPrimaryRebuildRefusesToDiscardAnUnhandledMarkerOnAnUntouchedGap() throws {

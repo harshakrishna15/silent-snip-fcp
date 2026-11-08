@@ -18,6 +18,7 @@ import Foundation
     private var activationChecks = 0
     private var activationReadySkips = 0
     private var activationRequests = 0
+    private var activationWorkspaceRaises = 0
     var operationStage = "Reading the selected timeline clip"
     var lastXMLShareDirectory: URL?
 #if DEBUG
@@ -87,7 +88,7 @@ import Foundation
         let name = workspace.project?.values[kAXTitleAttribute] as? String ?? ""
         let timeline = Self.resolve(timelineLookup)?.element
         guard !windowTitle.isEmpty, allowEmptyTimeline || (!name.isEmpty && timeline != nil) else {
-            throw FinalCutCaptureError.unavailable("The active project timeline could not be identified in this Final Cut layout.")
+            throw FinalCutCaptureError.unavailable("The active project timeline could not be identified in this Final Cut Pro layout.")
         }
         permitsEmptyTimeline = allowEmptyTimeline
         projectName = name
@@ -98,7 +99,7 @@ import Foundation
         else if let previous { try inheritWorkflowPresentation(from: previous) }
         // Import verification owns the bounded dialog-settling policy. Other
         // entry points still require an unobstructed project before any action.
-        guard allowImportDialog || currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut dialog before continuing.") }
+        guard allowImportDialog || currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut Pro dialog before continuing.") }
 #if DEBUG
         if let lease = QuietSharePrototype.pluginLease {
             try QuietSharePrototype.verifyOpenLibrary(self)
@@ -226,7 +227,8 @@ import Foundation
     }
 
     var activationCounters: [String: Int] {
-        ["checks": activationChecks, "readySkips": activationReadySkips, "requests": activationRequests]
+        ["checks": activationChecks, "readySkips": activationReadySkips, "requests": activationRequests,
+         "workspaceRaises": activationWorkspaceRaises]
     }
 
     func assertCurrentProject() throws {
@@ -234,7 +236,7 @@ import Foundation
 #if DEBUG
         try QuietSharePrototype.pluginLease?.assertMayContinue()
 #endif
-        guard !application.isTerminated else { throw FinalCutCaptureError.unavailable("Final Cut exited during \(operationStage).") }
+        guard !application.isTerminated else { throw FinalCutCaptureError.unavailable("Final Cut Pro exited during \(operationStage).") }
         // Read a fresh title only after verifying every edge from the pinned
         // window to this control. A rebuilt path falls back to bounded discovery.
         let name = currentProjectTitle() ?? ""
@@ -253,7 +255,7 @@ import Foundation
 
     func activate() async throws {
         try assertCurrentProject()
-        guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut dialog before continuing.") }
+        guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the open Final Cut Pro dialog before continuing.") }
         activationChecks += 1
         let alreadyFocused = FinalCutActivationReadiness.alreadyFocused(
             hostPID: application.processIdentifier, mainWindow: mainWindow,
@@ -272,15 +274,76 @@ import Foundation
             activationReadySkips += 1
         } else {
             activationRequests += 1
-            requestActivation()
-            try await waitUntil(timeout: 3) { NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier }
-            // A floating review or another native window still requires the
-            // ordinary one-shot activation of the pinned project workspace.
-            _ = AXUIElementSetAttributeValue(mainWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
-            _ = AXUIElementSetAttributeValue(mainWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-            try await waitUntil(timeout: 3) {
-                guard let focused = Self.elementAttribute(self.root, kAXFocusedWindowAttribute) else { return false }
-                return CFEqual(focused, self.mainWindow)
+            var phase = "waiting for the Final Cut application foreground"
+            var mainResult: Int32?, focusedResult: Int32?, raiseResult: Int32?, raiseLookup: Int32?
+            var supportsRaise = false
+            do {
+                requestActivation()
+                try await waitUntil(timeout: 3, context: "the Final Cut application foreground after activation") {
+                    NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier
+                }
+                phase = "pinning the exact Final Cut project workspace"
+                try assertCurrentProject()
+                guard currentSheet() == nil,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier else {
+                    throw FinalCutCaptureError.changedProject
+                }
+                try FinalCutWorkspaceActivation.pin(setAttributes: {
+                    mainResult = AXUIElementSetAttributeValue(self.mainWindow, kAXMainAttribute as CFString, kCFBooleanTrue).rawValue
+                    focusedResult = AXUIElementSetAttributeValue(self.mainWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue).rawValue
+                }, isFocused: {
+                    guard let focused = Self.elementAttribute(self.root, kAXFocusedWindowAttribute) else { return false }
+                    return CFEqual(focused, self.mainWindow)
+                }, supportsRaise: {
+                    var actions: CFArray?
+                    let result = AXUIElementCopyActionNames(self.mainWindow, &actions)
+                    raiseLookup = result.rawValue
+                    supportsRaise = result == .success && (actions as? [String] ?? []).contains(kAXRaiseAction)
+                    return supportsRaise
+                }, authorizeRaise: {
+                    try self.assertCurrentProject()
+                    guard self.currentSheet() == nil,
+                          NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier else {
+                        throw FinalCutCaptureError.unavailable("The project workspace lost ownership before its Raise action; no focus action was repeated.")
+                    }
+                }, raise: {
+                    self.activationWorkspaceRaises += 1
+                    let result = AXUIElementPerformAction(self.mainWindow, kAXRaiseAction as CFString)
+                    raiseResult = result.rawValue
+                    guard result == .success else {
+                        throw FinalCutCaptureError.unavailable("The exact project workspace Raise action returned AX error \(result.rawValue).")
+                    }
+                })
+                phase = "waiting for the exact pinned project workspace focus"
+                try await waitUntil(timeout: 3, context: "the exact pinned Final Cut project workspace focus") {
+                    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier,
+                          let focused = Self.elementAttribute(self.root, kAXFocusedWindowAttribute) else { return false }
+                    return CFEqual(focused, self.mainWindow)
+                }
+                try assertInputFocus()
+            } catch {
+                if error is CancellationError || Task.isCancelled { throw error }
+                let foreground = NSWorkspace.shared.frontmostApplication
+                let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute)
+                let focusedTitle = focused.flatMap { string($0, kAXTitleAttribute) } ?? "unavailable"
+                let report: [String: Any] = ["date": ISO8601DateFormatter().string(from: Date()),
+                    "phase": phase, "stage": operationStage, "project": projectName,
+                    "hostPID": application.processIdentifier, "helperPID": NSRunningApplication.current.processIdentifier,
+                    "helperActivationPolicy": NSApp.activationPolicy().rawValue,
+                    "foregroundPID": foreground?.processIdentifier as Any? ?? NSNull(),
+                    "foregroundBundleID": foreground?.bundleIdentifier as Any? ?? NSNull(),
+                    "focusedTitle": focusedTitle,
+                    "focusedRole": focused.flatMap { string($0, kAXRoleAttribute) } as Any? ?? NSNull(),
+                    "focusedSubrole": focused.flatMap { string($0, kAXSubroleAttribute) } as Any? ?? NSNull(),
+                    "focusedIsPinnedWindow": focused.map { CFEqual($0, mainWindow) } as Any? ?? NSNull(),
+                    "hasSheet": currentSheet() != nil, "setMainAXResult": mainResult as Any? ?? NSNull(),
+                    "setFocusedAXResult": focusedResult as Any? ?? NSNull(), "supportsRaise": supportsRaise,
+                    "raiseActionLookupAXResult": raiseLookup as Any? ?? NSNull(), "raiseAXResult": raiseResult as Any? ?? NSNull()]
+                if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+                    try? data.write(to: IntegrationReport.reportURL.deletingLastPathComponent()
+                        .appendingPathComponent("FinalCut-Activation-Failure.json"), options: .atomic)
+                }
+                throw FinalCutCaptureError.unavailable("\(operationStage): Could not restore project focus while \(phase). Observed foreground: \(foreground?.bundleIdentifier ?? "unavailable"); focused Final Cut window: ‘\(focusedTitle)’. \(error.localizedDescription)")
             }
         }
 #if DEBUG
@@ -291,12 +354,47 @@ import Foundation
 #endif
     }
 
+    /// Share delivery may briefly foreground this same helper even though the
+    /// pinned host window remains focused. Return only our own activation;
+    /// another app, project or window must still fail the strict input guard.
+    func prepareInputFocus() async throws {
+        try await FinalCutOwnedInputFocus.prepare(ownsForeground: {
+            NSWorkspace.shared.frontmostApplication?.processIdentifier == NSRunningApplication.current.processIdentifier
+        }, restore: {
+            try await self.activate()
+        }, assertFocused: {
+            try self.assertInputFocus()
+        })
+    }
+
     func assertInputFocus() throws {
         try assertCurrentProject()
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
-              let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute),
-              isExpectedInputWindow(focused) else {
-            throw FinalCutCaptureError.unavailable("\(operationStage): Final Cut lost keyboard focus. Return to its project window and Analyze again.")
+        let foreground = NSWorkspace.shared.frontmostApplication
+        let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute)
+        guard foreground?.processIdentifier == application.processIdentifier,
+              let focused, isExpectedInputWindow(focused) else {
+            // A focused-window or accessory-helper handoff must not be blamed
+            // on user input without evidence. Keep a small local observation;
+            // no screen contents or broad accessibility tree is captured.
+            let report: [String: Any] = ["date": ISO8601DateFormatter().string(from: Date()),
+                "stage": operationStage, "project": projectName,
+                "hostPID": application.processIdentifier,
+                "helperPID": NSRunningApplication.current.processIdentifier,
+                "helperActivationPolicy": NSApp.activationPolicy().rawValue,
+                "helperIsActive": NSApp.isActive,
+                "foregroundPID": foreground?.processIdentifier as Any? ?? NSNull(),
+                "foregroundBundleID": foreground?.bundleIdentifier as Any? ?? NSNull(),
+                "focusedRole": focused.flatMap { string($0, kAXRoleAttribute) } as Any? ?? NSNull(),
+                "focusedSubrole": focused.flatMap { string($0, kAXSubroleAttribute) } as Any? ?? NSNull(),
+                "focusedTitle": focused.flatMap { string($0, kAXTitleAttribute) } as Any? ?? NSNull(),
+                "focusedIdentifier": focused.flatMap { string($0, kAXIdentifierAttribute) } as Any? ?? NSNull(),
+                "focusedIsPinnedWindow": focused.map { CFEqual($0, mainWindow) } as Any? ?? NSNull(),
+                "hasSheet": currentSheet() != nil]
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: IntegrationReport.reportURL.deletingLastPathComponent()
+                    .appendingPathComponent("FinalCut-Focus-Failure.json"), options: .atomic)
+            }
+            throw FinalCutCaptureError.unavailable("\(operationStage): Final Cut Pro lost keyboard focus. Return to its project window and analyze the clip again.")
         }
 #if DEBUG
         // A newly opened project can already have focus without activate()
@@ -416,7 +514,7 @@ import Foundation
             if predicate() { return }
             try await Task.sleep(for: .milliseconds(150))
         }
-        throw FinalCutCaptureError.unavailable("\(operationStage): Timed out waiting for \(context ?? operationStage). Close any unfinished export dialog, then Analyze again.")
+        throw FinalCutCaptureError.unavailable("\(operationStage): Timed out waiting for \(context ?? operationStage). Close any unfinished export dialog, then analyze the clip again.")
     }
 
     func controlCenter(_ element: AXUIElement) -> CGPoint? {

@@ -97,7 +97,7 @@ extension FinalCutAXSession {
         guard restored == selection else { throw AudioControllerSettingsError.targetChanged }
         try assertInputFocus()
         guard AXUIElementSetAttributeValue(timeline, kAXSelectedChildrenAttribute as CFString, [original] as CFArray) == .success else {
-            throw FinalCutCaptureError.invalidSelection("Final Cut could not restore the selected clip after its range render.")
+            throw FinalCutCaptureError.invalidSelection("Final Cut Pro could not restore the selected clip after its range render.")
         }
         try await waitUntil(timeout: 3, context: "selected clip after range render") { (try? selectionSnapshot()) == selection }
     }

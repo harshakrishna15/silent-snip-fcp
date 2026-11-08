@@ -18,6 +18,7 @@ struct ClosedShareAXCommand<Element> {
 
     static func resolve(menuBar: Element, read: (Element) throws -> Node,
                         actions: (Element) throws -> [String],
+                        pressOnly: Bool = false,
                         shouldContinue: () -> Bool) throws -> Self {
         var hierarchy = [menuBar]
         var container = menuBar
@@ -36,6 +37,14 @@ struct ClosedShareAXCommand<Element> {
                 visited += 1
                 guard visited <= 600, shouldContinue() else { throw DirectShareAXError.preflight("Closed-menu lookup timed out.") }
                 let value = try read(child)
+                // An unreadable sibling could be a second matching command.
+                // Production must not mistake an incomplete read for uniqueness.
+                if pressOnly {
+                    guard let role = value.role,
+                          ![kAXMenuBarItemRole, kAXMenuItemRole].contains(role) || value.title != nil else {
+                        throw DirectShareAXError.preflight("A retained menu command could not be identified.")
+                    }
+                }
                 if value.title == title { matches.append((child, value)) }
             }
             guard matches.count == 1, let (item, node) = matches.first,
@@ -46,9 +55,12 @@ struct ClosedShareAXCommand<Element> {
             if index == titles.count - 1 {
                 try Task.checkCancellation()
                 let available = try actions(item)
+                let preferred = pressOnly
+                    ? (available.contains(kAXPressAction) ? kAXPressAction : nil)
+                    : FinalCutControlAction.preferred(from: available)
                 guard available.count <= 32, available.allSatisfy({ $0.utf8.count <= 128 }),
-                      let action = FinalCutControlAction.preferred(from: available) else {
-                    throw DirectShareAXError.preflight("The closed Silent Snip command advertises no AXPress or AXPick action.")
+                      let action = preferred else {
+                    throw DirectShareAXError.preflight("The closed Silent Snip command advertises no permitted action.")
                 }
                 return Self(hierarchy: hierarchy, item: item, actions: available, action: action)
             }

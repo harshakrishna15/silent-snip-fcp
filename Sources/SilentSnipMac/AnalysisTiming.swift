@@ -44,6 +44,7 @@ import Foundation
         return try await operation()
     }
     func recordCounters(_ values: [String: Int]) { counters.merge(values, uniquingKeysWith: { _, new in new }) }
+    func incrementCounter(_ name: String, by amount: Int = 1) { counters[name, default: 0] += amount }
     func report(outcome: String) -> Report {
         var totals = stages
         let now = clock()

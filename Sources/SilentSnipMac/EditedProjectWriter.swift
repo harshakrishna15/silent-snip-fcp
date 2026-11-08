@@ -52,7 +52,7 @@ public enum EditedProjectWriterError: Error, LocalizedError, Equatable {
         case .noSelectedCuts: return "Select at least one eligible cut before creating an edited project."
         case .invalidName: return "Give the edited project a name."
         case .invalidRange: return "Every cut must be inside the audio target and aligned to project frames."
-        case .overlappingRanges: return "Selected cut ranges overlap. Analyze again."
+        case .overlappingRanges: return "The selected ranges overlap. Click Analyze Again."
         case .wholeClipDeletion: return "The selected cuts would remove the entire target. Whole-clip deletion is unavailable."
         case .unsupported(let reason): return "This project cannot be returned automatically: \(reason)"
         case .verificationFailed(let reason): return "The generated project failed verification: \(reason)"
@@ -66,6 +66,47 @@ public enum EditedProjectWriterError: Error, LocalizedError, Equatable {
 /// Simple direct connections use the same cut map through ConnectedProjectRipple;
 /// unresolved routing, nested connections and protected regions remain guarded.
 public enum EditedProjectWriter {
+    /// Diagnostic serialization only: this checks timeline geometry and copied
+    /// XML state without authorizing effect reconstruction. These bytes must
+    /// never be imported. Tests use this entry point to inspect the serialized
+    /// expectation independently of the public import writer's native-state
+    /// guard; it creates no files or PreparedXMLProject delivery capability.
+    static func serializationExpectation(
+        projectData: Data,
+        selection: TimelineSelection,
+        selectedRanges: [TimeRange],
+        outputName: String,
+        projectUID: UUID = UUID(),
+        eventUID: UUID = UUID(),
+        destinationLibrary: URL? = nil,
+        replacementGaps: [TimeRange: RationalTime] = [:],
+        replaceOriginal: Bool = false,
+        selectedClipOnly: Bool = false,
+        useOriginalEvent: Bool = false,
+        omitController: Bool = false,
+        losslessAudio: LosslessRenderedAudio? = nil
+    ) throws -> EditedProjectOutput {
+        try makeOutput(projectData: projectData, selection: selection,
+            selectedRanges: selectedRanges, outputName: outputName, projectUID: projectUID,
+            eventUID: eventUID, destinationLibrary: destinationLibrary, replacementGaps: replacementGaps,
+            replaceOriginal: replaceOriginal, selectedClipOnly: selectedClipOnly,
+            useOriginalEvent: useOriginalEvent, omitController: omitController, losslessAudio: losslessAudio)
+    }
+
+    /// A geometry/serialized-state expectation for a separately executed native
+    /// edit. These bytes must never be imported: the native project contains
+    /// effect state that Final Cut's XML may omit. The public import writer
+    /// keeps its reconstruction guard.
+    static func nativeEditExpectation(projectData: Data, selection: TimelineSelection,
+                                      selectedRanges: [TimeRange], outputName: String,
+                                      projectUID: UUID) throws -> EditedProjectOutput {
+        try makeOutput(projectData: projectData, selection: selection,
+            selectedRanges: selectedRanges, outputName: outputName, projectUID: projectUID,
+            eventUID: UUID(), destinationLibrary: nil, replacementGaps: [:],
+            replaceOriginal: false, selectedClipOnly: false, useOriginalEvent: true,
+            omitController: false)
+    }
+
     public static func write(
         projectData: Data,
         selection: TimelineSelection,
@@ -81,11 +122,39 @@ public enum EditedProjectWriter {
         omitController: Bool = false,
         losslessAudio: LosslessRenderedAudio? = nil
     ) throws -> EditedProjectOutput {
+        let output = try makeOutput(projectData: projectData, selection: selection,
+            selectedRanges: selectedRanges, outputName: outputName, projectUID: projectUID,
+            eventUID: eventUID, destinationLibrary: destinationLibrary, replacementGaps: replacementGaps,
+            replaceOriginal: replaceOriginal, selectedClipOnly: selectedClipOnly,
+            useOriginalEvent: useOriginalEvent, omitController: omitController, losslessAudio: losslessAudio)
+        // Compare/copy checks prove preservation of exported XML, not that Final
+        // Cut exported the native effect's complete state. Check the final
+        // retained timeline, including connected and surrounding clips. Frozen
+        // audio has already removed its baked processing by this point.
+        try EditableEffectReconstruction.validate(projectData: output.xmlData)
+        return output
+    }
+
+    private static func makeOutput(
+        projectData: Data,
+        selection: TimelineSelection,
+        selectedRanges: [TimeRange],
+        outputName: String,
+        projectUID: UUID,
+        eventUID: UUID,
+        destinationLibrary: URL?,
+        replacementGaps: [TimeRange: RationalTime],
+        replaceOriginal: Bool,
+        selectedClipOnly: Bool,
+        useOriginalEvent: Bool,
+        omitController: Bool,
+        losslessAudio: LosslessRenderedAudio? = nil
+    ) throws -> EditedProjectOutput {
         if let losslessAudio {
             // First use the established edit/ripple checks. The processed-audio
             // substitution is a separate strict transformation of that exact
             // verified result, including its already-rippled connected items.
-            let base = try write(projectData: projectData, selection: selection,
+            let base = try makeOutput(projectData: projectData, selection: selection,
                 selectedRanges: selectedRanges, outputName: outputName,
                 projectUID: projectUID, eventUID: eventUID,
                 destinationLibrary: destinationLibrary, replacementGaps: replacementGaps,
@@ -146,7 +215,7 @@ public enum EditedProjectWriter {
         if !selectedClipOnly, document.clips.contains(where: { !$0.isPrimaryStoryline }) {
             return try ConnectedProjectRipple.write(projectData: projectData, document: document,
                 target: target, ranges: ranges, replacementGaps: replacementGaps) { stripped in
-                try write(projectData: stripped, selection: selection, selectedRanges: selectedRanges,
+                try makeOutput(projectData: stripped, selection: selection, selectedRanges: selectedRanges,
                     outputName: outputName, projectUID: projectUID, eventUID: eventUID,
                     destinationLibrary: destinationLibrary, replacementGaps: replacementGaps,
                     replaceOriginal: replaceOriginal, selectedClipOnly: false,
@@ -287,7 +356,7 @@ public enum EditedProjectWriter {
         let library = XMLElement(name: "library")
         if let destinationLibrary {
             guard destinationLibrary.isFileURL, destinationLibrary.pathExtension.lowercased() == "fcpbundle" else {
-                throw EditedProjectWriterError.unsupported("the destination must be a local Final Cut library.")
+                throw EditedProjectWriterError.unsupported("the destination must be a local Final Cut Pro library.")
             }
             set(library, "location", destinationLibrary.absoluteString)
         } else if let originalLocation { set(library, "location", originalLocation) }
@@ -476,38 +545,66 @@ public enum EditedProjectWriter {
               output.projectTimecodeStart == (selectedClipOnly ? .zero : original.projectTimecodeStart) else {
             throw EditedProjectWriterError.verificationFailed("project duration, clip count, or frame clock changed unexpectedly.")
         }
+        // Index once rather than scanning every output clip for every retained
+        // range. Keep all primary matches at a range so ambiguous duplicates
+        // still fail the same uniqueness check as the previous full scan.
+        let primaryByRange = Dictionary(grouping: output.clips.filter(\.isPrimaryStoryline), by: \.timelineRange)
+        let outputByOccurrence = Dictionary(grouping: output.clips, by: VerificationOccurrence.init)
+        let originalByID = Dictionary(grouping: original.clips, by: \.id)
         for gap in gaps {
-            guard output.clips.filter({ $0.kind == "gap" && $0.isPrimaryStoryline && $0.timelineRange == gap && !$0.hasAudio && !$0.hasVideo }).count == 1 else {
+            guard (primaryByRange[gap] ?? []).filter({ $0.kind == "gap" && !$0.hasAudio && !$0.hasVideo }).count == 1 else {
                 throw EditedProjectWriterError.verificationFailed("a replacement gap is missing or has the wrong duration.")
             }
         }
+        let targetSourceEnd = try target.sourceStart.adding(target.timelineRange.duration)
         for segment in segments {
-            let matches = output.clips.filter { $0.isPrimaryStoryline && $0.timelineRange == segment.resultProjectRange }
+            let matches = primaryByRange[segment.resultProjectRange] ?? []
             guard matches.count == 1, let clip = matches.first,
                   clip.mediaURL == target.mediaURL, clip.assetID == target.assetID,
                   clip.sourceStart == segment.sourceRange.start, clip.hasVideo == target.hasVideo,
                   clip.hasAudio, clip.dialogueRoles == target.dialogueRoles,
                   clip.effectsFingerprint == target.effectsFingerprint,
                   clip.audioFadeIn == (segment.sourceRange.start == target.sourceStart ? target.audioFadeIn : .zero),
-                  clip.audioFadeOut == (segment.sourceRange.end == (try target.sourceStart.adding(target.timelineRange.duration)) ? target.audioFadeOut : .zero) else {
+                  clip.audioFadeOut == (segment.sourceRange.end == targetSourceEnd ? target.audioFadeOut : .zero) else {
                 throw EditedProjectWriterError.verificationFailed("a retained source segment or its audio effects changed unexpectedly.")
             }
         }
         for clip in original.clips where !selectedClipOnly && clip.id != target.id {
             let rootID = clip.id.split(separator: "/").prefix(2).joined(separator: "/")
-            let parent = original.clips.first { $0.id == rootID }
+            let parent = originalByID[rootID]?.first
             let shifts = (parent?.timelineRange.start ?? clip.timelineRange.start) >= target.timelineRange.end
             let start = shifts ? try clip.timelineRange.start.subtracting(removed) : clip.timelineRange.start
             let end = shifts ? try clip.timelineRange.end.subtracting(removed) : clip.timelineRange.end
-            let matches = output.clips.filter { $0.timelineRange == TimeRange(start: start, end: end)
-                && $0.kind == clip.kind && $0.sourceStart == clip.sourceStart && $0.mediaURL == clip.mediaURL
-                && $0.lane == clip.lane && $0.isPrimaryStoryline == clip.isPrimaryStoryline }
+            let key = VerificationOccurrence(range: .init(start: start, end: end), kind: clip.kind,
+                sourceStart: clip.sourceStart, mediaURL: clip.mediaURL, lane: clip.lane,
+                isPrimaryStoryline: clip.isPrimaryStoryline)
+            let matches = outputByOccurrence[key] ?? []
             guard matches.contains(where: { $0.effectsFingerprint == clip.effectsFingerprint
                 && $0.enabled == clip.enabled && $0.dialogueRoles == clip.dialogueRoles
                 && $0.hasVideo == clip.hasVideo && $0.hasAudio == clip.hasAudio
                 && $0.audioFadeIn == clip.audioFadeIn && $0.audioFadeOut == clip.audioFadeOut }) else {
                 throw EditedProjectWriterError.verificationFailed("surrounding item \(clip.name) changed unexpectedly.")
             }
+        }
+    }
+
+    private struct VerificationOccurrence: Hashable {
+        let range: TimeRange
+        let kind: String
+        let sourceStart: RationalTime
+        let mediaURL: URL?
+        let lane: Int
+        let isPrimaryStoryline: Bool
+
+        init(_ clip: TimelineClip) {
+            self.init(range: clip.timelineRange, kind: clip.kind, sourceStart: clip.sourceStart,
+                mediaURL: clip.mediaURL, lane: clip.lane, isPrimaryStoryline: clip.isPrimaryStoryline)
+        }
+
+        init(range: TimeRange, kind: String, sourceStart: RationalTime, mediaURL: URL?,
+             lane: Int, isPrimaryStoryline: Bool) {
+            self.range = range; self.kind = kind; self.sourceStart = sourceStart
+            self.mediaURL = mediaURL; self.lane = lane; self.isPrimaryStoryline = isPrimaryStoryline
         }
     }
 

@@ -47,6 +47,17 @@ import Foundation
         !restoringControllerSettings && reviewSession?.canAuthorizePreview(view: view, edit: edit) == true
     }
 
+    public func canAuthorizeRecalculation(_ command: ReviewCommand) -> Bool {
+        guard command.localPreview == true, let view = command.view, let edit = command.settingsEdit else { return false }
+        guard command.automaticPreview == true else { return canAuthorizePreview(view: view, edit: edit) }
+        guard !restoringControllerSettings, command.verifySettings == true,
+              reviewRequestID == command.request, let context = contexts[command.request],
+              let session = reviewSession, session === context.capture.session,
+              session.workflowOrigin?.view == view, let settings = command.settings,
+              let rawOutput = command.output, let output = SilentSnipOutputMode(rawValue: rawOutput) else { return false }
+        return session.canAuthorizeWorkflowAutomaticPreview(view: view, edit: edit, settings: settings, output: output)
+    }
+
     public func recordLocalPreview(_ id: UUID, seconds: Double, succeeded: Bool) {
         guard let context = contexts[id] else { return }
         let report: [String: Any] = ["request": id.uuidString, "elapsedSeconds": seconds,
@@ -228,7 +239,7 @@ import Foundation
                                 guard let active = capture.session.reviewOwnership.active else { throw AudioControllerSettingsError.targetChanged }
                                 renderSelection = active
                             }
-                            receipt = try await capture.session.shareRenderedAudio(timing: timing, renderSelection: renderSelection)
+                            receipt = try await capture.session.shareRenderedAudio(timing: timing, renderSelection: renderSelection, sharePurpose: .analyze)
                             renderedReceipt = receipt
                         }
                         guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
@@ -261,6 +272,7 @@ import Foundation
                     } else {
                         timing.begin("renderPreparation")
                         let isolated = try IsolatedAudioProject.make(projectData: projectData, selection: capture.selection)
+                        try EditableEffectReconstruction.validate(projectData: isolated.data)
                         let isolatedURL = directory.appendingPathComponent("Isolated.fcpxml")
                         try isolated.data.write(to: isolatedURL, options: .withoutOverwriting)
                         progress("Opening an isolated copy of the selected clip…", nil)
@@ -299,7 +311,7 @@ import Foundation
                             throw error
                         }
                     }
-                    scopeNotice = "Analyzed Final Cut’s rendered audio, including clip volume and enabled effects."
+                    scopeNotice = "Analyzed Final Cut Pro’s rendered audio, including clip volume and enabled audio effects."
                 }
                 timing.begin("measurement")
                 analyzed = try await ProjectAudioAnalysis.analyze(projectData: projectData,
@@ -308,7 +320,7 @@ import Foundation
                     capturedMedia: route == .source ? try await pendingMedia : nil,
                     progress: { fraction in
                         Task { @MainActor in progress(route == .source
-                            ? "Measuring selected source audio…" : "Measuring audio rendered by Final Cut…", fraction) }
+                            ? "Measuring selected source audio…" : "Measuring audio rendered by Final Cut Pro…", fraction) }
                     }, validating: {
                         await MainActor.run {
                             timing.begin("audioValidationAfterMeasurement")
@@ -337,10 +349,9 @@ import Foundation
             timing.begin("previewPreparation")
             // Prove that the selected cuts can be represented before enabling Apply.
             if !analyzed.review.selectedCuts.isEmpty {
-                _ = try EditedProjectWriter.write(projectData: projectData,
-                    selection: capture.selection, selectedRanges: analyzed.review.selectedCuts.map(\.range),
-                    outputName: Self.outputName(clip: capture.target, request: request.id),
-                    selectedClipOnly: false, useOriginalEvent: true, omitController: true)
+                try Self.validateEditableOutput(projectData: projectData, selection: capture.selection,
+                    cuts: analyzed.review.selectedCuts.map(\.range), request: request,
+                    outputName: Self.outputName(clip: capture.target, request: request.id))
             }
             contexts[request.id] = Context(capture: capture,
                 directory: directory, mediaSnapshot: media)
@@ -388,7 +399,7 @@ import Foundation
             }
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,
-                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply creates a cleaned project copy with the retained processed sound preserved. The original project keeps its editable effects. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "),
+                presentationNotice: [scopeNotice + " Threshold uses 10 ms average loudness (RMS), not peak meters. Apply cuts the source clips in a cleaned project copy and keeps their audio effects editable. Quiet breaths may qualify; this detector does not classify breaths.", cleanupNotice, notice].compactMap { $0 }.joined(separator: " "),
                 canUpdateCuts: route == .source || renderedInOriginal)
         } catch {
             // A cancellation must not prevent bounded cleanup of a verified,
@@ -451,10 +462,9 @@ import Foundation
             try Task.checkCancellation()
             timing.begin("editValidation")
             if !result.analyzed.review.selectedCuts.isEmpty {
-                _ = try EditedProjectWriter.write(projectData: data, selection: context.capture.selection,
-                    selectedRanges: result.analyzed.review.selectedCuts.map(\.range),
-                    outputName: Self.outputName(clip: context.capture.target, request: request.id),
-                    selectedClipOnly: false, useOriginalEvent: true, omitController: true)
+                try Self.validateEditableOutput(projectData: data, selection: context.capture.selection,
+                    cuts: result.analyzed.review.selectedCuts.map(\.range), request: request,
+                    outputName: Self.outputName(clip: context.capture.target, request: request.id))
             }
             try Task.checkCancellation()
             timing.begin("restoreControls")
@@ -489,6 +499,7 @@ import Foundation
             .appendingPathComponent(request.id.uuidString, isDirectory: true)
         var prepared: PreparedXMLProject?
         var importAttempted = false
+        var bulkTransferStarted = false
         var fullMixReceipt: ShareDestinationReceipt?
         let timing = AnalysisTiming(request: request.id)
         var outcome = "failed"
@@ -507,16 +518,18 @@ import Foundation
             try await session.activate()
             let baselineData = try Data(contentsOf: capture.xmlURL)
             let applyRoute = try ClipAudioAnalysisRoute.resolve(projectData: baselineData, selection: capture.selection)
+            let nativePlan = try Self.nativeEditPlanIfNeeded(projectData: baselineData,
+                selection: capture.selection, cuts: removals, request: request)
             timing.begin("projectAndAudioVerification")
-            progress("Rendering the current project sound before cutting…", 0.05)
+            progress("Rendering project audio before applying cuts…", 0.05)
             let roles = try FinalCutAudioMixScope.expectedRoles(projectData: baselineData)
-            // A continuous native render preserves opaque/stateful effects and
-            // connected Music/Effects history. Detection remains Dialogue-only;
-            // the complete mix is never substituted for a mixed target's review.
+            // Recheck the current native processing before editing source clips.
+            // Detection remains Dialogue-only; the complete mix is never
+            // substituted for a mixed target's review or for result media.
             let sourceCapture = try await ApplyAudioRenderCapture.perform(sourceMedia: context.mediaSnapshot,
                 render: {
                     try await session.shareRenderedAudio(timing: timing,
-                        mixScope: .fullProjectMix(expectedRoles: roles))
+                        mixScope: .fullProjectMix(expectedRoles: roles), sharePurpose: .apply)
                 }, cleanup: { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: $0) })
             let receipt = sourceCapture.receipt
             fullMixReceipt = receipt
@@ -573,7 +586,8 @@ import Foundation
                     "freshCandidates": fresh.review.cuts.map(\.id), "selectedCuts": result.analyzed.review.selectedCuts.map(\.id),
                     "reviewedAudioSHA256": result.analyzed.dialogueContext.audioSHA256,
                     "freshAudioSHA256": fresh.dialogueContext.audioSHA256,
-                    "outputAudio": "continuous full-project native mix"]
+                    "verificationAudio": "continuous full-project native mix",
+                    "outputAudio": "original source clips with editable audio effects"]
                 try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
                     .write(to: context.directory.appendingPathComponent("Apply-Audio-Verification.json"), options: .atomic)
                 try ReviewedCutValidation.verify(reviewed: result.analyzed, fresh: fresh)
@@ -584,55 +598,110 @@ import Foundation
             try readGuard.validate()
             try validateReviewSelection(capture)
             try Task.checkCancellation()
-            timing.begin("retainProcessedAudio")
-            progress("Keeping the original processed sound for the cleaned copy…", 0.3)
+            timing.begin("preserveSourceAudio")
+            progress("Preserving source clips and audio effects…", 0.3)
             try ShareDestinationManager.shared.validateReceipt(receipt)
             try renderGuard.validate()
-            let renderMedia = try await MediaContentSnapshot.capture([fullMix])
-            let canonicalRender = try MediaContentSnapshot.canonical(fullMix)
-            guard let renderHash = renderMedia.hashes[canonicalRender] else { throw ProjectAnalysisError.invalidRenderArtifact }
-            let durable = try await LosslessRenderedAudio.retain(from: fullMix,
-                expectedSHA256: renderHash,
-                in: support.appendingPathComponent("Processed Audio", isDirectory: true)
-                    .appendingPathComponent(request.id.uuidString, isDirectory: true),
-                timelineRange: final.projectRange, scope: .projectMix)
-            try ShareDestinationManager.shared.validateReceipt(receipt)
-            try renderGuard.validate()
-            let outputMedia = try await MediaContentSnapshot.capture(context.mediaSnapshot.sourceURLs + [durable.url])
-            guard try outputMedia.restricting(to: context.mediaSnapshot.sourceURLs) == context.mediaSnapshot,
-                  outputMedia.hashes[try MediaContentSnapshot.canonical(durable.url)] == durable.sha256 else {
+            // The native mix is analysis evidence only. The cleaned timeline
+            // references the original media and copies each kept clip's DSP
+            // chain, volume and source-time animation, like manual blade cuts.
+            let outputMedia = try await timing.measure("apply.outputMediaEvidence") {
+                try await sourceCapture.captureOutputMedia(adding: [])
+            }
+            timing.recordCounters(["apply.outputSourceHashReuse": sourceCapture.reusesSourceHashesForOutput ? 1 : 0])
+            guard outputMedia == context.mediaSnapshot else {
                 throw AudioProjectProcessingError.changedProject
             }
             try readGuard.validate()
+            if nativePlan != nil {
+                let outputName = Self.outputName(clip: capture.target, request: request.id)
+                let plan = try BulkEffectTransferPlan.make(projectData: finalData,
+                    selection: capture.selection, cuts: removals, outputName: outputName)
+                timing.recordCounters(["apply.bulkXMLCuts": removals.count, "apply.nativeRangeRemovals": 0])
+                guard !FileManager.default.fileExists(atPath: parent.path) else {
+                    throw EditedProjectWriterError.unsupported("the result folder already exists")
+                }
+                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+                let outputURL = parent.appendingPathComponent("Silent Snip.fcpxml")
+                let importURL = parent.appendingPathComponent("Import-Cuts.fcpxml")
+                try plan.expectedXML.write(to: outputURL, options: .withoutOverwriting)
+                try Data("Created by one bulk XML import and one native audio-effects transfer. The existing native result and unchanged original project retain advanced settings omitted from XML. Silent Snip.fcpxml is verification evidence; reimporting it cannot restore omitted settings. Import-Cuts.fcpxml intentionally contains no audio effects.\n".utf8)
+                    .write(to: parent.appendingPathComponent("Native-Result.txt"), options: .withoutOverwriting)
+                try plan.effectFreeOutput.xmlData.write(to: importURL, options: .withoutOverwriting)
+                try finalData.write(to: parent.appendingPathComponent("Before-Cuts.fcpxml"), options: .withoutOverwriting)
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                try encoder.encode(plan.effectFreeOutput.report).write(to: parent.appendingPathComponent("Edit-Report.json"), options: .withoutOverwriting)
+                try encoder.encode(request.settings).write(to: parent.appendingPathComponent("Analysis-Settings.json"), options: .withoutOverwriting)
+                progress("Preparing all cuts in XML and preserving the original effects…", 0.4)
+                // Copy the current native source only after a fresh final baseline
+                // check. No source attributes, native duplicates or range edits are made.
+                let importGuard = try MediaContentSnapshot.prepareRead(outputMedia.sourceURLs + [outputURL, importURL])
+                try await outputMedia.validate()
+                try await session.activate()
+                try self.validateReviewSelection(capture)
+                let check = try await session.exportProjectXML(to: context.directory
+                    .appendingPathComponent("Before-Bulk-Import-\(UUID().uuidString).fcpxmld"), timing: timing, sharePurpose: .apply)
+                let checkData = try Data(contentsOf: check)
+                try XMLProjectApply.verifyBaseline(TimelineParser.parse(data: checkData, exclusions: exclusions), analyzed: final)
+                try request.workflowOrigin?.verify(projectData: checkData)
+                try self.validateReviewSelection(capture)
+                try readGuard.validate(); try renderGuard.validate(); try importGuard.validate()
+                let token = try await session.captureNativeEffectTransfer(plan: plan.sourcePlan,
+                    originalData: finalData, outputName: outputName, timing: timing)
+                try token.prepareJournal(directory: parent, expectedResultData: plan.expectedXML,
+                    effectFreeData: plan.effectFreeOutput.xmlData)
+                let verification = try ImportedResultVerification(expected: plan.expectedXML, outputURL: outputURL,
+                    originalProjectName: capture.projectName, request: request, sourceMedia: outputMedia,
+                    bulkEffectTransfer: true)
+                try verification.savePending()
+                self.verifications.remember(request.id, at: outputURL)
+                bulkTransferStarted = true
+                try importGuard.validate(); try readGuard.validate(); try renderGuard.validate()
+                try ShareDestinationManager.shared.validateReceipt(receipt)
+                try XMLProjectApply.validateLibrary(try XMLReplacementTarget(projectData: finalData).libraryURL)
+                try session.assertCurrentProject()
+                try Task.checkCancellation()
+                importAttempted = true
+                try await timing.measure("bulkXML.import") { try await XMLProjectApply.importIntoFinalCut(importURL) }
+                let imported = try await session.openImportedProject(named: outputName, importedXML: importURL)
+                progress("Restoring the original audio effects to all retained clips…", 0.8)
+                _ = try await imported.applyBulkEffects(token: token, plan: plan.sourcePlan,
+                    originalData: finalData, expectedEffectFreeData: plan.effectFreeOutput.xmlData,
+                    expectedResultData: plan.expectedXML, directory: parent, timing: timing)
+                timing.recordCounters(["apply.bulkEffectTransfers": 1])
+                try await verifyImportedResult(request.id, progress: progress, timing: timing)
+                outcome = "verified"
+                return
+            }
             timing.begin("projectCreationAndImport")
-            progress("Creating the cleaned project with identical retained sound…", 0.4)
+            progress("Creating the cleaned project…", 0.4)
             let outputName = Self.outputName(clip: capture.target, request: request.id)
             let artifact = try XMLProjectApply.prepare(projectData: finalData, selection: capture.selection,
                 cuts: removals, settings: result.analyzed.settings, mode: request.outputMode,
                 outputName: outputName, directory: parent, selectedClipOnly: false, useOriginalEvent: true,
-                omitController: true, losslessAudio: durable, workflowOrigin: request.workflowOrigin)
+                omitController: true, workflowOrigin: request.workflowOrigin)
             prepared = artifact
             try session.assertCurrentProject()
             progress("Sending ‘\(outputName)’ to Final Cut Pro…", 0.8)
-            try Data("Import requested; verification pending. Do not import again until checking Final Cut.\n".utf8)
+            try Data("Import requested; verification pending. Do not import again until checking Final Cut Pro.\n".utf8)
                 .write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             let verification = try ImportedResultVerification(expected: artifact.output.xmlData, outputURL: artifact.outputURL,
                 originalProjectName: capture.projectName, request: request, replacementTarget: artifact.output.report.replacementTarget,
-                sourceMedia: outputMedia, renderedAudio: durable)
+                sourceMedia: outputMedia)
             try await artifact.send { url in
                 timing.begin("finalProjectVerification")
-                // Hashing and durable retention yield while Final Cut remains
+                // Source verification yields while Final Cut remains
                 // editable. The final exchange must therefore follow the full
                 // content check and prove the same timeline/effects/settings
                 // immediately before this single import attempt.
                 let importReadGuard = try MediaContentSnapshot.prepareRead(outputMedia.sourceURLs +
                     [artifact.outputURL, artifact.recoveryURL])
-                try await outputMedia.validate()
+                try await timing.measure("apply.finalFullMediaValidation") { try await outputMedia.validate() }
                 progress("Checking the current project before import…", 0.75)
                 try await session.activate()
                 try self.validateReviewSelection(capture)
                 let importCheck = try await session.exportProjectXML(to: context.directory
-                    .appendingPathComponent("Before-Import-\(UUID().uuidString).fcpxmld"), timing: timing)
+                    .appendingPathComponent("Before-Import-\(UUID().uuidString).fcpxmld"), timing: timing, sharePurpose: .apply)
                 let importData = try Data(contentsOf: importCheck)
                 let current = try TimelineParser.parse(data: importData, exclusions: exclusions)
                 try XMLProjectApply.verifyBaseline(current, analyzed: final)
@@ -658,12 +727,17 @@ import Foundation
                 importAttempted = true
                 self.verifications.remember(request.id, at: verification.outputURL)
                 timing.begin("importAndVerification")
-                try await XMLProjectApply.importIntoFinalCut(url)
+                try await timing.measure("import.delivery") { try await XMLProjectApply.importIntoFinalCut(url) }
             }
-            try await retryVerification(request.id, progress: progress)
+            try await verifyImportedResult(request.id, progress: progress, timing: timing)
             outcome = "verified"
         } catch {
             _ = await capture.restoreReviewWindow()
+            if bulkTransferStarted {
+                let message = "Bulk XML Apply did not finish verification. A partial cleaned project may remain. No import or effect transfer was repeated. The original project was not edited. Check the bulk transfer journal and use Verify Existing Result only after a completed transfer. \(error.localizedDescription)"
+                try? Data((message + "\n").utf8).write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
+                throw FinalCutCaptureError.unavailable(message)
+            }
             if error is XMLProjectApplyFailure { throw error }
             if let prepared {
                 let failure = XMLProjectApplyFailure(cause: error, outputURL: prepared.outputURL, importAttempted: importAttempted, replacingOriginal: prepared.output.report.replacementTarget != nil)
@@ -671,6 +745,30 @@ import Foundation
                 throw failure
             }
             throw error
+        }
+    }
+
+    private static func nativeEditPlanIfNeeded(projectData: Data, selection: TimelineSelection,
+                                               cuts: [TimeRange], request: AnalyzeRequest) throws -> NativeSourceEditPlan? {
+        do { try EditableEffectReconstruction.validate(projectData: projectData); return nil }
+        catch {
+            guard request.workflowOrigin != nil, request.outputMode == .remove else { throw error }
+            // Bulk XML owns every cut. A single native effects transfer retains
+            // omitted settings; unsupported animation/layouts never fall back to cuts.
+            return try BulkEffectTransferPlan.make(projectData: projectData, selection: selection,
+                cuts: cuts, outputName: "Silent Snip Validation").sourcePlan
+        }
+    }
+
+    private static func validateEditableOutput(projectData: Data, selection: TimelineSelection,
+                                               cuts: [TimeRange], request: AnalyzeRequest, outputName: String) throws {
+        if try nativeEditPlanIfNeeded(projectData: projectData, selection: selection, cuts: cuts, request: request) != nil {
+            _ = try EditedProjectWriter.nativeEditExpectation(projectData: projectData, selection: selection,
+                selectedRanges: cuts, outputName: outputName, projectUID: UUID())
+        } else {
+            _ = try EditedProjectWriter.write(projectData: projectData, selection: selection,
+                selectedRanges: cuts, outputName: outputName, selectedClipOnly: false,
+                useOriginalEvent: true, omitController: true)
         }
     }
 
@@ -699,6 +797,7 @@ import Foundation
                 reportURL: directory.appendingPathComponent("Apply-Target-Render-Verification.json"))
         } else {
             let isolated = try IsolatedAudioProject.make(projectData: projectData, selection: capture.selection)
+            try EditableEffectReconstruction.validate(projectData: isolated.data)
             let url = directory.appendingPathComponent("Apply-Isolated-\(UUID().uuidString).fcpxml")
             try isolated.data.write(to: url, options: .withoutOverwriting)
             progress("Checking the selected clip independently of the other audio…", nil)
@@ -802,16 +901,38 @@ import Foundation
 
     public func retryVerification(_ id: UUID, progress: @escaping AnalysisReviewCoordinator.Progress, acceptReplacement: Bool = false,
                                   originalTimelineSignature: [String]? = nil) async throws {
+        try await verifyImportedResult(id, progress: progress, acceptReplacement: acceptReplacement,
+            originalTimelineSignature: originalTimelineSignature)
+    }
+
+    private func verifyImportedResult(_ id: UUID, progress: @escaping AnalysisReviewCoordinator.Progress,
+                                     acceptReplacement: Bool = false, originalTimelineSignature: [String]? = nil,
+                                     timing: AnalysisTiming? = nil) async throws {
         guard let outputURL = verifications[id] else {
             throw FinalCutCaptureError.unavailable("There is no pending imported result to verify.")
         }
-        let result = try ImportedResultVerification.load(outputURL: outputURL)
-        let parent = result.outputURL.deletingLastPathComponent()
+        let parent = outputURL.deletingLastPathComponent()
+        let attemptTiming = timing ?? AnalysisTiming(request: id)
+        let attempt = UUID().uuidString
+        var verificationOutcome = "failed"
+        defer {
+            // Standalone Retry has its own report. Apply shares its parent
+            // timer so result verification is no longer an opaque stage.
+            if timing == nil {
+                attemptTiming.save(to: parent.appendingPathComponent("Result-Verification-Timing-\(attempt).json"),
+                    outcome: Task.isCancelled ? "cancelled" : verificationOutcome)
+            }
+        }
+        let result = try attemptTiming.measure("verification.loadReceipt") {
+            try ImportedResultVerification.load(outputURL: outputURL)
+        }
         do {
-            let current = try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil,
-                inheritingWorkflowFrom: reviewSession)
+            let current = try await attemptTiming.measure("verification.sessionDiscovery") {
+                try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil,
+                    inheritingWorkflowFrom: reviewSession)
+            }
             if let origin = recoveryOrigins[id] {
-                progress("Checking the project selected for result verification…", nil)
+                progress("Verifying the selected project…", nil)
                 try await current.activate()
                 let url = try await current.exportProjectXML(to: parent.appendingPathComponent("Recovery-Origin-\(UUID().uuidString).fcpxmld"))
                 try origin.verify(projectData: Data(contentsOf: url))
@@ -820,16 +941,32 @@ import Foundation
             guard result.replacementTarget != nil || current.projectName == result.originalProjectName || current.projectName == result.projectName else {
                 throw FinalCutCaptureError.unavailable("Open the original project or ‘\(result.projectName)’ before retrying verification.")
             }
-            progress("Checking the existing imported project…", 0.9)
-            let imported = try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL,
-                replacement: result.replacementTarget, acceptReplacement: acceptReplacement, originalTimelineSignature: originalTimelineSignature)
+            progress("Verifying the existing cleaned project…", 0.9)
+            let imported = try await attemptTiming.measure("verification.openImportedProject") {
+                try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL,
+                    replacement: result.replacementTarget, acceptReplacement: acceptReplacement,
+                    originalTimelineSignature: originalTimelineSignature)
+            }
             let report = try await result.verify(capture: {
                 // Verification can start from an already-open result's remote
                 // Controls window. Pin keyboard focus to the project before
                 // Share reads its selection or dispatches any host input.
-                try await imported.activate()
-                let url = try await imported.exportProjectXML(to: parent.appendingPathComponent("Verification-\(UUID().uuidString).fcpxmld"))
-                return try Data(contentsOf: url)
+                try await attemptTiming.measure("verification.activate") { try await imported.activate() }
+                let shareID = UUID().uuidString
+                let shareTiming = AnalysisTiming(request: id)
+                var shareOutcome = "failed"
+                defer {
+                    shareTiming.save(to: parent.appendingPathComponent("Verification-Share-Timing-\(shareID).json"),
+                        outcome: Task.isCancelled ? "cancelled" : shareOutcome)
+                }
+                let url = try await attemptTiming.measure("verification.share") {
+                    // A result has a different host identity from the original
+                    // Workflow pin. It deliberately retains ordinary Share.
+                    try await imported.exportProjectXML(to: parent.appendingPathComponent("Verification-\(shareID).fcpxmld"),
+                        timing: shareTiming, sharePurpose: .verification)
+                }
+                shareOutcome = "delivered"
+                return try attemptTiming.measure("verification.readCapturedXML") { try Data(contentsOf: url) }
             }, restore: { correction, document in
                 progress("Restoring Silent Snip settings on ‘\(correction.clip.name)’…", nil)
                 // These temporary Controls views are being written by recovery,
@@ -837,17 +974,37 @@ import Foundation
                 self.restoringControllerSettings = true
                 defer { self.restoringControllerSettings = false }
                 try await imported.restoreControllerSettings(correction.settings, clip: correction.clip, document: document)
-            })
+            }, timing: attemptTiming)
             let disposition = result.replacementTarget == nil ? "Original project unchanged." : "Project replaced in its original event. Recovery XML saved in the result folder."
             let settingsNotice = report.controllerSettingsPreserved == nil
                 ? "Analysis settings are saved with the result."
                 : "Silent Snip settings match."
-            let message = "Verified ‘\(result.projectName)’: timeline and processed audio references match. \(settingsNotice) \(result.sourceMediaNotice) \(disposition)"
+            let nativeNotice = result.bulkEffectTransfer ? " Original audio effects were transferred in one operation."
+                : result.nativeProjectUID == nil ? "" : " Native edits retained the existing effect instances."
+            let message = "Verified ‘\(result.projectName)’: timeline, exported effect data and media references match.\(nativeNotice) \(settingsNotice) \(result.sourceMediaNotice) \(disposition)"
+            // Initial Apply and Verify Existing Result share this boundary.
+            // Complete durable native bookkeeping before publishing success or
+            // releasing the pending verification, so a failed write can retry.
+            if let nativeUID = result.nativeProjectUID {
+                guard let uid = UUID(uuidString: nativeUID) else { throw FinalCutCaptureError.changedProject }
+                try NativeResultFinalization.complete(directory: parent, projectUID: uid,
+                    projectName: result.projectName)
+            }
+            if result.bulkEffectTransfer {
+                guard let uid = result.hostProjectUID else { throw FinalCutCaptureError.changedProject }
+                try NativeBulkEffectTransferJournal.markVerified(directory: parent, hostUID: uid)
+            }
             try Data((message + "\n").utf8).write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             result.markComplete()
             verifications.remove(id)
             progress(message, 1)
+            verificationOutcome = "verified"
         } catch {
+            if result.nativeProjectUID != nil {
+                let message = "The existing native result ‘\(result.projectName)’ could not be verified. No cut or import was repeated. Keep the original and this native copy; XML reimport cannot restore omitted effect settings. Use Verify Existing Result after checking the project. \(error.localizedDescription)"
+                try? Data((message + "\n").utf8).write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
+                throw FinalCutCaptureError.unavailable(message)
+            }
             let failure = XMLProjectApplyFailure(cause: error, outputURL: result.outputURL, importAttempted: true, replacingOriginal: result.replacementTarget != nil)
             try? failure.saveStatus()
             throw failure

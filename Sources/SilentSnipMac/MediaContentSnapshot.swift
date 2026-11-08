@@ -87,6 +87,37 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
             }
         }
 
+        /// Only genuinely new canonical files may extend this source phase.
+        /// This is a mutation/association preflight, not content evidence; the
+        /// added files must still be fully hashed before composition.
+        func prepareAddition(_ urls: [URL]) throws -> ReadGuard {
+            try Task.checkCancellation()
+            try validate()
+            let additional = try MediaContentSnapshot.prepareRead(urls)
+            guard additional.originals == additional.canonicalURLs,
+                  Set(additional.originals).isDisjoint(with: Set(originals)),
+                  Set(additional.canonicalURLs).isDisjoint(with: Set(canonicalURLs)) else {
+                throw ProjectAnalysisError.changedRenderArtifact
+            }
+            // A hard link is also an alias even though resolving symlinks
+            // produces a different URL. New processed media cannot be one of
+            // the protected original files under another name.
+            for candidate in additional.stamps.values {
+                guard !stamps.values.contains(where: {
+                    $0.device == candidate.device && $0.inode == candidate.inode
+                }) else { throw ProjectAnalysisError.changedRenderArtifact }
+            }
+            let added = Array(additional.stamps.values)
+            for index in added.indices {
+                guard !added[..<index].contains(where: {
+                    $0.device == added[index].device && $0.inode == added[index].inode
+                }) else { throw ProjectAnalysisError.changedRenderArtifact }
+            }
+            try additional.validate()
+            try validate()
+            return additional
+        }
+
         /// Eligibility to discard one COMPLETED, verified read-only XML phase.
         /// Canonical references and every raw-source stamp remain exact. The
         /// sole permitted delta is ctime on one already-bound durable render.
@@ -114,10 +145,8 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
         let modifiedSeconds: Int, modifiedNanoseconds: Int
         let changedSeconds: Int, changedNanoseconds: Int
         init(_ url: URL) throws {
-            var value = stat()
-            let file = try FileHandle(forReadingFrom: url)
+            let (file, value) = try MediaContentSnapshot.openRegularFile(at: url)
             defer { try? file.close() }
-            guard fstat(file.fileDescriptor, &value) == 0 else { throw ProjectAnalysisError.changedRenderArtifact }
             device = value.st_dev; inode = value.st_ino; size = value.st_size
             modifiedSeconds = value.st_mtimespec.tv_sec; modifiedNanoseconds = value.st_mtimespec.tv_nsec
             changedSeconds = value.st_ctimespec.tv_sec; changedNanoseconds = value.st_ctimespec.tv_nsec
@@ -155,6 +184,57 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
         try prepared.validate()
         return Self(hashes: hashes, originalURLs: prepared.originals,
             canonicalURLs: prepared.canonicalURLs, stamps: prepared.stamps)
+    }
+
+    /// Extend a freshly completed source read while its ORIGINAL phase guard
+    /// is still held. Apply owns that fresh snapshot; a saved receipt alone
+    /// must never call this in place of a full source-content validation.
+    /// Only the additions are read here, and both source and addition guards
+    /// remain exact across the asynchronous read and the final composition.
+    func capturingAdditionalFiles(_ urls: [URL], protectedBy sourceGuard: ReadGuard,
+        hash: @Sendable (URL) throws -> String = { try MediaContentSnapshot.contentHash(at: $0) }) async throws -> Self {
+        try Task.checkCancellation()
+        try requireExactGuard(sourceGuard)
+        let additionGuard = try sourceGuard.prepareAddition(urls)
+        let additional = try await Self.capture(prepared: additionGuard, hash: hash)
+        try Task.checkCancellation()
+        try requireExactGuard(sourceGuard)
+        try additional.requireExactGuard(additionGuard)
+
+        let originals = (originalURLs + additional.originalURLs).sorted { $0.absoluteString < $1.absoluteString }
+        let mappings = Dictionary(uniqueKeysWithValues:
+            zip(sourceGuard.originals + additionGuard.originals, sourceGuard.canonicalURLs + additionGuard.canonicalURLs))
+        let canonical = try originals.map { original -> URL in
+            guard let value = mappings[original] else { throw ProjectAnalysisError.changedRenderArtifact }
+            return value
+        }
+        var combinedHashes = hashes
+        for (url, value) in additional.hashes {
+            guard combinedHashes.updateValue(value, forKey: url) == nil else { throw ProjectAnalysisError.changedRenderArtifact }
+        }
+        var combinedStamps = sourceGuard.stamps
+        for (url, value) in additionGuard.stamps {
+            guard combinedStamps.updateValue(value, forKey: url) == nil else { throw ProjectAnalysisError.changedRenderArtifact }
+        }
+        let combinedGuard = ReadGuard(originals: originals, canonicalURLs: canonical, stamps: combinedStamps)
+        let combined = Self(hashes: combinedHashes, originalURLs: originals,
+            canonicalURLs: canonical, stamps: combinedStamps)
+        try combined.requireExactGuard(combinedGuard)
+        try sourceGuard.validate()
+        try additionGuard.validate()
+        try Task.checkCancellation()
+        return combined
+    }
+
+    private func requireExactGuard(_ guardValue: ReadGuard) throws {
+        guard let canonicalURLs, let stamps,
+              originalURLs == Array(Set(originalURLs)).sorted(by: { $0.absoluteString < $1.absoluteString }),
+              canonicalURLs.count == originalURLs.count,
+              originalURLs == guardValue.originals, canonicalURLs == guardValue.canonicalURLs,
+              stamps == guardValue.stamps, Set(hashes.keys) == Set(guardValue.canonicalURLs),
+              Set(stamps.keys) == Set(hashes.keys) else { throw ProjectAnalysisError.changedRenderArtifact }
+        try validateReferences(guardValue.canonicalURLs)
+        try guardValue.validate()
     }
 
     func validate() async throws {
@@ -256,7 +336,7 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
 
     static func contentHash(at url: URL) throws -> String {
         try Task.checkCancellation()
-        let file = try FileHandle(forReadingFrom: url)
+        let (file, _) = try openRegularFile(at: url)
         defer { try? file.close() }
         var hash = SHA256()
         while let data = try file.read(upToCount: 1_048_576), !data.isEmpty {
@@ -264,5 +344,23 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
             hash.update(data: data)
         }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// A replaced source must be rejected before any potentially blocking read.
+    /// Checking the opened descriptor, rather than lstat followed by an ordinary
+    /// open, also covers a regular file being exchanged for a pipe in between.
+    /// Resolve supported source aliases first; never follow a newly swapped leaf.
+    private static func openRegularFile(at url: URL) throws -> (FileHandle, stat) {
+        try Task.checkCancellation()
+        let resolved = try canonical(url)
+        guard !resolved.path.utf8.contains(0) else { throw ProjectAnalysisError.changedRenderArtifact }
+        let descriptor = open(resolved.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw ProjectAnalysisError.changedRenderArtifact }
+        var value = stat()
+        guard fstat(descriptor, &value) == 0, value.st_mode & S_IFMT == S_IFREG else {
+            close(descriptor)
+            throw ProjectAnalysisError.changedRenderArtifact
+        }
+        return (FileHandle(fileDescriptor: descriptor, closeOnDealloc: true), value)
     }
 }

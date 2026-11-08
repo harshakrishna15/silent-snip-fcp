@@ -573,7 +573,7 @@ final class XMLProjectApplyTests: XCTestCase {
             let current = try TimelineParser.parse(data: Data(changed.utf8), exclusions: exclusions)
             XCTAssertThrowsError(try XMLProjectApply.verifyBaseline(current, analyzed: baseline)) { error in
                 XCTAssertTrue(error is XMLProjectBaselineError)
-                XCTAssertTrue(error.localizedDescription.contains("No edited project was generated"))
+                XCTAssertTrue(error.localizedDescription.contains("No cleaned project was created"))
                 XCTAssertFalse(error.localizedDescription.contains("native edits"))
             }
         }

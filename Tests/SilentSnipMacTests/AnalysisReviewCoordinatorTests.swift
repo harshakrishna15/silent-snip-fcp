@@ -4,6 +4,182 @@ import XCTest
 @testable import SilentSnipMac
 
 @MainActor final class AnalysisReviewCoordinatorTests: XCTestCase {
+    func testAutomaticPreviewRejectsSupersededNativeEditWithoutChangingAcceptedRevisionAndRecoversLatestDraft() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: fixture.directory.appendingPathComponent("Automatic.fcpbundle"),
+            projectUID: "automatic-project", projectName: "Automatic project")
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove, workflowOrigin: origin)
+        var latest: ReviewResponse?, authorized = false, updates = 0, applies = 0
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
+            ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        }, applyOperation: { _, _, _ in applies += 1 }, authorizeApply: { _ in true },
+            authorizeRecalculation: { $0.automaticPreview == true && authorized },
+            localPreviewOperation: { _, result, _ in XCTAssertTrue(result.usesAudioSnapshot); updates += 1 },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let revision = try XCTUnwrap(latest).revision
+        XCTAssertEqual(latest?.automaticPreviewAvailable, true)
+        coordinator.handle(.init(request: request.id, command: .preview, included: false, expectedRevision: revision,
+            view: origin.view, settingsSequence: 1, localPreview: true))
+        let stale = UUID()
+        let values = ReviewWireSettings(threshold: -35, minimum: 0.7, before: 0.05, after: 0.15)
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: revision, view: origin.view,
+            settings: values, output: "gaps", settingsEdit: stale, settingsSequence: 1,
+            verifySettings: true, localPreview: true, automaticPreview: true))
+        XCTAssertEqual(latest?.revision, revision)
+        XCTAssertEqual(latest?.rejectedSettingsEdit, stale)
+        XCTAssertEqual(latest?.rejectedSettingsSequence, 1)
+        XCTAssertNil(latest?.settingsEdit)
+        XCTAssertFalse(try XCTUnwrap(latest).canApply)
+        XCTAssertEqual(coordinator.currentRequest, request)
+        XCTAssertEqual(updates, 0)
+        coordinator.handle(.init(request: request.id, command: .status))
+        XCTAssertEqual(latest?.rejectedSettingsEdit, stale)
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: revision,
+            view: origin.view, applyGesture: UUID()))
+        XCTAssertEqual(applies, 0)
+        authorized = true
+        let current = UUID()
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: revision, view: origin.view,
+            settings: values, output: "gaps", settingsEdit: current, settingsSequence: 2,
+            verifySettings: true, localPreview: true, automaticPreview: true))
+        try await waitUntil { latest?.state == "review" && latest?.settingsEdit == current }
+        XCTAssertEqual(updates, 1)
+        XCTAssertTrue(try XCTUnwrap(latest).canApply)
+        XCTAssertNil(latest?.rejectedSettingsEdit)
+        XCTAssertEqual(coordinator.currentRequest?.settings.minimumSilenceDuration, 0.7)
+        let finalRevision = latest?.revision
+        // Older rejected packets cannot poison the newly accepted review ACK.
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: revision, view: origin.view,
+            settings: values, output: "gaps", settingsEdit: stale, settingsSequence: 1,
+            verifySettings: true, localPreview: true, automaticPreview: true))
+        XCTAssertEqual(latest?.revision, finalRevision)
+        XCTAssertEqual(latest?.settingsEdit, current)
+        XCTAssertNil(latest?.rejectedSettingsEdit)
+        XCTAssertTrue(try XCTUnwrap(latest).canApply)
+        coordinator.handle(.init(request: request.id, command: .apply, expectedRevision: finalRevision,
+            view: origin.view, applyGesture: UUID()))
+        try await waitUntil { latest?.state == "completed" }
+        XCTAssertEqual(applies, 1)
+    }
+
+    func testAutomaticPreviewHideDuringOlderUpdateStaysHiddenUntilNextAcceptedSequence() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: fixture.directory.appendingPathComponent("Automatic.fcpbundle"),
+            projectUID: "automatic-project", projectName: "Automatic project")
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove, workflowOrigin: origin)
+        var latest: ReviewResponse?, hold = true, previews: [Bool] = []
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
+            ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        }, applyOperation: { _, _, _ in }, authorizeRecalculation: { _ in true },
+            localPreviewOperation: { _, _, _ in while hold { try await Task.sleep(for: .milliseconds(1)) } },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        coordinator.onReviewChange = { _, review in previews.append(review != nil) }
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let revision = try XCTUnwrap(latest).revision, first = UUID(), next = UUID()
+        let values = ReviewWireSettings(threshold: -35, minimum: 0.7, before: 0.05, after: 0.15)
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: revision, view: origin.view,
+            settings: values, output: "remove", settingsEdit: first, settingsSequence: 1,
+            verifySettings: true, localPreview: true, automaticPreview: true))
+        XCTAssertEqual(latest?.state, "recalculating")
+        coordinator.handle(.init(request: request.id, command: .preview, included: false, expectedRevision: revision,
+            view: origin.view, settingsSequence: 2, localPreview: true))
+        XCTAssertEqual(previews.last, false)
+        hold = false
+        try await waitUntil { latest?.state == "review" && latest?.settingsEdit == first }
+        XCTAssertEqual(previews.last, false)
+        XCTAssertEqual(latest?.previewVisible, false)
+        XCTAssertFalse(try XCTUnwrap(latest).canApply)
+        let nextRevision = try XCTUnwrap(latest).revision
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: nextRevision, view: origin.view,
+            settings: values, output: "remove", settingsEdit: next, settingsSequence: 2,
+            verifySettings: true, localPreview: true, automaticPreview: true))
+        try await waitUntil { latest?.state == "review" && latest?.settingsEdit == next }
+        XCTAssertEqual(previews.last, true)
+        XCTAssertTrue(try XCTUnwrap(latest).canApply)
+        // The old prospective hide for sequence2 cannot hide sequence2 itself.
+        coordinator.handle(.init(request: request.id, command: .preview, included: false, expectedRevision: revision,
+            view: origin.view, settingsSequence: 2, localPreview: true))
+        XCTAssertEqual(previews.last, true)
+        coordinator.handle(.init(request: request.id, command: .status))
+        XCTAssertEqual(latest?.previewVisible, true)
+    }
+
+    func testAutomaticPreviewCalculationFailureAcknowledgesDraftWithoutMutatingAcceptedReview() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let original = fixture.result.analyzed
+        let retainedSettings = try AnalysisSettings(thresholdDBFS: -40, minimumSilenceDuration: 0.5,
+            beforeSpeechPadding: 0.1, afterSpeechPadding: 0.1, windowDuration: 0.02)
+        let retained = AnalyzedAudioProject(document: original.document, target: original.target,
+            dialogueContext: original.dialogueContext, audio: original.audio, settings: retainedSettings,
+            analysis: original.analysis, review: original.review, cutFrameDuration: original.cutFrameDuration)
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: fixture.directory.appendingPathComponent("Automatic.fcpbundle"),
+            projectUID: "automatic-project", projectName: "Automatic project")
+        let request = AnalyzeRequest(id: UUID(), settings: retainedSettings, outputMode: .remove, workflowOrigin: origin)
+        var latest: ReviewResponse?, authorizations = 0, updates = 0, applies = 0
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
+            ReviewAnalysisResult(analyzed: retained, canUpdateCuts: true)
+        }, applyOperation: { _, _, _ in applies += 1 },
+            authorizeRecalculation: { _ in authorizations += 1; return true },
+            localPreviewOperation: { _, _, _ in updates += 1 }, emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let initial = try XCTUnwrap(latest), edit = UUID()
+        // UI wire settings use the supported10ms window. Reusing retained
+        // measurements with a different captured window requires fresh Analyze.
+        let wire = ReviewWireSettings(threshold: -35, minimum: 0.7, before: 0.05, after: 0.15)
+        var copied = retained
+        XCTAssertThrowsError(try copied.recalculate(settings: wire.analysisSettings())) { error in
+            guard case ProjectAnalysisError.changedWindowDuration = error else {
+                return XCTFail("Unexpected calculation error: \(error)")
+            }
+        }
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: initial.revision,
+            view: origin.view, settings: wire, output: "gaps", settingsEdit: edit, settingsSequence: 1,
+            verifySettings: true, localPreview: true, automaticPreview: true))
+        let declined = try XCTUnwrap(latest)
+        XCTAssertEqual(authorizations, 1)
+        XCTAssertEqual(updates, 0)
+        XCTAssertEqual(applies, 0)
+        XCTAssertEqual(declined.state, "review")
+        XCTAssertEqual(declined.revision, initial.revision)
+        XCTAssertEqual(declined.rejectedSettingsEdit, edit)
+        XCTAssertEqual(declined.rejectedSettingsSequence, 1)
+        XCTAssertEqual(declined.settingsEdit, initial.settingsEdit)
+        XCTAssertEqual(declined.settings, initial.settings)
+        XCTAssertEqual(declined.output, initial.output)
+        XCTAssertEqual(declined.cuts, initial.cuts)
+        XCTAssertFalse(declined.canApply)
+        XCTAssertEqual(coordinator.currentRequest, request)
+        coordinator.handle(.init(request: request.id, command: .status))
+        XCTAssertEqual(latest?.rejectedSettingsEdit, edit)
+        XCTAssertEqual(latest?.revision, initial.revision)
+    }
+
+    func testAutomaticPreviewRequiresWorkflowOriginEligibilityAndDoesNotApplyByItself() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        var latest: ReviewResponse?, updates = 0, applies = 0
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove)
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
+            ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        }, applyOperation: { _, _, _ in applies += 1 }, authorizeRecalculation: { _ in true },
+            localPreviewOperation: { _, _, _ in updates += 1 }, emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        XCTAssertEqual(latest?.automaticPreviewAvailable, false)
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: latest?.revision, view: UUID(),
+            settings: .init(threshold: -35, minimum: 0.7, before: 0.05, after: 0.15), output: "remove",
+            settingsEdit: UUID(), settingsSequence: 1, verifySettings: true, localPreview: true, automaticPreview: true))
+        XCTAssertEqual(updates, 0)
+        XCTAssertEqual(applies, 0)
+        XCTAssertEqual(coordinator.currentRequest, request)
+    }
+
     func testRestoredWorkflowVerificationPublishesFreshGestureOnEveryState() async throws {
         let requestID = UUID(), view = UUID()
         func request(_ gesture: UUID) throws -> AnalyzeRequest {
@@ -964,7 +1140,7 @@ import XCTest
             XCTAssertEqual(response.cuts, cuts)
             XCTAssertFalse(response.canApply)
             XCTAssertFalse(response.canHighlight)
-            XCTAssertTrue(response.message.contains("not connected"))
+            XCTAssertTrue(response.message.contains("unavailable in this version"))
         }
         XCTAssertEqual(calls, 1)
     }
@@ -1027,7 +1203,7 @@ import XCTest
             let response = try XCTUnwrap(responses.last)
             XCTAssertTrue(response.cuts.isEmpty)
             XCTAssertFalse(response.canApply)
-            XCTAssertTrue(response.message.contains(level == 0 ? "Whole-clip deletion is unavailable" : "No qualifying silence"))
+            XCTAssertTrue(response.message.contains(level == 0 ? "cannot remove the entire clip" : "No qualifying silence"))
         }
     }
 

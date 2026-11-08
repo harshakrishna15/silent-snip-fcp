@@ -4,7 +4,6 @@ import SilentSnipMac
 @MainActor final class SilentSnipDelegate: NSObject, NSApplicationDelegate {
     private let transport = ReviewTransport()
     private let interactive = InteractiveAudioSession()
-    private var menuBar: MenuBarController?
     private var storageTimer: Timer?
     private var hostExitTimer: Timer?
     private var hostLifetime = FinalCutHelperLifetime()
@@ -24,15 +23,21 @@ import SilentSnipMac
             }
         }, applyOperation: { [unowned self] request, result, progress in
             await waitForStorageCleanup()
-            try await withPrototype(request: request.id) {
-                try await interactive.apply(request, result: result, progress: prototypeProgress(progress))
+            // Final Cut's Open Document delivery can activate an accessory app
+            // after its delegate callback returns. This worker needs no own
+            // windows during Apply; prevent that activation for the operation
+            // instead of racing it or relaxing native input-focus guards.
+            try await FinalCutApplyActivation.run(readPolicy: { NSApp.activationPolicy() },
+                setPolicy: { NSApp.setActivationPolicy($0) }) {
+                try await withPrototype(request: request.id) {
+                    try await interactive.apply(request, result: result, progress: prototypeProgress(progress))
+                }
             }
         }, authorizeApply: { [unowned self] command in
             guard let view = command.view, let gesture = command.applyGesture else { return false }
             return interactive.canAuthorizeApply(view: view, gesture: gesture)
         }, authorizeRecalculation: { [unowned self] command in
-            guard command.localPreview == true, let view = command.view, let edit = command.settingsEdit else { return false }
-            return interactive.canAuthorizePreview(view: view, edit: edit)
+            interactive.canAuthorizeRecalculation(command)
         }, localPreviewOperation: { [unowned self] request, result, progress in
             try await interactive.updateCutsPreview(request, result: result, progress: progress)
         }, recordLocalPreview: { [unowned self] id, seconds, succeeded in
@@ -71,7 +76,11 @@ import SilentSnipMac
             self.lateActivationTask = Task { [weak self] in
                 await FinalCutReviewPresentation.returnOwnActivation(
                     stillOwnsRequest: { self?.coordinator.currentRequest?.id == request },
-                    helperIsActive: { NSApp.isActive }, restore: {
+                    helperOwnsForeground: {
+                        FinalCutReviewPresentation.helperOwnsForeground(
+                            foregroundPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                            helperPID: NSRunningApplication.current.processIdentifier)
+                    }, restore: {
                         guard let self else { return }
                         if !self.coordinator.isBusy {
                             await self.interactive.restoreReviewAfterLateCompletion(directory, request: request)
@@ -106,12 +115,6 @@ import SilentSnipMac
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         windowSizing.start()
-        menuBar = MenuBarController(isBusy: { [weak self] in
-            self?.coordinator.isBusy == true || self?.storageCleanup.isRunning == true || ShareDestinationManager.shared.hasActiveRequest
-        }, clearCache: { [weak self] in
-            guard let self else { return nil }
-            return await self.cleanStorage(manual: true)
-        })
         Task { _ = await cleanStorage(manual: false) }
         storageTimer = Timer(timeInterval: 600, repeats: true) { [weak self] _ in
             Task { @MainActor in _ = await self?.cleanStorage(manual: false) }
@@ -197,7 +200,6 @@ import SilentSnipMac
         coordinator.stop()
         interactive.stop()
         transport.stop()
-        menuBar?.stop()
     }
 
     private func waitForStorageCleanup() async {

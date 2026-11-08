@@ -47,7 +47,7 @@ import Foundation
         defer { timing.recordCounters(session.projectLookupCounters) }
         do {
         try await timing.measure("capture.activation") { try await session.activate() }
-        progress("Preparing Final Cut for export…")
+        progress("Preparing Final Cut Pro for export…")
         // Capture the exact selection before suspending the effect window.
         // Opening an AU view can leave the Inspector focused, making Final
         // Cut omit the timeline's active selection until the timeline regains
@@ -96,7 +96,8 @@ import Foundation
             progress("Rendering fresh audio and project XML together…")
             let combined = try await timing.measure("capture.combinedExchange") {
                 try await DirectAudioRenderCapture.perform(prepared: hintedRead, render: {
-                    try await session.shareRenderedAudio(timing: timing, renderSelection: hint.scope == .selectedRange ? selected : nil)
+                    try await session.shareRenderedAudio(timing: timing, renderSelection: hint.scope == .selectedRange ? selected : nil,
+                        sharePurpose: .analyze)
                 }, cleanup: { receipt in
                     try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: receipt)
                 })
@@ -113,7 +114,7 @@ import Foundation
             xml = destination.appendingPathComponent("Info.fcpxml")
             try Data(contentsOf: source).write(to: xml, options: .withoutOverwriting)
         } else {
-            xml = try await timing.measure("capture.xmlExchange") { try await session.exportProjectXML(to: destination, timing: timing) }
+            xml = try await timing.measure("capture.xmlExchange") { try await session.exportProjectXML(to: destination, timing: timing, sharePurpose: .analyze) }
         }
         // The exporter has confirmed this unique output is complete. Until the
         // caller receives it, capture owns cleanup if validation subsequently fails.

@@ -25,6 +25,6 @@ xcrun clang -arch arm64 -isysroot "$mac_sdk" -mmacosx-version-min=14.0 \
   -fobjc-arc -fno-modules -Wall -Wextra -Wno-unused-parameter \
   -I "$sdk/usr/include" -F "$sdk/Library/Frameworks" \
   -I WorkflowPrototype/Tests/Support WorkflowPrototype/Tests/ControllerTests.m \
-  -framework AppKit -framework Foundation -framework CoreMedia -framework CoreServices \
+  -framework AppKit -framework Foundation -framework CoreMedia -framework CoreServices -framework QuartzCore \
   -o "$output/ControllerTests"
 "$output/ControllerTests"

@@ -26,6 +26,26 @@ final class ClosedShareAXCommandTests: XCTestCase {
         XCTAssertThrowsError(try resolve(tree(), actions: ["AXShowMenu"]))
     }
 
+    func testProductionRequiresPressEvenWhenPickIsAdvertised() throws {
+        let nodes = tree()
+        func production(actions: [String]) throws -> Command {
+            try Command.resolve(menuBar: 0, read: { try XCTUnwrap(nodes[$0]) },
+                actions: { _ in actions }, pressOnly: true, shouldContinue: { true })
+        }
+        XCTAssertThrowsError(try production(actions: [kAXPickAction]))
+        XCTAssertEqual(try production(actions: [kAXPickAction, kAXPressAction]).action, kAXPressAction)
+    }
+
+    func testProductionRejectsAnUnreadableSiblingRatherThanAssumingUniqueCommand() throws {
+        for title: String? in [nil, "Silent Snip…"] {
+            var nodes = tree()
+            nodes[4] = .init(role: kAXMenuRole, title: nil, enabled: nil, children: [5, 6])
+            nodes[6] = .init(role: kAXMenuItemRole, title: title, enabled: nil, children: [])
+            XCTAssertThrowsError(try Command.resolve(menuBar: 0, read: { try XCTUnwrap(nodes[$0]) },
+                actions: { _ in [kAXPressAction] }, pressOnly: true, shouldContinue: { true }))
+        }
+    }
+
     func testUnknownOrDisabledStateAtEveryRequiredItemRejectsBeforeInput() {
         for id in [1, 3, 5] {
             for enabled: Bool? in [false, nil] {

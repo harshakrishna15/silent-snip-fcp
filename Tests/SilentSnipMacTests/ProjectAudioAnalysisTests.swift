@@ -353,7 +353,11 @@ final class ProjectAudioAnalysisTests: XCTestCase {
             range: .init(start: .init(1), end: .init(4)), timelineStart: .zero, windowDuration: 0.01)
         XCTAssertTrue(try SilenceDetector.analyze(windows: raw.windows, target: target.timelineRange,
             frameDuration: document.frameDuration, settings: AnalysisSettings()).candidates.isEmpty)
-        let output = try EditedProjectWriter.write(projectData: Data(xml.utf8), selection: fixture.selection,
+        XCTAssertThrowsError(try EditedProjectWriter.write(projectData: Data(xml.utf8), selection: fixture.selection,
+            selectedRanges: result.review.selectedCuts.map(\.range), outputName: "Unverified Gate"))
+        // Synthetic rendered samples and XML can prove cut geometry without
+        // authorizing reconstruction of the installed gate's private state.
+        let output = try EditedProjectWriter.serializationExpectation(projectData: Data(xml.utf8), selection: fixture.selection,
             selectedRanges: result.review.selectedCuts.map(\.range), outputName: "Gated cuts")
         XCTAssertEqual(try TimelineParser.parse(data: output.xmlData).clips.count, 2)
     }

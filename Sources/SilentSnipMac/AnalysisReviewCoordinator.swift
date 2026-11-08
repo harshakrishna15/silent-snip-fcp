@@ -128,8 +128,8 @@ public struct ReviewAnalysisResult: Sendable {
             if previous.task != nil || previous.state.isBusy {
                 job.state = .failed
                 job.message = previous.applyStarted
-                    ? "Silent Snip is still applying or stopping cuts. Wait for it to finish, then Analyze again."
-                    : "Another Silent Snip analysis is running. Cancel it or wait for it to finish, then Analyze again."
+                    ? "Silent Snip is still applying or stopping cuts. Wait for it to finish, then analyze the clip again."
+                    : "Another Silent Snip analysis is running. Cancel it or wait for it to finish, then analyze the clip again."
                 publish(job)
                 prune()
                 return
@@ -163,7 +163,7 @@ public struct ReviewAnalysisResult: Sendable {
                 job.progress = nil
                 if job.cancelled || error is CancellationError {
                     job.state = .cancelled
-                    job.message = "Analysis cancelled. No timeline edits were made."
+                    job.message = "Analysis canceled. No timeline edits were made."
                 } else {
                     job.state = .failed
                     job.message = error.localizedDescription
@@ -185,11 +185,21 @@ public struct ReviewAnalysisResult: Sendable {
         if command.command == .status { resend(job); return }
         if command.command == .recalculate { recalculate(job, command: command); return }
         if command.command == .preview, command.localPreview == true, command.included == false {
-            guard active == command.request, job.state == .review,
-                  command.expectedRevision == job.revision else { return }
-            // Invalidate display/Apply without running analysis or consuming
-            // the immutable audio snapshot. No new revision is needed while
-            // the view is editing and deliberately ignores status replies.
+            guard active == command.request, !job.cancelled, !job.applyStarted else { return }
+            if command.view != nil || command.settingsSequence != nil {
+                // A newer local draft can arrive while an older retained-audio
+                // update is finishing. Its prospective sequence hides only an
+                // older result; a delayed hide cannot suppress that sequence
+                // after it has itself been accepted.
+                guard let origin = job.request.workflowOrigin, command.view == origin.view,
+                      job.state == .review || job.state == .recalculating,
+                      let expected = command.expectedRevision, expected >= 0, expected <= job.revision,
+                      let sequence = command.settingsSequence, sequence > job.settingsSequence else { return }
+            } else {
+                // Compatibility for the prior explicit-update frontend/AU.
+                guard job.state == .review, command.expectedRevision == job.revision else { return }
+            }
+            // Hiding cannot authorize recalculation, Share, selection, or Apply.
             job.previewSuspended = true
             onReviewChange?(job.request.id, nil)
             return
@@ -215,9 +225,9 @@ public struct ReviewAnalysisResult: Sendable {
             job.task?.cancel()
             job.state = job.task == nil ? .cancelled : .cancelling
             if job.applyStarted {
-                job.message = "Stopping Apply. A cleaned project may already exist in Final Cut. Check the existing result before applying again; the original project stays unchanged…"
+                job.message = "Stopping Apply Cuts. A cleaned project may already exist in Final Cut Pro. Verify the existing result before applying cuts again. The original project is unchanged…"
             } else {
-                job.message = job.task == nil ? "Review cancelled. No timeline edits were made." : "Stopping the export safely…"
+                job.message = job.task == nil ? "Review canceled. No timeline edits were made." : "Stopping the export safely…"
             }
             job.progress = nil
             if job.task == nil, active == job.request.id { active = nil }
@@ -254,7 +264,7 @@ public struct ReviewAnalysisResult: Sendable {
                 guard authorizeApply(command) else {
                     job.result = nil
                     job.state = .failed
-                    job.message = "Apply was not confirmed in the selected Silent Snip Controls window. Analyze again before applying cuts."
+                    job.message = "Apply Cuts was not confirmed in the selected Silent Snip window. Analyze the clip again before applying cuts."
                     if active == job.request.id { active = nil }
                     publish(job)
                     record(job.request, job.state.rawValue, job.message)
@@ -279,12 +289,13 @@ public struct ReviewAnalysisResult: Sendable {
         let started = ProcessInfo.processInfo.systemUptime
         let local = command.localPreview == true
         // Workflow settings belong to the project, not a detector instance.
-        // Only its explicit, native-authorized snapshot update is supported;
-        // the legacy AU automatic recalculation path must not adopt this job.
+        // Native-authorized retained-audio updates may be automatic; the
+        // legacy AU automatic recalculation path must not adopt this job.
+        if command.automaticPreview == true, job.request.workflowOrigin == nil { resend(job); return }
         if let origin = job.request.workflowOrigin {
             guard local, command.view == origin.view, command.verifySettings == true,
                   let settings = try? command.settings?.analysisSettings(),
-                  (try? WorkflowReviewOrigin.validate(settings: settings)) != nil else { resend(job); return }
+                  (try? WorkflowReviewOrigin.validate(settings: settings)) != nil else { rejectAutomaticPreview(job, command: command); return }
         }
         guard active == command.request, !job.cancelled, !job.applyStarted,
               job.state == .review || job.state == .recalculating,
@@ -297,9 +308,9 @@ public struct ReviewAnalysisResult: Sendable {
               let expected = command.expectedRevision, expected >= 0, expected <= job.revision,
               !local || expected == job.revision,
               let values = command.settings, let settings = try? values.analysisSettings(),
-              let output = command.output.flatMap(SilentSnipOutputMode.init(rawValue:)) else { resend(job); return }
-        if job.settingsView == view && sequence <= job.settingsSequence { resend(job); return }
-        guard authorizeRecalculation(command) else { resend(job); return }
+              let output = command.output.flatMap(SilentSnipOutputMode.init(rawValue:)) else { rejectAutomaticPreview(job, command: command); return }
+        if job.settingsView == view && sequence <= job.settingsSequence { rejectAutomaticPreview(job, command: command); return }
+        guard authorizeRecalculation(command) else { rejectAutomaticPreview(job, command: command); return }
         do {
             _ = try result.analyzed.recalculate(settings: settings)
             if local { result.usesAudioSnapshot = true }
@@ -313,7 +324,7 @@ public struct ReviewAnalysisResult: Sendable {
                 : "Preview updated. Finish editing a field to verify the project and enable Apply."
             publish(job)
             if local {
-                // Explicit snapshot updates never dispatch a Share. Their own
+                // Retained-audio updates never dispatch a Share. Their own
                 // operation checks the current review selection; Apply later
                 // validates freshly rendered audio before importing anything.
                 let request = job.request
@@ -339,7 +350,18 @@ public struct ReviewAnalysisResult: Sendable {
             // replace the pending settings, never start concurrent exports.
             if let task = job.task { task.cancel() }
             else { verifyRecalculation(job) }
-        } catch { job.message = error.localizedDescription; publish(job) }
+        } catch {
+            if command.automaticPreview == true {
+                // The copied analysis can reject an incompatible grid or an
+                // invalid retained plan before any accepted job state changes.
+                // Retire this draft with a separate ACK rather than leaving
+                // the frontend waiting for a settingsEdit we never accepted.
+                rejectAutomaticPreview(job, command: command)
+            } else {
+                job.message = error.localizedDescription
+                publish(job)
+            }
+        }
     }
 
     private func verifyRecalculation(_ job: Job) {
@@ -359,7 +381,7 @@ public struct ReviewAnalysisResult: Sendable {
             } catch { failure = error }
             job.task = nil
             if job.cancelled {
-                job.result = nil; job.state = .cancelled; job.message = "Preview cancelled. No timeline edits were made."
+                job.result = nil; job.state = .cancelled; job.message = "Preview canceled. No timeline edits were made."
                 if self.active == request.id { self.active = nil }
             } else if job.settingsEdit != edit {
                 self.verifyRecalculation(job)
@@ -468,7 +490,7 @@ public struct ReviewAnalysisResult: Sendable {
 
     private func beginApply(_ job: Job, result: ReviewAnalysisResult) {
         guard let applyOperation else {
-            job.message = "Apply is not connected in this build."
+            job.message = "Apply Cuts is unavailable in this version of Silent Snip."
             publish(job)
             return
         }
@@ -498,16 +520,16 @@ public struct ReviewAnalysisResult: Sendable {
                 try Task.checkCancellation()
                 guard !job.cancelled else { throw CancellationError() }
                 job.state = .completed
-                if job.progress != 1 { job.message = "Apply completed for \(selectedCount) selected cuts." }
+                if job.progress != 1 { job.message = "Applied \(selectedCount) selected cuts." }
                 job.progress = 1
             } catch {
                 job.progress = nil
                 if job.cancelled || error is CancellationError {
                     job.state = .cancelled
-                    job.message = "Apply cancelled. " + error.localizedDescription
+                    job.message = "Apply Cuts canceled. " + error.localizedDescription
                 } else {
                     job.state = .failed
-                    job.message = "Apply stopped: \(error.localizedDescription)"
+                    job.message = "Apply Cuts stopped: \(error.localizedDescription)"
                 }
             }
             job.task = nil
@@ -565,7 +587,26 @@ public struct ReviewAnalysisResult: Sendable {
         }
     }
 
-    private func makeResponse(_ job: Job) throws -> ReviewResponse {
+    /// A new draft can invalidate an older pending native marker before its
+    /// command is read. Acknowledge that rejection independently of the last
+    /// accepted settingsEdit, without mutating cuts or advancing its revision.
+    /// Status polling can replay this bounded ACK until the next publication.
+    private func rejectAutomaticPreview(_ job: Job, command: ReviewCommand) {
+        guard command.automaticPreview == true, active == command.request,
+              !job.cancelled, !job.applyStarted, job.result != nil,
+              job.state == .review || job.state == .recalculating, let origin = job.request.workflowOrigin,
+              command.view == origin.view, let edit = command.settingsEdit,
+              let sequence = command.settingsSequence, sequence > job.settingsSequence else { resend(job); return }
+        do {
+            let response = try makeResponse(job, rejectedEdit: edit, rejectedSequence: sequence)
+            let publication = try ReviewPublication(response)
+            job.publication = publication
+            try deliver(publication)
+        } catch { resend(job) }
+    }
+
+    private func makeResponse(_ job: Job, rejectedEdit: UUID? = nil,
+                              rejectedSequence: Int? = nil) throws -> ReviewResponse {
         guard let result = job.result, job.state == .review || job.state == .analyzing || job.state == .recalculating else {
             return ReviewResponse(request: job.request.id, revision: job.revision,
                 state: job.state.rawValue, message: job.message, progress: job.progress,
@@ -592,16 +633,19 @@ public struct ReviewAnalysisResult: Sendable {
             ? "\(review.selectedCuts.count) selected · \(Self.seconds(removed)) removed · \(Self.seconds(duration)) → \(Self.seconds(after))"
             : "\(review.selectedCuts.count) gaps × \(Self.seconds(gap!)) · \(Self.seconds(duration)) → \(Self.seconds(after))"
         let ready = job.state == .review
+        let accepted = rejectedEdit == nil && !job.previewSuspended
         return ReviewResponse(request: job.request.id, revision: job.revision, state: job.state.rawValue,
             message: job.message, progress: job.state == .recalculating ? job.progress : 1, summary: summary, cuts: cuts,
-            canApply: ready && applyOperation != nil && Self.applyUnavailableReason(result) == nil,
-            canChangeSelection: ready, canCancel: true, canHighlight: ready && highlightOperation != nil, previewVisible: true,
+            canApply: accepted && ready && applyOperation != nil && Self.applyUnavailableReason(result) == nil,
+            canChangeSelection: accepted && ready, canCancel: true, canHighlight: accepted && ready && highlightOperation != nil, previewVisible: !job.previewSuspended,
             settingsEdit: job.settingsEdit,
             settings: ReviewWireSettings(threshold: job.request.settings.thresholdDBFS, minimum: job.request.settings.minimumSilenceDuration,
                 before: job.request.settings.beforeSpeechPadding, after: job.request.settings.afterSpeechPadding),
             output: job.request.outputMode.rawValue, provisional: job.state == .recalculating,
             canUpdateCuts: ready && result.canUpdateCuts && localPreviewOperation != nil,
-            usesAudioSnapshot: result.usesAudioSnapshot, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture)
+            usesAudioSnapshot: result.usesAudioSnapshot, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture,
+            automaticPreviewAvailable: job.request.workflowOrigin != nil && result.canUpdateCuts && localPreviewOperation != nil,
+            rejectedSettingsEdit: rejectedEdit, rejectedSettingsSequence: rejectedSequence)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {
@@ -616,7 +660,7 @@ public struct ReviewAnalysisResult: Sendable {
         // Empty reviews retain their specific no-silence/whole-clip explanation.
         let explanation = result.analyzed.review.cuts.isEmpty ? Self.reviewMessage(result.analyzed.analysis.disposition, applyAvailable: applyOperation != nil) : message
         let notice = result.usesAudioSnapshot
-            ? "Cuts use the last analyzed audio. Apply verifies current audio before editing. Use Analyze Audio Again after changing volume or effects."
+            ? "Cuts use the last analyzed audio. Apply Cuts verifies the current audio before editing. Click Analyze Again after changing volume or audio effects."
             : result.presentationNotice
         return result.usesAudioSnapshot
             ? [notice, explanation].compactMap { $0 }.joined(separator: " ")
@@ -627,10 +671,10 @@ public struct ReviewAnalysisResult: Sendable {
         switch disposition {
         case .cuts:
             return applyAvailable
-                ? "Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts."
-                : "Analysis complete. Review the proposed ranges below. Apply is not connected in this build."
+                ? "Analysis complete. Review the proposed ranges, then click Apply Cuts."
+                : "Analysis complete. Review the proposed ranges below. Apply Cuts is unavailable in this version of Silent Snip."
         case .noSilence: return "No qualifying silence was found. No cuts are proposed."
-        case .entirelySilent: return "The selected recording is entirely below the threshold. Whole-clip deletion is unavailable."
+        case .entirelySilent: return "The selected clip is entirely below the threshold. Silent Snip cannot remove the entire clip."
         }
     }
 
@@ -639,12 +683,12 @@ public struct ReviewAnalysisResult: Sendable {
         let isolatedAudio = analysis.dialogueContext.sourceRange != nil || analysis.dialogueContext.isolatedTargetID != nil
         let warnings = analysis.document.warnings.filter { !isolatedAudio || $0 != TimelineDocument.missingDialogueWarning }
         guard warnings.isEmpty else {
-            return "Apply is unavailable because the project has unresolved issues: " + warnings.joined(separator: "; ")
+            return "Apply Cuts is unavailable because the project has unresolved issues: " + warnings.joined(separator: "; ")
         }
         let target = analysis.review.target
         guard target.enabled, target.isPrimaryStoryline, target.hasAudio,
               target.unsupportedReasons.isEmpty else {
-            return "Apply requires a supported, enabled clip with audio in the primary storyline."
+            return "Apply Cuts requires a supported, enabled clip with audio in the primary storyline."
         }
         guard !analysis.review.selectedCuts.isEmpty else { return "Select at least one eligible cut before applying." }
         return nil
@@ -659,6 +703,6 @@ public struct ReviewAnalysisResult: Sendable {
 
     private enum CoordinatorError: LocalizedError {
         case tooManyCuts
-        var errorDescription: String? { "There are more than 1,000 proposed cuts. Increase Minimum Silence and Analyze again." }
+        var errorDescription: String? { "There are more than 1,000 proposed cuts. Increase Minimum Silence, then analyze the clip again." }
     }
 }

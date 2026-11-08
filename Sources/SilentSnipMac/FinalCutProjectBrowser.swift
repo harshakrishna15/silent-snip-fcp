@@ -164,7 +164,7 @@ extension FinalCutAXSession {
                         confirmation.axResult = result.rawValue
                         try encoder.encode(confirmation).write(to: confirmationURL, options: .atomic)
                         guard result == .success else {
-                            throw FinalCutCaptureError.unavailable("Final Cut could not confirm project replacement. Check the result before retrying verification.")
+                            throw FinalCutCaptureError.unavailable("Final Cut Pro could not confirm project replacement. Check the result before retrying verification.")
                         }
                     }
                 }
@@ -244,9 +244,9 @@ extension FinalCutAXSession {
             try await Task.sleep(for: .milliseconds(150))
         }
         if let dialog = lastDialog {
-            throw FinalCutCaptureError.unavailable("Verification is blocked by Final Cut’s ‘\(dialog.title)’ dialog. Close it before checking the existing result. Details: \(reportURL.path)")
+            throw FinalCutCaptureError.unavailable("Verification is blocked by Final Cut Pro’s ‘\(dialog.title)’ dialog. Close it before checking the existing result. Details: \(reportURL.path)")
         }
-        throw FinalCutCaptureError.unavailable("Final Cut did not finish presenting the imported project ‘\(name)’ within 30 seconds. Open the result in its event before retrying verification.")
+        throw FinalCutCaptureError.unavailable("Final Cut Pro did not finish presenting the imported project ‘\(name)’ within 30 seconds. Open the result in its event before retrying verification.")
     }
 
     private func importObservation(in element: AXUIElement, didReadNode: () -> Void) throws -> FinalCutImportObservation<AXUIElement> {
@@ -274,37 +274,162 @@ extension FinalCutAXSession {
 
     /// Reveal the current project before delivery. Replacement by name must
     /// never target duplicate browser items or an event in another library.
-    func prepareReplacementBrowser(_ target: XMLReplacementTarget) async throws {
+    func prepareReplacementBrowser(_ target: XMLReplacementTarget, allowLibraryEventSelection: Bool = true) async throws {
+        let previousStage = operationStage
+        operationStage = "Locating the source project in its event"
+        defer { operationStage = previousStage }
         guard projectName == target.projectName else { throw FinalCutCaptureError.changedProject }
         try await activate()
         try await pressMenu(path: ["File", "Reveal Project in Browser"])
-        try await waitUntil(timeout: 5, context: "the replacement's original event") {
-            (try? self.assertReplacementEvent(target)) != nil
+        // Reveal can legitimately retain the selected library (showing all its
+        // projects). Select the unique source event instead of waiting for a
+        // selection change that Final Cut never promised to make.
+        let revealed = try await settledEventSidebar(target, allowLibrarySelection: allowLibraryEventSelection)
+        if try !FinalCutEventSidebar.isSelected(revealed.index, rows: revealed.rows, selectedRows: revealed.selectedRows) {
+            guard allowLibraryEventSelection,
+                  try FinalCutEventSidebar.libraryIsSelected(rows: revealed.rows, libraryURL: target.libraryURL,
+                    selectedRows: revealed.selectedRows) else {
+                throw FinalCutCaptureError.unavailable("The revealed project is not selected in its expected source event. Select ‘\(target.eventName)’ in the source library before trying again. No unrelated event was selected automatically.")
+            }
+            try await prepareInputFocus()
+            try selectEventRow(revealed)
+            _ = try await settledEventSidebar(target, allowLibrarySelection: false)
+            try await pressMenu(path: ["File", "Reveal Project in Browser"])
         }
+        _ = try await settledEventSidebar(target, allowLibrarySelection: false)
         _ = try await selectBrowserProject(named: target.projectName)
         try await focusTimeline()
     }
 
-    private func assertReplacementEvent(_ target: XMLReplacementTarget) throws {
-        guard let sidebar = Self.search(mainWindow, role: kAXOutlineRole, description: "Event media sidebar", containersOnly: true) else {
-            throw FinalCutCaptureError.unavailable("Show the original project’s event in the Libraries sidebar before replacement verification.")
+    func assertReplacementEvent(_ target: XMLReplacementTarget) throws {
+        let observed = try eventSidebarObservation(target)
+        guard try FinalCutEventSidebar.isSelected(observed.index, rows: observed.rows, selectedRows: observed.selectedRows) else {
+            throw FinalCutCaptureError.unavailable("Select the ‘\(target.eventName)’ event in ‘\(target.libraryURL.deletingPathExtension().lastPathComponent)’ before continuing. The active project has not been edited.")
         }
-        var libraryPath: String?
-        var matches = 0
-        for row in children(sidebar) where string(row, kAXRoleAttribute) == kAXRowRole {
-            let fields = importElements(in: row).filter { string($0, kAXRoleAttribute) == kAXTextFieldRole }
-            for field in fields {
-                if let help = string(field, kAXHelpAttribute),
-                   let path = help.split(separator: "\n").last, path.hasSuffix(".fcpbundle"), path.hasPrefix("/") {
-                    libraryPath = URL(fileURLWithPath: String(path)).standardizedFileURL.path
+    }
+
+    private struct EventSidebarObservation {
+        let sidebar: AXUIElement
+        let elements: [AXUIElement]
+        let rows: [FinalCutEventSidebar.Row]
+        let selectedRows: [Int]?
+        let index: Int
+    }
+
+    private func settledEventSidebar(_ target: XMLReplacementTarget, allowLibrarySelection: Bool) async throws -> EventSidebarObservation {
+        let deadline = Date().addingTimeInterval(5)
+        var reason: Error = FinalCutCaptureError.unavailable("Select the source event ‘\(target.eventName)’ in its library before trying again.")
+        repeat {
+            try assertCurrentProject()
+            do {
+                let observed = try eventSidebarObservation(target)
+                if try FinalCutEventSidebar.isSelected(observed.index, rows: observed.rows, selectedRows: observed.selectedRows) {
+                    return observed
+                }
+                if allowLibrarySelection,
+                   try FinalCutEventSidebar.libraryIsSelected(rows: observed.rows, libraryURL: target.libraryURL, selectedRows: observed.selectedRows) {
+                    return observed
+                }
+            } catch { reason = error }
+            // Read-only settling never dispatches Reveal or selection again.
+            try await Task.sleep(for: .milliseconds(150))
+        } while Date() < deadline
+        throw reason
+    }
+
+    private func eventSidebarObservation(_ target: XMLReplacementTarget) throws -> EventSidebarObservation {
+        guard let sidebar = Self.search(mainWindow, role: kAXOutlineRole, description: "Event media sidebar", containersOnly: true) else {
+            throw FinalCutCaptureError.unavailable("Show the source event in the Libraries sidebar before continuing.")
+        }
+        guard let children = attribute(sidebar, kAXChildrenAttribute) as? [AXUIElement], children.count <= 600 else {
+            throw FinalCutCaptureError.unavailable("The Libraries sidebar could not be read safely.")
+        }
+        guard children.allSatisfy({ child in
+            guard let role = string(child, kAXRoleAttribute) else { return false }
+            return [kAXRowRole, kAXColumnRole, "AXHeader"].contains(role)
+        }) else { throw FinalCutCaptureError.unavailable("An unreadable Libraries sidebar item prevents verifying the source event.") }
+        let elements = children.filter { string($0, kAXRoleAttribute) == kAXRowRole }
+        var rows: [FinalCutEventSidebar.Row] = []
+        for row in elements {
+            let nodes = importElements(in: row)
+            let fields = nodes.filter { string($0, kAXRoleAttribute) == kAXTextFieldRole }
+            // Final Cut can expose the glyph on the image nested in the cell,
+            // rather than on the cell itself. Inspect this bounded row only.
+            let glyphs = nodes.flatMap { node in
+                [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute, kAXRoleDescriptionAttribute,
+                 kAXIdentifierAttribute, kAXHelpAttribute].compactMap { string(node, $0) }
+            }
+            let path = fields.compactMap { field -> String? in
+                guard let help = string(field, kAXHelpAttribute), let last = help.split(separator: "\n").last else { return nil }
+                let path = String(last)
+                guard path.hasPrefix("/"), URL(fileURLWithPath: path).pathExtension.lowercased() == "fcpbundle" else { return nil }
+                return path
+            }
+            let kind = FinalCutEventSidebar.kind(glyphs: glyphs, hasLibraryPath: !path.isEmpty,
+                disclosureLevel: (attribute(row, kAXDisclosureLevelAttribute) as? NSNumber)?.intValue,
+                knownCollection: string(row, kAXValueAttribute) == "Smart Collections")
+            rows.append(.init(kind: kind, name: fields.count == 1 ? string(fields[0], kAXValueAttribute) : nil,
+                libraryPath: path.count == 1 ? path[0] : nil,
+                selected: (attribute(row, kAXSelectedAttribute) as? NSNumber)?.boolValue))
+        }
+        var selectedRows: [Int]?
+        if let native = attribute(sidebar, kAXSelectedRowsAttribute) as? [AXUIElement] {
+            selectedRows = try native.map { selected in
+                guard let index = elements.firstIndex(where: { CFEqual($0, selected) }) else {
+                    throw FinalCutCaptureError.unavailable("The Libraries sidebar selection could not be verified.")
+                }
+                return index
+            }
+        }
+        do {
+            let index = try FinalCutEventSidebar.eventIndex(rows: rows, libraryURL: target.libraryURL, eventName: target.eventName)
+            return .init(sidebar: sidebar, elements: elements, rows: rows, selectedRows: selectedRows, index: index)
+        } catch {
+            // Keep the bounded observation beside this operation's XML. This
+            // contains sidebar metadata only, and never changes host state.
+            if let directory = lastXMLShareDirectory {
+                let diagnostic: [[String: Any]] = zip(elements, rows).map { element, row in
+                    ["kind": String(describing: row.kind), "name": row.name as Any? ?? NSNull(),
+                     "libraryPath": row.libraryPath as Any? ?? NSNull(), "selected": row.selected as Any? ?? NSNull(),
+                     "nodes": importElements(in: element).map { node in
+                        Dictionary(uniqueKeysWithValues: [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+                            kAXRoleDescriptionAttribute, kAXIdentifierAttribute, kAXValueAttribute,
+                            kAXHelpAttribute, kAXDisclosureLevelAttribute].compactMap { key in
+                                string(node, key).map { (key, $0) }
+                            })
+                     }]
+                }
+                if let data = try? JSONSerialization.data(withJSONObject: diagnostic, options: [.prettyPrinted, .sortedKeys]) {
+                    try? data.write(to: directory.appendingPathComponent("Event-Sidebar.json"), options: .atomic)
                 }
             }
-            if (attribute(row, kAXSelectedAttribute) as? NSNumber)?.boolValue == true,
-               libraryPath == target.libraryURL.path,
-               fields.contains(where: { string($0, kAXValueAttribute) == target.eventName }) { matches += 1 }
+            throw FinalCutCaptureError.unavailable("The exact source event ‘\(target.eventName)’ in ‘\(target.libraryURL.deletingPathExtension().lastPathComponent)’ is missing, unreadable or ambiguous in the Libraries sidebar. Expand that library and select its source event before trying again. No project was duplicated or edited during this check.")
         }
-        guard matches == 1 else {
-            throw FinalCutCaptureError.unavailable("Select the ‘\(target.eventName)’ event in ‘\(target.libraryURL.deletingPathExtension().lastPathComponent)’ before verifying its replacement project.")
+    }
+
+    private func selectEventRow(_ observed: EventSidebarObservation) throws {
+        try assertInputFocus()
+        guard currentSheet() == nil else { throw FinalCutCaptureError.changedProject }
+        let target = observed.elements[observed.index]
+        if AXUIElementSetAttributeValue(observed.sidebar, kAXSelectedRowsAttribute as CFString, [target] as CFArray) == .success { return }
+        if AXUIElementSetAttributeValue(target, kAXSelectedAttribute as CFString, kCFBooleanTrue) == .success { return }
+        // Selection is reversible. The fallback clicks only a freshly hit-tested
+        // descendant of this exact event row, never an overlapping window.
+        let nodes = importElements(in: target)
+        guard let field = nodes.first(where: { string($0, kAXRoleAttribute) == kAXTextFieldRole }),
+              let point = controlCenter(field) else { throw FinalCutCaptureError.unavailable("The source event row is not available for selection.") }
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(root, Float(point.x), Float(point.y), &hit) == .success,
+              let hit, nodes.contains(where: { CFEqual($0, hit) }),
+              let source = CGEventSource(stateID: .hidSystemState) else {
+            throw FinalCutCaptureError.unavailable("The source event is covered or outside the visible Libraries sidebar. Reveal it before trying again.")
+        }
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else {
+                throw FinalCutCaptureError.unavailable("The source event could not be selected.")
+            }
+            event.setIntegerValueField(.mouseEventClickState, value: 1)
+            event.post(tap: .cghidEventTap)
         }
     }
 
@@ -327,7 +452,7 @@ extension FinalCutAXSession {
 
     /// Selection is shared by opening and cleanup. Only one exact browser item
     /// may be selected; a focused timeline is never a deletion target.
-    private func selectBrowserProject(named name: String) async throws -> AXUIElement {
+    func selectBrowserProject(named name: String) async throws -> AXUIElement {
         try await activate()
         func projectImage() -> AXUIElement? {
             guard let browser = find(in: mainWindow, role: kAXScrollAreaRole, description: "organizer"),
@@ -399,7 +524,7 @@ extension FinalCutAXSession {
             // Resolve the hit again after AX changes; a floating effect window
             // must never receive the fallback click.
             guard let visible = visibleProjectImage(), CFEqual(visible, image), let point = controlCenter(image) else {
-                throw FinalCutCaptureError.unavailable("The imported project is covered by another window. Move the effect window away from the browser and Analyze again.")
+                throw FinalCutCaptureError.unavailable("The imported project is covered by another window. Move the covering window away from the browser, then analyze the clip again.")
             }
             for type in [CGEventType.leftMouseDown, .leftMouseUp] {
                 guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else {
@@ -447,7 +572,7 @@ extension FinalCutAXSession {
                   buttons.count == 2,
                   buttons.contains(where: { string($0, kAXTitleAttribute) == "Cancel" }),
                   let confirm = buttons.first(where: { string($0, kAXTitleAttribute) == "OK" }) else {
-                throw FinalCutCaptureError.unavailable("Final Cut showed an unexpected Trash dialog; the temporary project was left for review.")
+                throw FinalCutCaptureError.unavailable("Final Cut Pro showed an unexpected Trash dialog; the temporary project was left for review.")
             }
             try press(confirm)
         }
@@ -482,7 +607,7 @@ extension FinalCutAXSession {
             }
             try await Task.sleep(for: .milliseconds(150))
         }
-        throw FinalCutCaptureError.unavailable("Final Cut did not open the requested project ‘\(name)’.")
+        throw FinalCutCaptureError.unavailable("Final Cut Pro did not open the requested project ‘\(name)’.")
     }
 
 }

@@ -9,7 +9,7 @@ extension FinalCutAXSession {
     private func rangeCommand(_ command: FinalCutRangeCommand) async throws {
         try await focusTimeline()
         guard currentSheet() == nil else {
-            throw FinalCutCaptureError.unavailable("Close the open Final Cut dialog before selecting a range.")
+            throw FinalCutCaptureError.unavailable("Close the open Final Cut Pro dialog before selecting a range.")
         }
         let shortcut: FinalCutMenuShortcut? = {
             guard let bar = Self.elementAttribute(root, kAXMenuBarAttribute) else { return nil }
@@ -53,6 +53,8 @@ extension FinalCutAXSession {
     }
 
     func selectClipRangeCommand() async throws { try await rangeCommand(.clip) }
+    func setRangeStartCommand() async throws { try await rangeCommand(.start) }
+    func setRangeEndCommand() async throws { try await rangeCommand(.end) }
 
     private func hasTimelineRanges() throws -> Bool {
         try assertInputFocus()
@@ -81,7 +83,7 @@ extension FinalCutAXSession {
     }
 
     func focusTimeline() async throws {
-        try assertInputFocus()
+        try await prepareInputFocus()
         if try hasTimelineFocus() { return }
         if AXUIElementSetAttributeValue(timeline, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success {
             try await waitUntil(timeout: 2, context: "direct timeline focus") { (try? hasTimelineFocus()) == true }
@@ -133,7 +135,7 @@ extension FinalCutAXSession {
         func assertOwnedEntry() throws {
             try assertInputFocus()
             guard currentSheet() == nil, try hasTimelineFocus(), emptySelection(), numericEntryOpen() else {
-                throw FinalCutCaptureError.unavailable("Final Cut's playhead entry lost ownership. No timecode was confirmed.")
+                throw FinalCutCaptureError.unavailable("The playhead entry in Final Cut Pro could not be verified. No timecode was confirmed.")
             }
         }
         guard !numericEntryOpen(), try selectionSnapshot() == expected else {
@@ -173,7 +175,7 @@ extension FinalCutAXSession {
             }
             try assertOwnedEntry()
             guard string(lcd, kAXValueAttribute) == timecode else {
-                throw FinalCutCaptureError.unavailable("Final Cut's pending timecode did not match the selected cut. No timecode was confirmed.")
+                throw FinalCutCaptureError.unavailable("The pending timecode in Final Cut Pro did not match the selected cut. No timecode was confirmed.")
             }
             try key(code: 36)
             try await waitUntil(timeout: 2, context: "the requested timeline playhead time") {

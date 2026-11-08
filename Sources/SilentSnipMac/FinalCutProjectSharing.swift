@@ -7,7 +7,8 @@ import FoundationXML
 #endif
 
 extension FinalCutAXSession {
-    func exportProjectXML(to destination: URL, timing: AnalysisTiming? = nil) async throws -> URL {
+    func exportProjectXML(to destination: URL, timing: AnalysisTiming? = nil,
+                          sharePurpose: DirectShareAXPurpose = .ordinary) async throws -> URL {
         let timing = timing ?? AnalysisTiming(request: UUID())
         try assertCurrentProject()
         guard currentSheet() == nil, destination.isFileURL,
@@ -16,7 +17,7 @@ extension FinalCutAXSession {
         }
         let delivered = try await timing.measure("share.xml.exchange") {
             try await ShareDestinationManager.shared.captureXML(projectName: projectName) {
-                try await timing.measure("share.xml.setup") { try await self.beginShare(renderAudio: false, timing: timing) }
+                try await timing.measure("share.xml.setup") { try await self.beginShare(renderAudio: false, timing: timing, sharePurpose: sharePurpose) }
             }
         }
         lastXMLShareDirectory = delivered.deletingLastPathComponent().standardizedFileURL
@@ -49,7 +50,8 @@ extension FinalCutAXSession {
 
     func shareRenderedAudio(timing: AnalysisTiming? = nil,
                             renderSelection: FinalCutSelectionSnapshot? = nil,
-                            mixScope: FinalCutAudioMixScope = .dialogue) async throws -> ShareDestinationReceipt {
+                            mixScope: FinalCutAudioMixScope = .dialogue,
+                            sharePurpose: DirectShareAXPurpose = .ordinary) async throws -> ShareDestinationReceipt {
         // Full-project mix evidence cannot authorize a selected-range export.
         // Reject before activation, range preparation, or any Share dispatch.
         guard mixScope.permitsSelectionRange(renderSelection != nil) else {
@@ -62,7 +64,7 @@ extension FinalCutAXSession {
         if (try? assertInputFocus()) == nil {
             let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
             guard foreground == application.processIdentifier || foreground == NSRunningApplication.current.processIdentifier else {
-                throw FinalCutCaptureError.unavailable("The audio export lost focus to another application. Return to Final Cut and Analyze again.")
+                throw FinalCutCaptureError.unavailable("The audio export lost focus to another application. Return to Final Cut Pro and analyze the clip again.")
             }
             try assertCurrentProject()
             if let expected = reviewOwnership.active, try selectionSnapshot() != expected {
@@ -83,7 +85,7 @@ extension FinalCutAXSession {
                 try await ShareDestinationManager.shared.captureMedia(projectName: projectName) {
                     try await timing.measure("share.render.setup") {
                         try await self.beginShare(renderAudio: true, timing: timing, renderSelection: renderSelection,
-                            mixScope: mixScope)
+                            mixScope: mixScope, sharePurpose: sharePurpose)
                     }
                 }
             }
@@ -128,7 +130,8 @@ extension FinalCutAXSession {
 
     private func beginShare(renderAudio: Bool, timing: AnalysisTiming,
                             renderSelection: FinalCutSelectionSnapshot? = nil,
-                            mixScope: FinalCutAudioMixScope = .dialogue) async throws {
+                            mixScope: FinalCutAudioMixScope = .dialogue,
+                            sharePurpose: DirectShareAXPurpose = .ordinary) async throws {
 #if DEBUG
         let previousPrototypeMenu = quietPrototypeMenu
         if renderAudio, let lease = QuietSharePrototype.pluginLease {
@@ -156,12 +159,19 @@ extension FinalCutAXSession {
         var observedPanel: AXUIElement?
         let integration = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Silent Snip/Integration", isDirectory: true).standardizedFileURL
+        // A disable-only diagnostic switch permits same-binary comparisons of
+        // the ordinary route. It never bypasses audio or project verification.
         let probe: DirectShareAXProbe?
         do {
-            probe = try DirectShareAXConfiguration.load(directory: integration, origin: workflowOrigin).map {
-                DirectShareAXProbe(configuration: $0, directory: integration,
+            if let diagnostic = try DirectShareAXConfiguration.load(directory: integration, origin: workflowOrigin) {
+                probe = DirectShareAXProbe(configuration: diagnostic, directory: integration,
                     request: timing.report(outcome: "in progress").request, phase: prefix)
-            }
+            } else if !FileManager.default.fileExists(atPath: integration.appendingPathComponent("DisableAutomaticDirectShareAX").path),
+                      let configuration = DirectShareAXConfiguration.production(origin: workflowOrigin,
+                purpose: sharePurpose, projectName: projectName) {
+                probe = DirectShareAXProbe(configuration: configuration,
+                    request: timing.report(outcome: "in progress").request, phase: prefix, mode: .production)
+            } else { probe = nil }
         } catch {
             DirectShareAXProbe.rejected(request: timing.report(outcome: "failed").request,
                 phase: prefix, error: error, directory: integration)
@@ -178,36 +188,63 @@ extension FinalCutAXSession {
             }
             try assertCurrentProject()
             guard currentSheet() == nil else { throw FinalCutCaptureError.unavailable("Close the current dialog before sharing.") }
-            if probe == nil {
+            if probe == nil || probe?.mode == .production {
                 try await timing.measure(prefix + ".focus") { try await focusTimeline() }
             }
             try await timing.measure(prefix + ".openPanel") {
+                var useOrdinaryRoute = probe == nil
                 if let probe {
-                    let existing = try invokeClosedShareAX(probe: probe, timing: timing, prefix: prefix)
-                    try await timing.measure(prefix + ".directAX.observePanel") {
-                        do {
-                            try await waitUntil(timeout: 10, context: "a new owned Share panel after the single closed-menu AX action") {
-                                guard let panel = self.currentSheet() else { return false }
-                                var owner: pid_t = 0
-                                let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
-                                let observation = DirectShareAXPanelObservation(
-                                    existedBeforeDispatch: existing.contains { CFEqual($0, panel) },
-                                    ownedByPinnedHost: AXUIElementGetPid(panel, &owner) == .success && owner == self.application.processIdentifier,
-                                    title: self.string(panel, kAXTitleAttribute),
-                                    enabledNextFound: confirmationControls.next(in: panel, shouldContinue: { !Task.isCancelled }) != nil,
-                                    projectMatches: self.currentProjectTitle() == self.projectName,
-                                    foregroundIsHostOrHelper: foreground == self.application.processIdentifier || foreground == NSRunningApplication.current.processIdentifier)
-                                guard observation.provesCompletion else { return false }
-                                observedPanel = panel
-                                probe.update { $0.observedOwnedPanel = true }
-                                return true
+                    do {
+                        let existing = try invokeClosedShareAX(probe: probe, timing: timing, prefix: prefix)
+                        try await timing.measure(prefix + ".directAX.observePanel") {
+                            do {
+                                try await waitUntil(timeout: 10, context: "a new owned Share panel after the single closed-menu AX action") {
+                                    guard let panel = self.currentSheet() else { return false }
+                                    var owner: pid_t = 0
+                                    let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                                    let observation = DirectShareAXPanelObservation(
+                                        existedBeforeDispatch: existing.contains { CFEqual($0, panel) },
+                                        ownedByPinnedHost: AXUIElementGetPid(panel, &owner) == .success && owner == self.application.processIdentifier,
+                                        title: self.string(panel, kAXTitleAttribute),
+                                        enabledNextFound: confirmationControls.next(in: panel, shouldContinue: { !Task.isCancelled }) != nil,
+                                        projectMatches: self.currentProjectTitle() == self.projectName,
+                                        foregroundIsHostOrHelper: foreground == self.application.processIdentifier || foreground == NSRunningApplication.current.processIdentifier)
+                                    guard observation.provesCompletion else { return false }
+                                    observedPanel = panel
+                                    probe.update { $0.observedOwnedPanel = true }
+                                    return true
+                                }
+                            } catch {
+                                if error is CancellationError || Task.isCancelled { throw error }
+                                throw DirectShareAXError.uncertain(String(error.localizedDescription.prefix(1_024)))
                             }
-                        } catch {
-                            if error is CancellationError || Task.isCancelled { throw error }
-                            throw DirectShareAXError.uncertain(String(error.localizedDescription.prefix(1_024)))
                         }
+                    } catch {
+                        // Only a production preflight miss may choose ordinary
+                        // input. An attempted action, even an AX error, remains
+                        // consumed and can only be observed, never dispatched again.
+                        guard probe.mode == .production, probe.report.attemptCount == 0 else { throw error }
+                        try Task.checkCancellation()
+                        try assertCurrentProject()
+                        try assertInputFocus()
+                        guard currentSheet() == nil, let expected = reviewOwnership.active,
+                              try selectionSnapshot() == expected else {
+                            throw AudioControllerSettingsError.targetChanged
+                        }
+                        guard probe.selectOrdinaryFallback(for: error) else { throw error }
+                        useOrdinaryRoute = true
                     }
-                } else {
+                }
+                if useOrdinaryRoute {
+                    let path = ["File", "Share", "Silent Snip…"]
+                    let menuPath = makeMenuPath(path: path)
+                    defer {
+                        let prior = timing.report(outcome: "in progress").counters
+                        timing.recordCounters(Dictionary(uniqueKeysWithValues: menuPath.counters.map {
+                            let name = prefix + "." + $0.key
+                            return (name, (prior[name] ?? 0) + $0.value)
+                        }))
+                    }
                     let usedShortcut = try await FinalCutShareInvocation.perform(shortcut: {
 #if DEBUG
                         // Explicit legacy probes and the processed-audio prototype
@@ -219,14 +256,14 @@ extension FinalCutAXSession {
                             return false
                         }
 #endif
-                        let used = try self.pressAdvertisedMenuShortcut(path: ["File", "Share", "Silent Snip…"])
+                        let used = try self.pressAdvertisedMenuShortcut(path: path, menuPath: menuPath)
 #if DEBUG
                         if used { self.quietPrototypeInvocation?("File → Share → Silent Snip…: advertised-shortcut") }
 #endif
                         return used
                     }, menu: {
                         let observed = try await FinalCutShareInvocation.performMenu(menu: { markFinalAttempt in
-                            try await self.pressMenu(path: ["File", "Share", "Silent Snip…"],
+                            try await self.pressMenu(path: path, menuPath: menuPath,
                                 onFinalDispatchAttempt: markFinalAttempt)
                         }, observeCompletion: {
                             try await self.observePendingShareConfirmation()
@@ -365,7 +402,7 @@ extension FinalCutAXSession {
         do { try assertInputFocus() }
         catch {
             let owner = NSWorkspace.shared.frontmostApplication?.localizedName ?? "an unavailable application"
-            throw FinalCutCaptureError.unavailable("The Silent Snip Share panel lost input focus to \(owner). Bring Final Cut’s Share panel forward and Analyze again.")
+            throw FinalCutCaptureError.unavailable("The Silent Snip Share panel lost input focus to \(owner). Bring the Share window in Final Cut Pro to the front, then analyze the clip again.")
         }
     }
 

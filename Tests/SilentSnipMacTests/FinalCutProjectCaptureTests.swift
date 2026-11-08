@@ -12,7 +12,7 @@ final class FinalCutProjectCaptureTests: XCTestCase {
             XCTFail("A missing selection must still fail before capture")
         } catch {
             XCTAssertTrue(error.localizedDescription.hasPrefix("Select one whole clip with audio in the primary storyline."))
-            XCTAssertTrue(error.localizedDescription.contains("exactly one enabled selected timeline clip"))
+            XCTAssertTrue(error.localizedDescription.contains("one enabled clip with audio in the Final Cut Pro timeline"))
             XCTAssertFalse(error.localizedDescription.contains("carrying Silent Snip Audio"))
             XCTAssertFalse(error.localizedDescription.contains("Reopen"))
         }

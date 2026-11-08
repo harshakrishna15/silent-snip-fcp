@@ -41,23 +41,14 @@ struct AnalysisCacheKey: Equatable {
             if ["timeMap", "filter-video", "ref-clip", "sync-clip", "mc-clip"].contains(node.name ?? "") { return false }
             if node.name == "audio", node.attribute(forName: "ref") != nil { return false }
         }
-        for filter in try clips[index].nodes(forXPath: ".//filter-audio").compactMap({ $0 as? XMLElement }) {
+        // A native render can depend on processing elsewhere in the project.
+        // No exported parameter list or opaque blob proves all of an effect's
+        // private state, even for a known Apple AU. Require fresh measurements
+        // whenever any rendering filter remains in that native context.
+        for filter in try xml.nodes(forXPath: "//project/sequence//filter-audio").compactMap({ $0 as? XMLElement }) {
             let resource = effects.first { $0.attribute(forName: "id")?.stringValue == filter.attribute(forName: "ref")?.stringValue }
             guard let uid = resource?.attribute(forName: "uid")?.stringValue else { return false }
-            if uid == AudioControllerSettings.effectUID { continue }
-            // A preset name alone cannot prove its current contents. External
-            // or opaque third-party state is deliberately never cache eligible.
-            guard filter.attribute(forName: "presetID") == nil else { return false }
-            switch uid {
-            case "AudioUnit: 0x61756678000000b3454d4147": // Apple's Noise Gate: require the actual AU state
-                guard filter.elements(forName: "data").contains(where: {
-                    $0.attribute(forName: "key")?.stringValue == "effectState" &&
-                    Data(base64Encoded: $0.stringValue ?? "", options: .ignoreUnknownCharacters)?.isEmpty == false
-                }) else { return false }
-            // Native effects with only a parameter list are also conservative
-            // misses: a partial list does not prove all processing state.
-            default: return false
-            }
+            guard uid == AudioControllerSettings.effectUID else { return false }
         }
         return true
 

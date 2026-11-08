@@ -6,6 +6,8 @@ import FoundationXML
 import XCTest
 @testable import SilentSnipMac
 
+/// Geometry and serialized-state checks do not authorize reconstruction of
+/// native effect state; effect-bearing fixtures use diagnostic expectations.
 final class EditedProjectWriterTests: XCTestCase {
     private let projectUID = UUID(uuidString: "AAAA0000-0000-4000-8000-000000000001")!
     private let eventUID = UUID(uuidString: "BBBB0000-0000-4000-8000-000000000001")!
@@ -245,7 +247,7 @@ final class EditedProjectWriterTests: XCTestCase {
         XCTAssertEqual(output.markers.map(\.value), ["Keep"])
         try validateDTD(result.xmlData)
         let gapCut = range(2, 3)
-        let gaps = try EditedProjectWriter.write(projectData: data, selection: .init(timelineRange: range(0, 10)),
+        let gaps = try EditedProjectWriter.serializationExpectation(projectData: data, selection: .init(timelineRange: range(0, 10)),
             selectedRanges: [gapCut], outputName: "Gap output", replacementGaps: [gapCut: .init(2)])
         let gapMusic = try TimelineParser.parse(data: gaps.xmlData).clips.filter { !$0.isPrimaryStoryline }
         XCTAssertEqual(gapMusic.map(\.timelineRange), [range(0, 2), range(4, 11)])
@@ -304,7 +306,7 @@ final class EditedProjectWriterTests: XCTestCase {
     }
 
     private func write(_ data: Data, selection: TimeRange, cuts: [TimeRange]) throws -> EditedProjectOutput {
-        try EditedProjectWriter.write(projectData: data, selection: .init(timelineRange: selection), selectedRanges: cuts,
+        try EditedProjectWriter.serializationExpectation(projectData: data, selection: .init(timelineRange: selection), selectedRanges: cuts,
                                       outputName: "Edited & Reviewed", projectUID: projectUID, eventUID: eventUID)
     }
 
@@ -339,7 +341,7 @@ final class EditedProjectWriterTests: XCTestCase {
             <asset id="video" name="Video" start="0s" duration="100s" hasAudio="1" hasVideo="1" format="f">
               <media-rep kind="original-media" src="file:///fixtures/context.mov"/>
             </asset>
-            <effect id="au" name="Audio effect" uid="AudioUnit: test-static-effect"/>
+            <effect id="au" name="Audio effect" uid="fixture.test-static-effect"/>
           </resources>
           <library colorProcessing="wide-hdr" location="file:///fixtures/Original.fcpbundle/">
             <event name="Original event" uid="DDDD0000-0000-4000-8000-000000000001">

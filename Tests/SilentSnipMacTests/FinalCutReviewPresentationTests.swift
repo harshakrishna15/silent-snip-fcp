@@ -20,7 +20,7 @@ import XCTest
     func testLateHostActivationCanArriveAfterTheCompletionCallback() async {
         var checks = 0, restores = 0
         await FinalCutReviewPresentation.returnOwnActivation(stillOwnsRequest: { true },
-            helperIsActive: { checks += 1; return checks == 3 }, restore: { restores += 1 },
+            helperOwnsForeground: { checks += 1; return checks == 3 }, restore: { restores += 1 },
             attempts: 4, pollInterval: .milliseconds(1))
         XCTAssertEqual(checks, 4)
         XCTAssertEqual(restores, 1)
@@ -29,16 +29,38 @@ import XCTest
     func testLateDeliveryNeverReclaimsActivationFromAnotherApp() async {
         var restores = 0
         await FinalCutReviewPresentation.returnOwnActivation(stillOwnsRequest: { true },
-            helperIsActive: { false }, restore: { restores += 1 }, attempts: 3, pollInterval: .milliseconds(1))
+            helperOwnsForeground: { false }, restore: { restores += 1 }, attempts: 3, pollInterval: .milliseconds(1))
         XCTAssertEqual(restores, 0)
     }
 
     func testLateDeliveryStopsWhenItsRequestIsReplacedOrCancelled() async {
         var owned = true, restores = 0
         await FinalCutReviewPresentation.returnOwnActivation(stillOwnsRequest: { owned },
-            helperIsActive: { true }, restore: { restores += 1; owned = false },
+            helperOwnsForeground: { true }, restore: { restores += 1; owned = false },
             attempts: 4, pollInterval: .milliseconds(1))
         XCTAssertEqual(restores, 1)
+    }
+
+    func testLateDeliveryReturnsActualHelperForegroundDespiteInactiveAppKitFlag() async {
+        let observation = (appKitIsActive: false, foregroundPID: Int32(200))
+        var restores = 0
+        XCTAssertFalse(observation.appKitIsActive)
+        await FinalCutReviewPresentation.returnOwnActivation(stillOwnsRequest: { true },
+            helperOwnsForeground: {
+                FinalCutReviewPresentation.helperOwnsForeground(foregroundPID: observation.foregroundPID, helperPID: 200)
+            }, restore: { restores += 1 }, attempts: 1, pollInterval: .milliseconds(1))
+        XCTAssertEqual(restores, 1)
+    }
+
+    func testLateDeliveryRejectsForeignForegroundDespiteStaleActiveAppKitFlag() async {
+        let observation = (appKitIsActive: true, foregroundPID: Int32(300))
+        var restores = 0
+        XCTAssertTrue(observation.appKitIsActive)
+        await FinalCutReviewPresentation.returnOwnActivation(stillOwnsRequest: { true },
+            helperOwnsForeground: {
+                FinalCutReviewPresentation.helperOwnsForeground(foregroundPID: observation.foregroundPID, helperPID: 200)
+            }, restore: { restores += 1 }, attempts: 1, pollInterval: .milliseconds(1))
+        XCTAssertEqual(restores, 0)
     }
 
     func testRemoteEditorMayLoadBeforeOwnershipControlsBecomeAvailable() async throws {

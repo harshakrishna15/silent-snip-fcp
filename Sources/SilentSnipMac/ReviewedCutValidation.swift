@@ -19,6 +19,6 @@ enum ReviewedCutValidation {
 enum SnapshotPreviewError: LocalizedError {
     case audioChanged
     var errorDescription: String? {
-        "Current audio no longer matches the reviewed cuts. No project was imported. Choose Analyze Audio Again, review the new cuts, then Apply."
+        "The current audio no longer matches the reviewed cuts. No project was imported. Click Analyze Again, review the new cuts, then click Apply Cuts."
     }
 }

@@ -92,12 +92,12 @@ public enum ReviewError: LocalizedError {
     case noDialogue, unknownCut, unavailableCut, staleProject, invalidRange, invalidTarget, wholeClipCoverage
     public var errorDescription: String? {
         switch self {
-        case .noDialogue: return "No enabled Dialogue role was found in the project. Assign the speech audio to Dialogue and analyze again."
+        case .noDialogue: return "No enabled Dialogue role was found in the project. Assign the speech audio to the Dialogue role, then analyze the clip again."
         case .unknownCut: return "The selected cut is no longer in this review."
         case .unavailableCut: return "This cut cannot be applied automatically."
-        case .staleProject: return "The project changed after analysis. Analyze again before applying cuts."
+        case .staleProject: return "The project changed after analysis. Click Analyze Again before applying cuts."
         case .invalidRange: return "A proposed cut is outside the target or not aligned to project frames."
-        case .invalidTarget: return "The target does not match the selected clip in the analyzed project. Analyze again."
+        case .invalidTarget: return "The selected clip does not match the clip that was analyzed. Click Analyze Again."
         case .wholeClipCoverage: return "The proposed cuts together would delete the entire clip. Whole-clip deletion is unavailable."
         }
     }

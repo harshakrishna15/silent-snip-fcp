@@ -288,7 +288,7 @@ import Foundation
         public var errorDescription: String? {
             switch self {
             case .invalidWorkspace: return "Silent Snip could not create a private temporary export directory."
-            case .unverifiedControl(let name): return "Silent Snip could not verify Final Cut's \(name) export control."
+            case .unverifiedControl(let name): return "Silent Snip could not verify Final Cut Pro’s \(name) export control."
             case .unverifiedDialogueOutput: return "Silent Snip could not verify one WAV output containing All Dialogue. No audio mix was assumed."
             case .unverifiedFullProjectMixOutput: return "Silent Snip could not verify one stereo WAV containing every project audio role over the full project range. No audio mix was assumed."
             }

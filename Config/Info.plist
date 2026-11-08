@@ -17,7 +17,7 @@
 				<string>caf</string>
 			</array>
 			<key>CFBundleTypeName</key>
-			<string>Final Cut Share Files</string>
+			<string>Final Cut Pro Share Files</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
@@ -56,7 +56,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>64</string>
+	<string>78</string>
 	<key>SilentSnipWorkflowProtocolVersion</key>
 	<integer>1</integer>
 	<key>LSMinimumSystemVersion</key>

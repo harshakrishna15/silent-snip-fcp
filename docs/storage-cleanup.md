@@ -1,8 +1,8 @@
 # Storage and safe cache cleanup
 
-The scissors menu includes **Clear Cache…**. It clears optional analysis audio without discarding the current review plan. The command is unavailable during analysis, Share capture, Apply, navigation, verification, or another cleanup. New operations cancel an already-running cleanup and wait for it to stop before using cached files. Hashing checks cancellation between 1 MiB reads, so maintenance does not sit in front of a fresh Analyze or Apply request. Disk traversal and hashing run away from the UI thread.
+The worker runs without a menu bar icon; cache cleanup is automatic. New operations cancel an already-running cleanup and wait for it to stop before using cached files. Hashing checks cancellation between 1 MiB reads, so maintenance does not sit in front of a fresh Analyze or Apply request. Disk traversal and hashing run away from the UI thread.
 
-Automatic cleanup runs at launch and every ten minutes while idle. Recorded, unmodified disposable audio is eligible after seven days, or sooner when the recorded cache exceeds 256 MiB. The oldest unpinned copies go first. The current reusable analysis audio is pinned; a manual clear drops that optional cache first. Active, changed, inaccessible, or uncertain files take precedence over reaching the size target.
+Automatic cleanup runs at launch and every ten minutes while idle. Recorded, unmodified disposable audio is eligible after seven days, or sooner when the recorded cache exceeds 256 MiB. The oldest unpinned copies go first. The current reusable analysis audio is pinned. Active, changed, inaccessible, or uncertain files take precedence over reaching the size target.
 
 ## What can be deleted
 

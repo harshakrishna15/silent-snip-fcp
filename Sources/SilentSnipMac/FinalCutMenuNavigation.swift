@@ -4,7 +4,7 @@ import SilentSnipCore
 import Foundation
 
 extension FinalCutAXSession {
-    /// Diagnostic-only action on the retained CLOSED Share hierarchy. This
+    /// One action on the retained CLOSED Share hierarchy. This
     /// function sends no menu-opening, keyboard, Return, or coordinate input.
     /// A native result (including an error) consumes its one permitted attempt.
     func invokeClosedShareAX(probe: DirectShareAXProbe, timing: AnalysisTiming, prefix: String) throws -> [AXUIElement] {
@@ -28,6 +28,13 @@ extension FinalCutAXSession {
                 }
                 let values = FinalCutAXAttributes.read(element, names: [kAXRoleAttribute, kAXTitleAttribute,
                     kAXEnabledAttribute, kAXChildrenAttribute])
+                if probe.mode == .production {
+                    guard let role = values[kAXRoleAttribute] as? String,
+                          ![kAXMenuBarRole, kAXMenuRole, kAXMenuBarItemRole].contains(role)
+                            || values[kAXChildrenAttribute] is [AXUIElement] else {
+                        throw DirectShareAXError.preflight("The retained menu hierarchy could not be read completely.")
+                    }
+                }
                 return Command.Node(role: values[kAXRoleAttribute] as? String,
                     title: values[kAXTitleAttribute] as? String,
                     enabled: (values[kAXEnabledAttribute] as? NSNumber)?.boolValue,
@@ -37,7 +44,8 @@ extension FinalCutAXSession {
                 guard AXUIElementCopyActionNames(element, &actions) == .success,
                       let available = actions as? [String] else { throw DirectShareAXError.preflight("The command's advertised actions could not be read.") }
                 return available
-            }, shouldContinue: { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline })
+            }, pressOnly: probe.mode == .production,
+                shouldContinue: { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline })
         }
         let retained = try resolve(bar)
         probe.update {
@@ -78,13 +86,20 @@ extension FinalCutAXSession {
         }
         let selected = attribute(bar, kAXSelectedChildrenAttribute) as? [AXUIElement]
         probe.update { $0.menuBarTrackingStateAvailable = selected != nil }
+        if probe.mode == .production, selected == nil {
+            throw DirectShareAXError.preflight("The menu bar's closed state could not be read.")
+        }
         guard selected?.isEmpty != false else { throw DirectShareAXError.preflight("A menu is already tracking input.") }
         try refreshTimeline()
         var element = Self.elementAttribute(root, kAXFocusedUIElementAttribute)
         var timelineOwnsInput = false
         for _ in 0..<24 {
+            try Task.checkCancellation()
             guard let current = element else { break }
             let role = string(current, kAXRoleAttribute)
+            if probe.mode == .production, role == nil {
+                throw DirectShareAXError.preflight("The focused input hierarchy could not be read completely.")
+            }
             guard ![kAXMenuRole, kAXMenuItemRole, kAXMenuBarRole, kAXMenuBarItemRole].contains(role ?? "") else {
                 throw DirectShareAXError.preflight("A menu already owns keyboard focus.")
             }
@@ -98,48 +113,88 @@ extension FinalCutAXSession {
         throw DirectShareAXError.preflight("Focused input could not be bound to the closed-menu project workspace.")
     }
 
+    func makeMenuPath(path: [String]) -> FinalCutMenuPath<AXUIElement> {
+        let pid = application.processIdentifier
+        return FinalCutMenuPath(titles: path,
+            read: { FinalCutAXAttributes.read($0, names: $1) },
+            owned: { element in
+                var owner: pid_t = 0
+                return AXUIElementGetPid(element, &owner) == .success && owner == pid
+            }, actions: { element in
+                var names: CFArray?
+                guard AXUIElementCopyActionNames(element, &names) == .success else { return nil }
+                return names as? [String]
+            }, equals: { CFEqual($0, $1) })
+    }
+
     /// Use only the shortcut advertised by this exact retained menu command.
-    /// A missing, disabled, or changing assignment falls back before any input;
-    /// a dispatched or uncertain keyboard event must never trigger a retry.
-    func pressAdvertisedMenuShortcut(path: [String]) throws -> Bool {
+    /// A missing assignment leaves the request-local identity route available
+    /// for ordinary menu navigation. A dispatched or uncertain event never
+    /// authorizes a second invocation.
+    func pressAdvertisedMenuShortcut(path: [String], menuPath: FinalCutMenuPath<AXUIElement>? = nil) throws -> Bool {
         try assertInputFocus()
         guard currentSheet() == nil else {
             throw FinalCutCaptureError.unavailable("Close the current dialog before sharing.")
         }
         guard !path.isEmpty, let bar = Self.elementAttribute(root, kAXMenuBarAttribute) else { return false }
-        func resolve() -> AXUIElement? {
-            var container = bar
-            for (index, title) in path.enumerated() {
-                let matches = children(container).filter { string($0, kAXTitleAttribute) == title }
-                guard matches.count == 1 else { return nil }
-                let item = matches[0]
-                if index == path.count - 1 { return item }
-                let menus = children(item).filter { string($0, kAXRoleAttribute) == kAXMenuRole }
-                guard menus.count == 1 else { return nil }
-                container = menus[0]
-            }
-            return nil
-        }
-        func shortcut(_ item: AXUIElement) -> FinalCutMenuShortcut? {
+        let route = menuPath ?? makeMenuPath(path: path)
+        guard route.titles == path else { return false }
+        func shortcut(_ value: [String: Any]) -> FinalCutMenuShortcut? {
             FinalCutMenuShortcut(
-                virtualKey: (attribute(item, kAXMenuItemCmdVirtualKeyAttribute) as? NSNumber)?.intValue,
-                modifiers: (attribute(item, kAXMenuItemCmdModifiersAttribute) as? NSNumber)?.intValue,
-                character: attribute(item, kAXMenuItemCmdCharAttribute) as? String,
-                glyph: (attribute(item, kAXMenuItemCmdGlyphAttribute) as? NSNumber)?.intValue,
-                enabled: (attribute(item, kAXEnabledAttribute) as? NSNumber)?.boolValue)
+                virtualKey: (value[kAXMenuItemCmdVirtualKeyAttribute] as? NSNumber)?.intValue,
+                modifiers: (value[kAXMenuItemCmdModifiersAttribute] as? NSNumber)?.intValue,
+                character: value[kAXMenuItemCmdCharAttribute] as? String,
+                glyph: (value[kAXMenuItemCmdGlyphAttribute] as? NSNumber)?.intValue,
+                enabled: (value[kAXEnabledAttribute] as? NSNumber)?.boolValue)
         }
-        guard let item = resolve(), let advertised = shortcut(item) else { return false }
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        let shouldContinue = { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline }
+        guard let item = route.command(in: bar, shouldContinue: shouldContinue),
+              let advertised = shortcut(item.values) else { return false }
         try assertInputFocus()
         guard currentSheet() == nil else {
-            throw FinalCutCaptureError.unavailable("The Final Cut dialog changed before sharing.")
+            throw FinalCutCaptureError.unavailable("The Final Cut Pro dialog changed before sharing.")
         }
-        guard let fresh = resolve(), CFEqual(item, fresh), let checked = shortcut(fresh),
+        guard let currentBar = Self.elementAttribute(root, kAXMenuBarAttribute), CFEqual(currentBar, bar),
+              let fresh = route.command(in: currentBar, shouldContinue: shouldContinue),
+              CFEqual(item.element, fresh.element), let checked = shortcut(fresh.values),
               checked.keyCode == advertised.keyCode, checked.flags == advertised.flags else { return false }
         try key(code: checked.keyCode, flags: checked.flags)
         return true
     }
 
+    /// Uses the same attribute batch that proved the mounted command, rather
+    /// than rereading role/title/description/identifier/enabled individually.
+    private func pressMountedMenuItem(_ route: FinalCutMenuPath<AXUIElement>, index: Int,
+                                      bar: AXUIElement, container: AXUIElement,
+                                      willDispatch: () -> Void) throws -> (item: AXUIElement, action: String) {
+        try Task.checkCancellation()
+        try assertInputFocus()
+        guard let currentBar = Self.elementAttribute(root, kAXMenuBarAttribute), CFEqual(currentBar, bar) else {
+            throw FinalCutCaptureError.unavailable("The Final Cut Pro menu bar changed before input.")
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        guard let target = route.input(in: currentBar, index: index, container: container,
+            shouldContinue: { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline }),
+              let action = FinalCutControlAction.preferred(from: target.actions) else {
+            try Task.checkCancellation()
+            throw FinalCutCaptureError.unavailable("The Final Cut Pro menu command changed or is unavailable.")
+        }
+        // There is exactly one AX action. Its error may be reported after the
+        // host accepts it; the caller's existing final-attempt marker remains
+        // the only authority for observation, never for another dispatch.
+        try Task.checkCancellation()
+        try assertInputFocus()
+        willDispatch()
+        let result = AXUIElementPerformAction(target.element, action as CFString)
+        guard result == .success else {
+            throw FinalCutCaptureError.unavailable("\(operationStage): \(action) failed for ‘\(route.titles[index])’ (AX error \(result.rawValue)).")
+        }
+        return (target.element, action)
+    }
+
     func pressMenu(path: [String], allowDisabled: Bool = false, openingProject: String? = nil,
+                   menuPath: FinalCutMenuPath<AXUIElement>? = nil,
                    onFinalDispatchAttempt: (() -> Void)? = nil) async throws {
 #if DEBUG
         if quietPrototypeMenu {
@@ -156,36 +211,43 @@ extension FinalCutAXSession {
         let menuStage = "\(previousStage), menu \(path.joined(separator: " → "))"
         operationStage = menuStage + ", before first input"
         defer { operationStage = previousStage }
-        try assertInputFocus()
+        try await prepareInputFocus()
         guard !path.isEmpty, let bar = Self.elementAttribute(root, kAXMenuBarAttribute) else {
-            throw FinalCutCaptureError.unavailable("The Final Cut menu bar is unavailable.")
+            throw FinalCutCaptureError.unavailable("The Final Cut Pro menu bar is unavailable.")
         }
         var container = bar
         var menuOwner: AXUIElement?
         for (index, title) in path.enumerated() {
-            let matches = children(container).filter { string($0, kAXTitleAttribute) == title }
-            guard matches.count == 1 else { throw FinalCutCaptureError.unavailable("Menu command \(path.joined(separator: " → ")) was not found.") }
-            let item = matches[0]
-            if index == path.count - 1 {
-                if allowDisabled && (attribute(item, kAXEnabledAttribute) as? NSNumber)?.boolValue == false {
+            let final = index == path.count - 1
+            let willDispatch = {
+                self.operationStage = menuStage + (final ? ", final command attempted" : ", opening \(title) attempted")
+                if final { onFinalDispatchAttempt?() }
+            }
+            operationStage = menuStage + (final ? ", before final command" : ", before opening \(title)")
+            try await prepareInputFocus()
+            let item: AXUIElement
+            let action: String
+            if let menuPath, menuPath.titles == path, !allowDisabled {
+                let pressed = try pressMountedMenuItem(menuPath, index: index, bar: bar,
+                    container: container, willDispatch: willDispatch)
+                item = pressed.item; action = pressed.action
+            } else {
+                let matches = children(container).filter { string($0, kAXTitleAttribute) == title }
+                guard matches.count == 1 else { throw FinalCutCaptureError.unavailable("Menu command \(path.joined(separator: " → ")) was not found.") }
+                item = matches[0]
+                if final && allowDisabled && (attribute(item, kAXEnabledAttribute) as? NSNumber)?.boolValue == false {
                     try key(code: 53) // Dismiss only the menu just opened by this method.
                     return
                 }
-                operationStage = menuStage + ", before final command"
-                let action = try press(item, willDispatch: {
-                    self.operationStage = menuStage + ", final command attempted"
-                    onFinalDispatchAttempt?()
-                })
+                action = try press(item, willDispatch: willDispatch)
+            }
+            if final {
                 if let menuOwner {
                     try await activatePickedMenuItem(item, menu: container, owner: menuOwner, action: action,
                                                     openingProject: openingProject)
                 }
                 return
             }
-            operationStage = menuStage + ", before opening \(title)"
-            try press(item, willDispatch: {
-                self.operationStage = menuStage + ", opening \(title) attempted"
-            })
             operationStage = menuStage + ", waiting for \(title) submenu"
             // Closed menus remain in AXChildren. Prove that the exact submenu
             // is on screen and contains one intended next command. That command
@@ -196,7 +258,7 @@ extension FinalCutAXSession {
             let deadline = ProcessInfo.processInfo.systemUptime + 2
             while openedMenu == nil {
                 try Task.checkCancellation()
-                try assertInputFocus()
+                try await prepareInputFocus()
                 let menus = children(item).filter { string($0, kAXRoleAttribute) == kAXMenuRole }
                 if menus.count == 1 {
                     if FinalCutMenuObservation.submenuIsReady(children: children(menus[0]),
@@ -207,11 +269,11 @@ extension FinalCutAXSession {
                     }
                 }
                 guard ProcessInfo.processInfo.systemUptime < deadline else {
-                    throw FinalCutCaptureError.unavailable("The Final Cut submenu for \(nextTitle) did not open.")
+                    throw FinalCutCaptureError.unavailable("The Final Cut Pro submenu for \(nextTitle) did not open.")
                 }
                 try await Task.sleep(for: .milliseconds(20))
             }
-            guard let menu = openedMenu else { throw FinalCutCaptureError.unavailable("A Final Cut submenu disappeared.") }
+            guard let menu = openedMenu else { throw FinalCutCaptureError.unavailable("A Final Cut Pro submenu disappeared.") }
             menuOwner = item
             container = menu
         }
@@ -241,8 +303,8 @@ extension FinalCutAXSession {
                 try Task.checkCancellation()
                 // Open Clip can replace the timeline before the menu closes.
                 // Ordinary menu actions retain their original-project check.
-                if projectOpened() { return }
-                try assertCurrentProject()
+                if try FinalCutMenuProjectTransition.openedOrAssertOriginal(
+                    opened: projectOpened, assertOriginal: assertCurrentProject) { return }
                 if predicate() { return }
                 try await Task.sleep(for: .milliseconds(20))
             }
@@ -273,6 +335,13 @@ extension FinalCutAXSession {
         }
         if projectOpened() { return }
         if currentSheet() != nil { return }
+        do { try await prepareInputFocus() }
+        catch FinalCutCaptureError.changedProject {
+            guard projectOpened() else { throw FinalCutCaptureError.changedProject }
+            return
+        }
+        if projectOpened() { return }
+        if currentSheet() != nil { return }
         guard menuIsOpen() else { return }
         let enabled = (attribute(item, kAXEnabledAttribute) as? NSNumber)?.boolValue != false
         guard string(item, kAXRoleAttribute) == kAXMenuItemRole,
@@ -286,7 +355,8 @@ extension FinalCutAXSession {
               let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
             throw FinalCutCaptureError.unavailable("The selected menu item's screen bounds are unavailable.")
         }
-        try assertInputFocus()
+        if try FinalCutMenuProjectTransition.openedOrAssertOriginal(
+            opened: projectOpened, assertOriginal: assertInputFocus) { return }
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
         try await waitForMenu(timeout: 3) {
@@ -294,6 +364,21 @@ extension FinalCutAXSession {
         }
     }
 
+}
+
+/// Opening a named project replaces the original title between independent
+/// AX reads. Only that exact observed handoff may satisfy a failed source pin;
+/// ordinary menus, unrelated projects and other errors keep their strict guard.
+enum FinalCutMenuProjectTransition {
+    static func openedOrAssertOriginal(opened: () -> Bool, assertOriginal: () throws -> Void) throws -> Bool {
+        if opened() { return true }
+        do { try assertOriginal() }
+        catch FinalCutCaptureError.changedProject {
+            guard opened() else { throw FinalCutCaptureError.changedProject }
+            return true
+        }
+        return false
+    }
 }
 
 enum FinalCutMenuActivationReadiness {

@@ -1,6 +1,12 @@
 import Foundation
 
 public enum FinalCutReviewPresentation {
+    /// AppKit's isActive can lag an Open Document activation. The actual
+    /// foreground process is the ownership boundary for returning activation.
+    public static func helperOwnsForeground(foregroundPID: Int32?, helperPID: Int32) -> Bool {
+        helperPID > 0 && foregroundPID == helperPID
+    }
+
     /// The host's list can omit the focused remote editor. Validate the focused
     /// control directly, while rejecting another live editor for the same clip.
     static func focusedEditor<Element>(focused: Element?, listed: [Element],
@@ -13,13 +19,13 @@ public enum FinalCutReviewPresentation {
     /// Open Document may activate the helper after its delegate callback. Watch
     /// only this bounded handoff, and undo only the helper's own activation.
     @MainActor public static func returnOwnActivation(stillOwnsRequest: () -> Bool,
-                                                      helperIsActive: () -> Bool,
+                                                      helperOwnsForeground: () -> Bool,
                                                       restore: () async -> Void,
                                                       attempts: Int = 8,
                                                       pollInterval: Duration = .milliseconds(100)) async {
         for _ in 0..<max(0, attempts) {
             guard !Task.isCancelled, stillOwnsRequest() else { return }
-            if helperIsActive() { await restore() }
+            if helperOwnsForeground() { await restore() }
             do { try await Task.sleep(for: pollInterval) } catch { return }
         }
     }

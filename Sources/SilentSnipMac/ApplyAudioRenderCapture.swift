@@ -10,12 +10,33 @@ enum ApplyAudioRenderCapture {
         let readGuard: MediaContentSnapshot.ReadGuard
         let overlappedSourceValidation: Bool
         fileprivate let sourceMedia: MediaContentSnapshot
+        fileprivate let freshSourceMedia: MediaContentSnapshot?
+
+        var reusesSourceHashesForOutput: Bool { freshSourceMedia != nil }
 
         /// Fresh delivered XML must reference exactly the protected sources.
         /// A matching hash for some other URL cannot authorize substitution.
         func validateSourceReferences(_ urls: [URL]) throws {
             guard sourceMedia.covers(urls) else { throw ProjectAnalysisError.changedRenderArtifact }
             try readGuard.validate()
+        }
+
+        /// Preserve the full hashes just joined with this Apply's render,
+        /// rather than scanning the same originals again while retaining PCM.
+        /// Historical/legacy evidence never receives this reuse capability.
+        func captureOutputMedia(adding urls: [URL],
+            hash: @Sendable (URL) throws -> String = { try MediaContentSnapshot.contentHash(at: $0) }) async throws -> MediaContentSnapshot {
+            try Task.checkCancellation()
+            try readGuard.validate()
+            if let freshSourceMedia {
+                return try await freshSourceMedia.capturingAdditionalFiles(urls, protectedBy: readGuard, hash: hash)
+            }
+            let additionGuard = try readGuard.prepareAddition(urls)
+            let output = try await MediaContentSnapshot.capture(sourceMedia.sourceURLs + urls, hash: hash)
+            try readGuard.validate()
+            try additionGuard.validate()
+            try Task.checkCancellation()
+            return output
         }
     }
 
@@ -29,7 +50,7 @@ enum ApplyAudioRenderCapture {
                 captureSources: { try await sourceMedia.validatedSnapshot(prepared: $0, hash: hash) },
                 render: render, cleanup: cleanup)
             return Result(receipt: combined.receipt, readGuard: prepared,
-                overlappedSourceValidation: true, sourceMedia: sourceMedia)
+                overlappedSourceValidation: true, sourceMedia: sourceMedia, freshSourceMedia: combined.media)
         }
 
         // Missing historical mapping/stamps cannot silently authorize overlap.
@@ -44,6 +65,6 @@ enum ApplyAudioRenderCapture {
         try prepared.validate()
         transferred = true
         return Result(receipt: receipt, readGuard: prepared,
-            overlappedSourceValidation: false, sourceMedia: sourceMedia)
+            overlappedSourceValidation: false, sourceMedia: sourceMedia, freshSourceMedia: nil)
     }
 }

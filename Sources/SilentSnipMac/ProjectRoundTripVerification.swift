@@ -246,7 +246,7 @@ enum ProjectRoundTripVerification {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(report).write(to: reportURL, options: .atomic)
         guard report.verified else {
-            throw EditedProjectWriterError.verificationFailed("Final Cut's imported project differs in \(report.differences.joined(separator: ", ")). Verification report: \(reportURL.path)")
+            throw EditedProjectWriterError.verificationFailed("Final Cut Pro’s imported project differs in \(report.differences.joined(separator: ", ")). Verification report: \(reportURL.path)")
         }
         return report
     }

@@ -265,9 +265,9 @@ public struct LosslessRenderedAudio: Sendable, Codable, Equatable {
         public var errorDescription: String? {
             switch self {
             case .invalidLocation: return "The processed audio needs a new, local durable media folder."
-            case .unsupportedFormat: return "Preserving sound requires a complete, uncompressed PCM WAV render from Final Cut."
+            case .unsupportedFormat: return "Preserving audio requires a complete, uncompressed PCM WAV render from Final Cut Pro."
             case .invalidRange: return "The processed audio and retained ranges must match exactly at audio sample boundaries."
-            case .changedAudio: return "The verified processed audio changed before it could be preserved. Analyze again."
+            case .changedAudio: return "The verified processed audio changed before it could be preserved. Click Analyze Again."
             case .cannotProtectAudio: return "The new processed audio could not be made read-only. No result was imported."
             }
         }

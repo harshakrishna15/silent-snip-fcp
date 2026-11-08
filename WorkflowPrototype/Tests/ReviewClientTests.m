@@ -3,6 +3,7 @@
 #import "../Extension/WorkflowReviewClient.h"
 #import <stdio.h>
 #import <stdlib.h>
+#import <objc/runtime.h>
 
 @interface SSWorkflowReviewClient (OfflineTesting)
 - (NSDate *)now;
@@ -359,6 +360,68 @@ static void applyRetriesOnlyTheOwnedCommand(void) {
     finish(c); groups += 1;
 }
 
+static NSDate *cancelTestClock;
+static id cancelTestDate(id receiver, SEL selector) { return cancelTestClock; }
+static void cancellationRetriesUntilTerminalAcknowledgment(void) {
+    // The shared connection timestamps heartbeats with NSDate.date. Advance
+    // both sides of this offline transport together without real sleeps.
+    cancelTestClock = NSDate.date;
+    Method dateMethod = class_getClassMethod(NSDate.class, @selector(date));
+    IMP originalDate = method_setImplementation(dateMethod, (IMP)cancelTestDate);
+    @try {
+        SSOfflineClient *c = client(); start(c, settings());
+        NSDictionary *heartbeat = response(c, 1, @"review", YES);
+        deliver(c, heartbeat); require(!c.busy && c.canCancel, @"A ready review can be cancelled");
+        [c cancel];
+        NSDictionary *cancel = c.posts.lastObject[@"packet"];
+        require(commandCount(c, @"cancel") == 1 && [cancel[@"request"] isEqual:c.requestID],
+            @"The first cancellation is bound to the current request");
+        // Drop that first Cancel. The old review can still arrive as a healthy
+        // heartbeat, but must not consume the pending cancellation.
+        for (NSUInteger step = 0; step < 20; step++) {
+            cancelTestClock = [cancelTestClock dateByAddingTimeInterval:2]; c.clock = cancelTestClock;
+            deliver(c, heartbeat); [c poll];
+        }
+        require(commandCount(c, @"cancel") == 21 && commandCount(c, @"status") == 20 &&
+            c.failures.count == 0 && c.busy && !c.canApply && !c.canCancel,
+            @"Healthy unchanged heartbeats keep retrying a lost Cancel without restoring review actions");
+        for (NSDictionary *post in c.posts) if ([post[@"packet"][@"command"] isEqual:@"cancel"])
+            require([post[@"packet"] isEqual:cancel], @"Every cancellation retry is the same idempotent request-bound packet");
+        NSMutableDictionary *wrong = response(c, 2, @"cancelled", NO); wrong[@"request"] = NSUUID.UUID.UUIDString;
+        deliver(c, wrong); [c poll];
+        require(commandCount(c, @"cancel") == 22 && c.busy, @"A terminal response for another request cannot acknowledge Cancel");
+        deliver(c, response(c, 2, @"cancelled", NO)); [c poll]; [c cancel];
+        require(commandCount(c, @"cancel") == 22 && !c.busy && !c.canApply && !c.canCancel,
+            @"The owned terminal acknowledgment stops cancellation retries and consumes the review");
+        finish(c);
+
+        c = client(); start(c, settings()); deliver(c, response(c, 1, @"review", YES));
+        [c sendApplyWithGesture:NSUUID.UUID.UUIDString]; [c cancel]; [c poll];
+        require(commandCount(c, @"apply") == 1 && commandCount(c, @"cancel") == 2,
+            @"Cancel clears an unacknowledged Apply instead of replaying the edit while retrying cancellation");
+        deliver(c, response(c, 2, @"completed", NO)); [c poll];
+        require(commandCount(c, @"apply") == 1 && commandCount(c, @"cancel") == 2 && !c.busy,
+            @"A real completed result also acknowledges cancellation without another Apply or import");
+        finish(c);
+
+        c = client(); start(c, settings()); deliver(c, response(c, 1, @"review", YES)); [c cancel];
+        NSString *oldRequest = c.requestID; [c detach]; [c poll];
+        require(commandCount(c, @"cancel") == 1, @"Detaching retires cancellation retries");
+        require(start(c, settings()) && ![c.requestID isEqual:oldRequest], @"A fresh request has a new cancellation scope");
+        [c poll]; require(commandCount(c, @"cancel") == 1, @"The old Cancel never follows a new request");
+        finish(c);
+
+        c = client(); start(c, settings()); deliver(c, response(c, 1, @"review", YES)); [c cancel];
+        cancelTestClock = [cancelTestClock dateByAddingTimeInterval:16]; c.clock = cancelTestClock; [c poll]; [c poll];
+        require(c.failures.count == 1 && !c.busy && commandCount(c, @"cancel") == 1,
+            @"A silent helper still times out and stops cancellation retransmission");
+        finish(c);
+    } @finally {
+        method_setImplementation(dateMethod, originalDate); cancelTestClock = nil;
+    }
+    groups += 1;
+}
+
 static void retryVerificationDoesNotApplyAgain(void) {
     SSOfflineClient *c = client(); start(c, settings()); deliver(c, response(c, 1, @"review", YES));
     [c sendApplyWithGesture:NSUUID.UUID.UUIDString]; NSMutableDictionary *failed = response(c, 2, @"failed", YES);
@@ -627,6 +690,233 @@ static void updateAndNavigationActivationRemainRevisionBound(void) {
     [c markSettingsDirty]; require(![c highlightCut:@"cut-1"], @"Dirty cuts remain unavailable for navigation");
     finish(c); groups += 1;
 }
+static NSMutableDictionary *automaticResponse(SSOfflineClient *c, NSInteger revision, NSString *state,
+                                             NSDictionary *values, NSString *edit) {
+    NSMutableDictionary *value = response(c, revision, state, YES);
+    BOOL review = [state isEqual:@"review"];
+    value[@"canUpdateCuts"] = @(review); value[@"canHighlight"] = @(review);
+    value[@"automaticPreviewAvailable"] = @YES; value[@"usesAudioSnapshot"] = @YES;
+    value[@"provisional"] = @([state isEqual:@"recalculating"]);
+    value[@"settings"] = @{@"threshold": values[@"thresholdDBFS"], @"minimum": values[@"minimumSilenceDuration"],
+        @"before": values[@"beforeSpeechPadding"], @"after": values[@"afterSpeechPadding"]};
+    value[@"output"] = values[@"outputMode"];
+    if (edit) value[@"settingsEdit"] = edit;
+    return value;
+}
+static void frontmostHost(SSOfflineClient *c) {
+    SSFakeHost *host = fakeHost(@"com.apple.FinalCut", 123);
+    c.fakeHosts = @[host]; c.fakeFront = host;
+}
+static SSOfflineClient *automaticClient(void) {
+    SSOfflineClient *c = client(); start(c, settings()); frontmostHost(c);
+    deliver(c, automaticResponse(c, 1, @"review", settings(), nil)); return c;
+}
+static NSDictionary *lastCommand(SSOfflineClient *c, NSString *kind) {
+    for (NSDictionary *post in c.posts.reverseObjectEnumerator)
+        if ([post[@"packet"][@"command"] isEqual:kind]) return post[@"packet"];
+    return nil;
+}
+static NSMutableDictionary *rejectedAutomaticResponse(SSOfflineClient *c, NSInteger revision,
+                                                       NSString *edit, NSNumber *sequence) {
+    NSMutableDictionary *value = automaticResponse(c, revision, @"review", settings(), nil);
+    value[@"rejectedSettingsEdit"] = edit; value[@"rejectedSettingsSequence"] = sequence;
+    value[@"canApply"] = @NO; value[@"canChangeSelection"] = @NO; value[@"canHighlight"] = @NO;
+    value[@"message"] = @"Settings changed before the update was verified."; return value;
+}
+static void automaticCapabilityAndForeground(void) {
+    SSOfflineClient *c = client(); start(c, settings()); frontmostHost(c);
+    deliver(c, snapshotResponse(c, 1)); [c markSettingsDirty];
+    require(!c.automaticPreviewAvailable && ![c automaticallyUpdateCutsWithSettings:settings() edit:NSUUID.UUID.UUIDString],
+        @"An older worker's explicit-update capability does not authorize an automatic packet");
+    NSUInteger updates = c.updates.count;
+    NSMutableDictionary *bad = automaticResponse(c, 2, @"review", settings(), nil); bad[@"automaticPreviewAvailable"] = @1;
+    deliver(c, bad); require(c.updates.count == updates && !c.automaticPreviewAvailable,
+        @"An integer cannot impersonate the new automatic capability flag");
+    deliver(c, automaticResponse(c, 2, @"review", settings(), nil));
+    require(c.automaticPreviewAvailable && c.canUpdateCuts && !c.canApply,
+        @"The new capability retains the edited draft without restoring stale Apply");
+    NSUInteger activations = c.activationRequests, launches = c.analysisLaunches, helpers = c.helperLaunches;
+    c.fakeFront = fakeHost(@"com.openai.codex", 456);
+    require(![c automaticallyUpdateCutsWithSettings:settings() edit:NSUUID.UUID.UUIDString],
+        @"A background edit cannot activate Final Cut or dispatch a refresh");
+    frontmostHost(c); c.fakeHosts = @[c.fakeFront, fakeHost(@"com.apple.FinalCut", 124)];
+    require(![c automaticallyUpdateCutsWithSettings:settings() edit:NSUUID.UUID.UUIDString], @"Ambiguous host processes stop automatic refresh");
+    frontmostHost(c); c.fakeFront.terminated = YES;
+    require(![c automaticallyUpdateCutsWithSettings:settings() edit:NSUUID.UUID.UUIDString], @"A terminated host cannot authorize automatic refresh");
+    frontmostHost(c); c.fakeFront = fakeHost(@"com.openai.codex", 123);
+    require(![c automaticallyUpdateCutsWithSettings:settings() edit:NSUUID.UUID.UUIDString], @"Matching PID with another app identity is not foreground ownership");
+    frontmostHost(c);
+    NSMutableDictionary *invalid = [settings() mutableCopy]; invalid[@"minimumSilenceDuration"] = @YES;
+    require(![c automaticallyUpdateCutsWithSettings:invalid edit:NSUUID.UUID.UUIDString] &&
+        ![c automaticallyUpdateCutsWithSettings:settings() edit:@"bad-edit"], @"Invalid settings and nonce cannot dispatch");
+    NSMutableDictionary *values = [settings() mutableCopy]; NSMutableString *output = [NSMutableString stringWithString:@"gaps"];
+    values[@"outputMode"] = output; NSString *edit = NSUUID.UUID.UUIDString;
+    require([c automaticallyUpdateCutsWithSettings:values edit:edit] && c.updatingCuts && c.busy &&
+        c.automaticPreviewAvailable && !c.canApply && !c.canUpdateCuts, @"Automatic refresh consumes current actions while preserving the reusable capability");
+    NSDictionary *command = lastCommand(c, @"recalculate");
+    require([command[@"automaticPreview"] isEqual:@YES] && [command[@"localPreview"] isEqual:@YES] &&
+        [command[@"verifySettings"] isEqual:@YES] && [command[@"settingsEdit"] isEqual:edit] &&
+        [command[@"settingsSequence"] isEqual:@1] && [command[@"expectedRevision"] isEqual:@2],
+        @"Automatic refresh pins the native edit, snapshot sequence and current review revision");
+    require(![c automaticallyUpdateCutsWithSettings:settings() edit:NSUUID.UUID.UUIDString], @"An in-flight refresh cannot overlap another update");
+    values[@"minimumSilenceDuration"] = @9; [output setString:@"remove"]; [c poll];
+    require([lastCommand(c, @"recalculate") isEqual:command] && [lastCommand(c, @"recalculate")[@"output"] isEqual:@"gaps"],
+        @"Polling retries only the immutable original snapshot, including a copied mutable output string");
+    require(c.activationRequests == activations && c.analysisLaunches == launches && c.helperLaunches == helpers &&
+        commandCount(c, @"apply") == 0, @"Automatic refresh never activates, launches, analyzes or applies");
+    deliver(c, automaticResponse(c, 3, @"review", settings(), edit));
+    require(!c.updatingCuts && !c.busy && c.canApply, @"Only the exact final settings snapshot acknowledgment restores Apply");
+    finish(c); groups += 1;
+}
+static void automaticAcknowledgmentRequiresLatestDraft(void) {
+    SSOfflineClient *c = automaticClient(); [c markSettingsDirty]; NSString *first = NSUUID.UUID.UUIDString;
+    [c automaticallyUpdateCutsWithSettings:settings() edit:first];
+    NSMutableDictionary *next = [settings() mutableCopy]; next[@"minimumSilenceDuration"] = @0.7;
+    NSString *second = NSUUID.UUID.UUIDString; [c markSettingsDirty];
+    require(!c.canApply && c.updatingCuts && commandCount(c, @"recalculate") == 1 &&
+        [lastCommand(c, @"preview")[@"view"] isEqual:@"2686A7A1-BC05-4885-82A2-C9EE8A096F45"] &&
+        [lastCommand(c, @"preview")[@"settingsSequence"] isEqual:@2],
+        @"Typing during a refresh marks a later draft and suspends the old overlay with its prospective sequence");
+    deliver(c, automaticResponse(c, 2, @"recalculating", settings(), first));
+    require(c.updatingCuts && c.busy && !c.canApply && !c.canChangeSelection,
+        @"A provisional acknowledgment does not expose stale cut actions");
+    __weak SSOfflineClient *weak = c;
+    c.afterPublish = ^{
+        SSOfflineClient *owner = weak;
+        if (!owner.updatingCuts && owner.canUpdateCuts) {
+            owner.afterPublish = nil;
+            require([owner automaticallyUpdateCutsWithSettings:next edit:second], @"The latest queued draft can dispatch after its predecessor finishes");
+        }
+    };
+    deliver(c, automaticResponse(c, 3, @"review", settings(), first));
+    require(c.updatingCuts && c.busy && !c.canApply && commandCount(c, @"recalculate") == 2,
+        @"A superseded final result cannot briefly enable Apply before the newest update");
+    require([lastCommand(c, @"preview")[@"settingsSequence"] isEqual:@2],
+        @"A hide generated before the publish callback retains sequence two, rather than hiding the newly dispatched result as sequence three");
+    deliver(c, automaticResponse(c, 4, @"review", settings(), first));
+    require(c.updatingCuts && !c.canApply, @"A later delayed reply for the old edit cannot acknowledge the new draft");
+    deliver(c, automaticResponse(c, 5, @"review", next, second));
+    require(!c.updatingCuts && !c.busy && c.canApply && c.canHighlight && c.canChangeSelection,
+        @"The matching newest edit and echoed values alone restore review authority");
+    finish(c); groups += 1;
+}
+static void automaticDeclineReleasesLatestDraft(void) {
+    SSOfflineClient *c = automaticClient(); [c markSettingsDirty]; NSString *first = NSUUID.UUID.UUIDString;
+    [c automaticallyUpdateCutsWithSettings:settings() edit:first]; [c markSettingsDirty];
+    NSMutableDictionary *decline = rejectedAutomaticResponse(c, 1, first, @1); deliver(c, decline);
+    require(!c.updatingCuts && !c.busy && !c.canApply && c.canUpdateCuts && c.automaticPreviewAvailable,
+        @"A matching same-revision decline releases only the in-flight packet while keeping the draft dirty");
+    require([c.updates.lastObject[@"rejectedSettingsEdit"] isEqual:first] &&
+        [c.updates.lastObject[@"rejectedSettingsSequence"] isEqual:@1], @"The controller receives the exact declined nonce and sequence");
+    NSUInteger recalculate = commandCount(c, @"recalculate");
+    c.clock = [c.clock dateByAddingTimeInterval:20]; deliver(c, decline); [c poll];
+    require(c.failures.count == 0 && commandCount(c, @"recalculate") == recalculate,
+        @"Repeated cached decline heartbeats keep the idle review alive without retrying the rejected draft");
+    NSMutableDictionary *next = [settings() mutableCopy]; next[@"afterSpeechPadding"] = @0.2;
+    NSString *second = NSUUID.UUID.UUIDString;
+    require([c automaticallyUpdateCutsWithSettings:next edit:second] &&
+        [lastCommand(c, @"recalculate")[@"settingsSequence"] isEqual:@2], @"A newer draft can proceed with the next monotonic sequence");
+    require(c.updates.lastObject[@"rejectedSettingsEdit"] == nil, @"A new send clears stale rejection fields from published state");
+    deliver(c, decline); require(c.updatingCuts && c.busy, @"An old cached decline cannot release a newer pending edit");
+    deliver(c, automaticResponse(c, 2, @"review", next, second)); require(c.canApply && !c.updatingCuts, @"The newest accepted draft completes after its predecessor was declined");
+    finish(c); groups += 1;
+}
+static void malformedAutomaticDeclinesCannotAcknowledge(void) {
+    SSOfflineClient *c = automaticClient(); [c markSettingsDirty]; NSString *edit = NSUUID.UUID.UUIDString;
+    [c automaticallyUpdateCutsWithSettings:settings() edit:edit];
+    NSMutableArray *invalid = [NSMutableArray new];
+    NSMutableDictionary *value = rejectedAutomaticResponse(c, 1, NSUUID.UUID.UUIDString, @1); [invalid addObject:value];
+    value = rejectedAutomaticResponse(c, 1, edit, @2); [invalid addObject:value];
+    value = rejectedAutomaticResponse(c, 0, edit, @1); [invalid addObject:value];
+    for (id sequence in @[@YES, @0, @-1, @"1", NSNull.null]) {
+        value = rejectedAutomaticResponse(c, 1, edit, @1); value[@"rejectedSettingsSequence"] = sequence; [invalid addObject:value];
+    }
+    value = rejectedAutomaticResponse(c, 1, edit, @1); [value removeObjectForKey:@"rejectedSettingsSequence"]; [invalid addObject:value];
+    for (NSDictionary *packet in invalid) {
+        deliver(c, packet); require(c.updatingCuts && c.busy && !c.canApply, @"Malformed, stale or unrelated rejection cannot consume an automatic update");
+    }
+    value = rejectedAutomaticResponse(c, 2, edit, @1); value[@"state"] = @"recalculating"; value[@"canUpdateCuts"] = @NO;
+    deliver(c, value); require(!c.updatingCuts && c.busy && !c.canApply && !c.canUpdateCuts,
+        @"A decline during another retained operation releases this nonce but waits for its final review");
+    deliver(c, automaticResponse(c, 3, @"review", settings(), nil));
+    require(!c.busy && !c.canApply && c.canUpdateCuts, @"Ordinary completion after a decline never clears the locally dirty draft");
+    finish(c); groups += 1;
+}
+static void automaticSettingsWaitForSelectionAcknowledgment(void) {
+    SSOfflineClient *c = automaticClient();
+    require([c setCut:@"cut-1" included:NO] && !c.canUpdateCuts, @"An inclusion choice waits for its own acknowledgment");
+    [c markSettingsDirty];
+    require(!c.canApply && !c.canUpdateCuts &&
+        ![c automaticallyUpdateCutsWithSettings:settings() edit:NSUUID.UUID.UUIDString],
+        @"Detection typing retains the pending inclusion revision instead of dispatching a stale settings snapshot");
+    NSMutableDictionary *selected = automaticResponse(c, 2, @"review", settings(), nil);
+    selected[@"cuts"] = @[cut(NO)]; selected[@"canApply"] = @NO;
+    deliver(c, selected);
+    require(c.canUpdateCuts && !c.canApply, @"The inclusion acknowledgment releases automatic refresh without clearing the dirty settings");
+    NSString *edit = NSUUID.UUID.UUIDString;
+    require([c automaticallyUpdateCutsWithSettings:settings() edit:edit] &&
+        [lastCommand(c, @"recalculate")[@"expectedRevision"] isEqual:@2], @"The automatic snapshot binds the acknowledged inclusion revision");
+    deliver(c, automaticResponse(c, 3, @"review", settings(), edit));
+    require(c.canApply && !c.busy, @"Only the new settings acknowledgment can restore Apply after overlapping selection and detection edits");
+    finish(c); groups += 1;
+}
+static void automaticEchoMismatchCannotEnableApply(void) {
+    SSOfflineClient *c = automaticClient(); [c markSettingsDirty]; NSString *edit = NSUUID.UUID.UUIDString;
+    [c automaticallyUpdateCutsWithSettings:settings() edit:edit];
+    NSMutableDictionary *different = [settings() mutableCopy]; different[@"thresholdDBFS"] = @-30;
+    deliver(c, automaticResponse(c, 2, @"review", different, edit));
+    require(!c.updatingCuts && !c.canApply && !c.canHighlight && c.canUpdateCuts &&
+        [c.updates.lastObject[@"rejectedSettingsEdit"] isEqual:edit],
+        @"A matching nonce with different echoed values cannot acknowledge the user's draft");
+    deliver(c, automaticResponse(c, 3, @"review", settings(), edit));
+    require(!c.canApply, @"A delayed ordinary response cannot revive a rejected draft without another explicit local edit send");
+    finish(c);
+    c = automaticClient(); [c markSettingsDirty]; edit = NSUUID.UUID.UUIDString;
+    [c automaticallyUpdateCutsWithSettings:settings() edit:edit];
+    NSMutableDictionary *missing = automaticResponse(c, 2, @"review", settings(), edit); [missing removeObjectForKey:@"settings"];
+    deliver(c, missing); require(!c.canApply && !c.updatingCuts, @"A final update without a full settings echo remains dirty");
+    finish(c); groups += 1;
+}
+static void automaticDispatchRespectsReentrantChanges(void) {
+    for (NSString *change in @[@"cancel", @"detach", @"background", @"newDraft"]) {
+        SSOfflineClient *c = automaticClient(); [c markSettingsDirty]; NSUInteger activations = c.activationRequests;
+        __weak SSOfflineClient *weak = c;
+        c.afterPublish = ^{
+            SSOfflineClient *owner = weak;
+            if (!owner.updatingCuts) return;
+            owner.afterPublish = nil;
+            if ([change isEqual:@"cancel"]) [owner cancel];
+            else if ([change isEqual:@"detach"]) [owner detach];
+            else if ([change isEqual:@"background"]) owner.fakeFront = fakeHost(@"com.openai.codex", 456);
+            else [owner markSettingsDirty];
+        };
+        require(![c automaticallyUpdateCutsWithSettings:settings() edit:NSUUID.UUID.UUIDString] &&
+            commandCount(c, @"recalculate") == 0 && c.activationRequests == activations,
+            @"Cancel, detach, lost foreground or a newer draft during publication prevents the old automatic dispatch");
+        if ([change isEqual:@"cancel"]) deliver(c, response(c, 2, @"cancelled", NO));
+        require(!c.updatingCuts && !c.busy && !c.canApply, @"An undispatched automatic packet cannot leave a pending-operation deadlock or stale Apply");
+        finish(c);
+    }
+    groups += 1;
+}
+static void automaticTimeoutAndTerminalAreConsumed(void) {
+    SSOfflineClient *c = automaticClient(); [c markSettingsDirty]; NSString *edit = NSUUID.UUID.UUIDString;
+    [c automaticallyUpdateCutsWithSettings:settings() edit:edit];
+    c.clock = [c.clock dateByAddingTimeInterval:20]; [c poll];
+    require(c.failures.count == 1 && !c.updatingCuts && !c.busy && !c.canApply && !c.automaticPreviewAvailable,
+        @"An automatic refresh timeout consumes the local capability without launching another task");
+    deliver(c, automaticResponse(c, 3, @"review", settings(), edit));
+    require(!c.canApply && !c.updatingCuts, @"A late successful update cannot revive a timed-out review");
+    finish(c);
+    c = automaticClient(); [c markSettingsDirty]; edit = NSUUID.UUID.UUIDString;
+    [c automaticallyUpdateCutsWithSettings:settings() edit:edit]; [c cancel];
+    deliver(c, automaticResponse(c, 2, @"review", settings(), edit));
+    require(!c.canApply && !c.updatingCuts, @"Cancellation prevents a late update reply from restoring cut actions");
+    deliver(c, automaticResponse(c, 3, @"cancelled", settings(), edit));
+    require(!c.automaticPreviewAvailable && !c.busy && !c.canApply, @"A terminal canceled job cannot expose automatic update capability");
+    finish(c); groups += 1;
+}
+
 static BOOL recover(SSOfflineClient *c, NSURL *result) {
     return [c verifyExistingResultURL:result libraryURL:[NSURL fileURLWithPath:@"/Test/Cutdown Integration.fcpbundle"]
         projectUID:@"project-A" projectName:@"Project & 20%" gesture:@"EA97943A-27BB-48BE-BB14-FB4F30314D52"];
@@ -694,11 +984,14 @@ int main(void) {
     @autoreleasepool {
         targetedLaunchAndURLBinding(); quietWindowPreparationUsesOnlyThePinnedHelper(); invalidPreflightNeverDispatches(); helperAmbiguityAndOldInstalledCopy();
         malformedResponsesDoNotReachUI(); selectionNeedsExactNewAcknowledgment(); applyRetriesOnlyTheOwnedCommand();
-        retryVerificationDoesNotApplyAgain(); freshCapabilityNonceBeforeAnyAnalysis(); timeoutCannotReviveReview();
+        cancellationRetriesUntilTerminalAcknowledgment(); retryVerificationDoesNotApplyAgain(); freshCapabilityNonceBeforeAnyAnalysis(); timeoutCannotReviveReview();
         delayedAnalyzeActivationIsCancelledSafely(); applyActivationIsRecoverableAndRevisionBound();
         retryActivationNeverCreatesAnEdit(); publicActivationPolicyRequiresExactForeground();
         synchronousUIDetachCannotDispatch();
-        updateCutsRetainsAndAcknowledgesSnapshot(); updateAndNavigationActivationRemainRevisionBound(); explicitRecoveryAdoptsOnlyReadOnlyResult();
+        updateCutsRetainsAndAcknowledgesSnapshot(); updateAndNavigationActivationRemainRevisionBound();
+        automaticCapabilityAndForeground(); automaticAcknowledgmentRequiresLatestDraft(); automaticDeclineReleasesLatestDraft();
+        malformedAutomaticDeclinesCannotAcknowledge(); automaticSettingsWaitForSelectionAcknowledgment(); automaticEchoMismatchCannotEnableApply();
+        automaticDispatchRespectsReentrantChanges(); automaticTimeoutAndTerminalAreConsumed(); explicitRecoveryAdoptsOnlyReadOnlyResult();
         printf("Passed %lu review-client groups (%lu assertions); no real helper launch, DNC, timers, windows, or settings files.\n",
             (unsigned long)groups, (unsigned long)checks);
     }

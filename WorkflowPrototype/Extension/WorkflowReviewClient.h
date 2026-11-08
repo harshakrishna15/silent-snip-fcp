@@ -12,10 +12,21 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL canChangeSelection;
 @property (nonatomic, readonly) BOOL canCancel;
 @property (nonatomic, readonly) BOOL canUpdateCuts;
+/// Capability advertised only by workers that verify automatic snapshot edits.
+/// Availability remains visible while an update is in flight so the owner can
+/// retain/coalesce later edits without dispatching overlapping commands.
+@property (nonatomic, readonly) BOOL automaticPreviewAvailable;
+@property (nonatomic, readonly) BOOL updatingCuts;
 @property (nonatomic, readonly) BOOL canHighlight;
 /// Editing invalidates Apply/navigation and hides the stale timeline overlay,
-/// retaining reusable measurements until explicit Update Cuts.
+/// retaining reusable measurements for an eligible snapshot refresh. New edits
+/// during a refresh remain dirty until their own acknowledged result arrives.
 - (void)markSettingsDirty;
+/// Sends only to the already-running review while Final Cut Pro is frontmost.
+/// The owner exposes edit in its natural settings group and coalesces drafts;
+/// this method never activates the host, launches a helper, or exports audio.
+- (BOOL)automaticallyUpdateCutsWithSettings:(NSDictionary *)settings edit:(NSString *)edit;
+/// Retained for compatibility with earlier explicitly invoked frontends.
 - (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture;
 - (BOOL)highlightCut:(NSString *)cutID;
 /// Explicit read-only recovery; accepts only Silent Snip.fcpxml. This client

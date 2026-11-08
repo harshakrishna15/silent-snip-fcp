@@ -52,6 +52,8 @@ enum ImportedSettingsRecovery {
         var sourceMedia: MediaContentSnapshot?
         var renderedAudio: LosslessRenderedAudio?
         var workflowOrigin: WorkflowReviewOrigin?
+        var nativeProjectUID: String?
+        var bulkEffectTransfer: Bool?
     }
     let request: AnalyzeRequest
     let expected: Data
@@ -64,12 +66,15 @@ enum ImportedSettingsRecovery {
     private(set) var complete = false
     private let sourceMedia: MediaContentSnapshot?
     private let renderedAudio: LosslessRenderedAudio?
+    let nativeProjectUID: String?
+    let bulkEffectTransfer: Bool
     var sourceMediaNotice: String {
         sourceMedia == nil ? "Historical source integrity is unverified: this older result has no saved media fingerprints. Current media is available and unchanged during this verification." : "Source media contents match the saved fingerprints."
     }
 
     init(expected: Data, outputURL: URL, originalProjectName: String, request: AnalyzeRequest, replacementTarget: XMLReplacementTarget? = nil,
-         sourceMedia: MediaContentSnapshot? = nil, renderedAudio: LosslessRenderedAudio? = nil) throws {
+         sourceMedia: MediaContentSnapshot? = nil, renderedAudio: LosslessRenderedAudio? = nil,
+         nativeProjectUID: String? = nil, bulkEffectTransfer: Bool = false) throws {
         self.sourceMedia = sourceMedia
         self.renderedAudio = try Self.boundRenderedAudio(renderedAudio, expected: expected, outputURL: outputURL, sourceMedia: sourceMedia)
         self.replacementTarget = replacementTarget
@@ -77,6 +82,16 @@ enum ImportedSettingsRecovery {
         self.expected = expected; self.outputURL = outputURL
         self.originalProjectName = originalProjectName
         projectName = try TimelineParser.parse(data: expected).projectName
+        self.nativeProjectUID = nativeProjectUID
+        self.bulkEffectTransfer = bulkEffectTransfer
+        guard !bulkEffectTransfer || nativeProjectUID == nil else { throw FinalCutCaptureError.changedProject }
+        if let nativeProjectUID {
+            guard !nativeProjectUID.isEmpty,
+                  try TimelineParser.parse(data: expected).projectUID == nativeProjectUID else {
+                throw EditedProjectWriterError.verificationFailed("the native edit receipt does not match its existing project identity")
+            }
+            hostProjectUID = nativeProjectUID
+        }
         if let replacementTarget {
             guard originalProjectName == replacementTarget.projectName else {
                 throw EditedProjectWriterError.verificationFailed("replacement receipt has the wrong original project")
@@ -148,7 +163,8 @@ enum ImportedSettingsRecovery {
         let receipt = Receipt(requestID: request.id, settings: request.settings, outputMode: request.outputMode.rawValue,
             originalProjectName: originalProjectName, expectedSHA256: Self.digest(expected), replacementTarget: replacementTarget, hostProjectUID: hostProjectUID,
             hostAudioAssetUIDs: hostAudioAssetUIDs, sourceMedia: sourceMedia, renderedAudio: renderedAudio,
-            workflowOrigin: request.workflowOrigin)
+            workflowOrigin: request.workflowOrigin, nativeProjectUID: nativeProjectUID,
+            bulkEffectTransfer: bulkEffectTransfer ? true : nil)
         try JSONEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
     }
 
@@ -200,9 +216,21 @@ enum ImportedSettingsRecovery {
             originalProjectName: receipt.originalProjectName,
             request: AnalyzeRequest(id: receipt.requestID, settings: receipt.settings, outputMode: mode,
                 workflowOrigin: receipt.workflowOrigin), replacementTarget: receipt.replacementTarget,
-            sourceMedia: receipt.sourceMedia, renderedAudio: receipt.renderedAudio)
+            sourceMedia: receipt.sourceMedia, renderedAudio: receipt.renderedAudio,
+            nativeProjectUID: receipt.nativeProjectUID, bulkEffectTransfer: receipt.bulkEffectTransfer == true)
+        if let nativeUID = receipt.nativeProjectUID,
+           receipt.hostProjectUID != nativeUID {
+            throw EditedProjectWriterError.verificationFailed("the native result identity changed in its saved receipt")
+        }
         result.hostProjectUID = receipt.hostProjectUID
         result.hostAudioAssetUIDs = receipt.hostAudioAssetUIDs
+        if result.bulkEffectTransfer {
+            // A completed transfer can outlive a crash before the receipt's
+            // first verification write. Recover only its already-bound native UID.
+            let uid = try NativeBulkEffectTransferJournal.requireApplied(directory: directory, expected: data)
+            guard result.hostProjectUID == nil || result.hostProjectUID == uid else { throw FinalCutCaptureError.changedProject }
+            result.hostProjectUID = uid
+        }
         return result
     }
 
@@ -239,14 +267,38 @@ enum ImportedSettingsRecovery {
         }
     }
 
+    private static func measured<T>(_ timing: AnalysisTiming?, _ name: String,
+                                    operation: () throws -> T) rethrows -> T {
+        if let timing { return try timing.measure(name, operation: operation) }
+        return try operation()
+    }
+
+    private static func measured<T>(_ timing: AnalysisTiming?, _ name: String,
+                                    operation: () async throws -> T) async rethrows -> T {
+        if let timing { return try await timing.measure(name, operation: operation) }
+        return try await operation()
+    }
+
+    /// Details overlap intentionally: mediaValidation runs concurrently with
+    /// capture. They describe work duration, not additive critical-path stages.
     func verify(capture: () async throws -> Data,
                 restore: (ImportedSettingsRecovery.Correction, TimelineDocument) async throws -> Void,
-                validateMedia: @escaping @Sendable (MediaContentSnapshot) async throws -> Void = { try await $0.validate() }) async throws -> ProjectRoundTripReport {
-        guard try Data(contentsOf: outputURL) == expected else {
-            throw EditedProjectWriterError.verificationFailed("the saved result changed; verification did not run")
+                validateMedia: @escaping @Sendable (MediaContentSnapshot) async throws -> Void = { try await $0.validate() },
+                timing: AnalysisTiming? = nil) async throws -> ProjectRoundTripReport {
+        try Self.measured(timing, "verification.savedResultRead") {
+            guard try Data(contentsOf: outputURL) == expected else {
+                throw EditedProjectWriterError.verificationFailed("the saved result changed; verification did not run")
+            }
         }
         let directory = outputURL.deletingLastPathComponent()
-        let expectedSnapshot = try ProjectRoundTripVerification.Snapshot(data: expected)
+        if bulkEffectTransfer {
+            let boundUID = try NativeBulkEffectTransferJournal.requireApplied(directory: directory, expected: expected)
+            guard hostProjectUID == nil || hostProjectUID == boundUID else { throw FinalCutCaptureError.changedProject }
+            hostProjectUID = boundUID
+        }
+        let expectedSnapshot = try Self.measured(timing, "verification.expectedParse") {
+            try ProjectRoundTripVerification.Snapshot(data: expected)
+        }
         let reportURL = directory.appendingPathComponent("Import-Verification.json")
         var report = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: expectedSnapshot).report
         do {
@@ -257,7 +309,10 @@ enum ImportedSettingsRecovery {
                            readGuard: MediaContentSnapshot.ReadGuard)?
             for phase in 0...1 {
                 try Task.checkCancellation()
-                let captureGuard = try MediaContentSnapshot.prepareRead(sourceMedia?.sourceURLs ?? resultURLs)
+                timing?.incrementCounter("verification.readOnlyPhases")
+                let captureGuard = try Self.measured(timing, "verification.sourceGuardSetup") {
+                    try MediaContentSnapshot.prepareRead(sourceMedia?.sourceURLs ?? resultURLs)
+                }
                 let media: MediaContentSnapshot
                 if let sourceMedia {
                     guard sourceMedia.containsReferences(resultURLs) else {
@@ -265,26 +320,38 @@ enum ImportedSettingsRecovery {
                     }
                     // Always validate the ORIGINAL historical content and PCM
                     // proof. A local current snapshot never replaces a receipt.
-                    media = try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
+                    media = try await Self.measured(timing, "verification.sourceSnapshot") {
+                        try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
+                    }
                 } else {
-                    media = try await MediaContentSnapshot.capture(prepared: captureGuard)
+                    media = try await Self.measured(timing, "verification.sourceSnapshot") {
+                        try await MediaContentSnapshot.capture(prepared: captureGuard)
+                    }
                 }
-                async let captureValidation: Void = validateMedia(media)
+                timing?.incrementCounter("verification.mediaValidationPasses")
+                async let captureValidation: Void = Self.measured(timing, "verification.mediaValidation") {
+                    try await validateMedia(media)
+                }
                 // A throw may mean uncertain host delivery. It exits this loop
                 // immediately: only SUCCESSFULLY RETURNED XML can be discarded
                 // for one subsequent read-only capture below.
-                let actualData = try await capture()
+                timing?.incrementCounter("verification.captureCalls")
+                let actualData = try await Self.measured(timing, "verification.capture", operation: capture)
                 var sourceFailure: Error?
                 do {
                     try await captureValidation
-                    try captureGuard.validate()
+                    try Self.measured(timing, "verification.sourceGuard") { try captureGuard.validate() }
                 } catch { sourceFailure = error }
-                try verifyDestination(actualData)
-                let actualSnapshot = try ProjectRoundTripVerification.Snapshot(data: actualData)
-                let comparison = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
-                    allowHostAssignedIdentity: true, expectedHostProjectUID: boundProjectUID, expectedHostAudioAssetUIDs: boundAudioUIDs)
+                try Self.measured(timing, "verification.destination") { try verifyDestination(actualData) }
+                let actualSnapshot = try Self.measured(timing, "verification.actualParse") {
+                    try ProjectRoundTripVerification.Snapshot(data: actualData)
+                }
+                let comparison = Self.measured(timing, "verification.comparison") {
+                    ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: actualSnapshot,
+                        allowHostAssignedIdentity: true, expectedHostProjectUID: boundProjectUID, expectedHostAudioAssetUIDs: boundAudioUIDs)
+                }
                 report = comparison.report
-                _ = try comparison.verify(reportURL: reportURL)
+                _ = try Self.measured(timing, "verification.reportWrite") { try comparison.verify(reportURL: reportURL) }
                 if let sourceFailure {
                     if sourceFailure is CancellationError || Task.isCancelled { throw sourceFailure }
                     guard phase == 0, let sourceMedia, let renderedAudio,
@@ -294,12 +361,15 @@ enum ImportedSettingsRecovery {
                     // exporting its FIRST XML bookmark. Discard that completed,
                     // semantically verified phase only after a new full scan
                     // proves unchanged raw sources and encoded/PCM/format/ID.
-                    _ = try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
+                    _ = try await Self.measured(timing, "verification.renderedCTimeRevalidation") {
+                        try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
+                    }
                     guard try captureGuard.onlyRenderedCTimeChanged(renderedAudio) else { throw sourceFailure }
                     // Bind the actual objects locally BEFORE the second read;
                     // another same-named project/asset must not be substituted.
                     boundProjectUID = report.actualProjectUID
                     boundAudioUIDs = report.hostAssignedAudioAssetUIDs ?? [:]
+                    timing?.incrementCounter("verification.ctimeRestarts")
                     continue
                 }
                 accepted = (comparison, media, captureGuard)
@@ -313,8 +383,10 @@ enum ImportedSettingsRecovery {
             }
             hostProjectUID = report.actualProjectUID
             hostAudioAssetUIDs = report.hostAssignedAudioAssetUIDs
-            try savePending()
-            let corrections = try ImportedSettingsRecovery.plan(comparison)
+            try Self.measured(timing, "verification.receipt") { try savePending() }
+            let corrections = try Self.measured(timing, "verification.recoveryPlan") {
+                try ImportedSettingsRecovery.plan(comparison)
+            }
             if !corrections.isEmpty {
                 // The joined full scan and guard must still authorize the
                 // original source files immediately before recovery writes.
@@ -322,35 +394,44 @@ enum ImportedSettingsRecovery {
                 let document = actualSnapshot.document
                 for correction in corrections {
                     try Task.checkCancellation()
-                    try await restore(correction, document)
+                    timing?.incrementCounter("verification.recoveryWrites")
+                    try await Self.measured(timing, "verification.recoveryWrite") { try await restore(correction, document) }
                 }
-                let recoveredData = try await capture()
-                try verifyDestination(recoveredData)
-                let recoveredSnapshot = try ProjectRoundTripVerification.Snapshot(data: recoveredData)
-                let recovered = ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: recoveredSnapshot,
-                    allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID, expectedHostAudioAssetUIDs: hostAudioAssetUIDs)
+                timing?.incrementCounter("verification.captureCalls")
+                let recoveredData = try await Self.measured(timing, "verification.recoveryCapture", operation: capture)
+                try Self.measured(timing, "verification.destination") { try verifyDestination(recoveredData) }
+                let recoveredSnapshot = try Self.measured(timing, "verification.actualParse") {
+                    try ProjectRoundTripVerification.Snapshot(data: recoveredData)
+                }
+                let recovered = Self.measured(timing, "verification.comparison") {
+                    ProjectRoundTripVerification.Comparison(expected: expectedSnapshot, actual: recoveredSnapshot,
+                        allowHostAssignedIdentity: true, expectedHostProjectUID: hostProjectUID, expectedHostAudioAssetUIDs: hostAudioAssetUIDs)
+                }
                 report = recovered.report
-                _ = try recovered.verify(reportURL: reportURL)
+                _ = try Self.measured(timing, "verification.reportWrite") { try recovered.verify(reportURL: reportURL) }
                 guard report.actualProjectUID == hostProjectUID else {
                     throw EditedProjectWriterError.verificationFailed("the project changed during settings recovery")
                 }
                 // Recovery deliberately mutates the host. It needs its own
                 // post-recovery content verification rather than the earlier
                 // capture's read-only phase evidence.
-                try await validateMedia(media)
+                timing?.incrementCounter("verification.mediaValidationPasses")
+                try await Self.measured(timing, "verification.recoveryValidation") { try await validateMedia(media) }
             } else {
                 // No host writes happened after the joined capture/scan. The
                 // same phase's mutation guard closes receipt/report processing
                 // without rereading every source file a third time.
-                try captureGuard.validate()
+                try Self.measured(timing, "verification.finalGuard") { try captureGuard.validate() }
             }
-            try captureGuard.validate()
+            try Self.measured(timing, "verification.finalGuard") { try captureGuard.validate() }
             guard report.controllerSettingsPreserved != false else {
                 throw EditedProjectWriterError.verificationFailed("Final Cut did not retain the recovered Silent Snip settings. Retry Verification to try recovery again; no new import is needed")
             }
             try Task.checkCancellation()
             report.sourceMediaVerified = sourceMedia != nil
-            try JSONEncoder().encode(report).write(to: reportURL, options: .atomic)
+            try Self.measured(timing, "verification.reportWrite") {
+                try JSONEncoder().encode(report).write(to: reportURL, options: .atomic)
+            }
             return report
         } catch {
             report.verified = false

@@ -93,6 +93,7 @@ private final class TimelineXMLDelegate: NSObject, XMLParserDelegate {
 
 private final class TimelineCanonicalCache {
     var resourceHashes: [String: String] = [:]
+    var effectStates: [String: String] = [:]
     var remainingNodes = 2_000_000
 }
 
@@ -335,7 +336,25 @@ private struct TimelineBuilder {
             }
             parts.append("\(key.utf8.count):\(key)=\(value.utf8.count):\(value)")
         }
-        let text = node.children.isEmpty ? node.text : node.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = node.children.isEmpty ? node.text : node.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if node.name == "data", node.attributes["key"] == "effectState", node.children.isEmpty {
+            // Retained clips commonly repeat the same archive thousands of
+            // times. Resolve each distinct bounded payload once per document.
+            if let state = canonicalCache.effectStates[text] { text = state }
+            else {
+                // Separate recognized semantics from literal fallback text. An
+                // invalid payload spelling a canonical token is still raw data
+                // and must never compare equal to a valid state archive.
+                let state: String
+                if let semantic = AudioEffectStateCanonicalization.canonical(text) {
+                    state = "semantic:\(semantic.utf8.count):\(semantic)"
+                } else {
+                    state = "raw:\(text.utf8.count):\(text)"
+                }
+                if canonicalCache.effectStates.count < 256 { canonicalCache.effectStates[text] = state }
+                text = state
+            }
+        }
         if !text.isEmpty { parts.append("text=\(text.utf8.count):\(text)") }
         for child in node.children {
             if controller && child.name == "param" { continue }

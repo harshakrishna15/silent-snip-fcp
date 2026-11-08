@@ -13,10 +13,10 @@ public enum WorkflowModelError: Error, Equatable, LocalizedError {
         switch self {
         case .invalidIdentity(let field): return "The verified project identity is missing a valid \(field)."
         case .invalidSetting(let field): return "The \(field) setting is outside its supported range."
-        case .invalidPlayhead: return "The host playhead time is not finite."
-        case .unboundProject: return "Settings require a verified library and project identity."
+        case .invalidPlayhead: return "The playhead position could not be read from Final Cut Pro."
+        case .unboundProject: return "Open a project in Final Cut Pro to load or save its settings."
         case .invalidStoreURL: return "The settings store requires a local file URL."
-        case .unsupportedSchema(let version): return "Settings schema \(version) is not supported."
+        case .unsupportedSchema(let version): return "Saved project settings version \(version) is not supported."
         case .invalidArchive: return "The saved project settings are invalid. The file was kept."
         }
     }

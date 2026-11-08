@@ -51,7 +51,9 @@ final class AudioPluginCompatibilityTests: XCTestCase {
             deliveredProject.addAttribute(XMLNode.attribute(withName: "uid", stringValue: "host-assigned") as! XMLNode)
             let delivered = deliveredXML.xmlData
             XCTAssertTrue(try ProjectRoundTripVerification.compare(expected: isolation.data, actual: delivered, allowHostAssignedIdentity: true).verified)
-            let output = try EditedProjectWriter.write(projectData: original, selection: selection,
+            XCTAssertThrowsError(try EditedProjectWriter.write(projectData: original, selection: selection,
+                selectedRanges: [cut], outputName: "Cannot Reconstruct"))
+            let output = try EditedProjectWriter.serializationExpectation(projectData: original, selection: selection,
                 selectedRanges: [cut], outputName: "Gate Limiter Result")
             let segments = try XMLDocument(data: output.xmlData).nodes(forXPath: "//project/sequence/spine/asset-clip")
             let expected = try payloads(XMLDocument(data: original))
@@ -80,7 +82,9 @@ final class AudioPluginCompatibilityTests: XCTestCase {
         let original = try XMLDocument(data: data)
         let expected = try payloads(original)
         for gaps in [[:], [cut: RationalTime(1)]] {
-            let result = try EditedProjectWriter.write(projectData: data, selection: selection,
+            XCTAssertThrowsError(try EditedProjectWriter.write(projectData: data, selection: selection,
+                selectedRanges: [cut], outputName: "Cannot Reconstruct", replacementGaps: gaps))
+            let result = try EditedProjectWriter.serializationExpectation(projectData: data, selection: selection,
                 selectedRanges: [cut], outputName: "Plugin Result", replacementGaps: gaps)
             let output = try XMLDocument(data: result.xmlData)
             let clips = try output.nodes(forXPath: "//project/sequence/spine/asset-clip")

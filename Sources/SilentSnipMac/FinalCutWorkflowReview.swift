@@ -183,9 +183,9 @@ extension FinalCutAXSession {
         if !projectAlreadyChecked {
             do { try assertCurrentProject() } catch { return (nil, "The original project is no longer active.") }
         }
-        guard currentSheet() == nil else { return (nil, "A Final Cut dialog is blocking review.") }
+        guard currentSheet() == nil else { return (nil, "A Final Cut Pro dialog is blocking review.") }
         guard let expected = reviewOwnership.active, (try? selectionSnapshot()) == expected else {
-            return (nil, "The original selected clip is no longer available. Analyze again.")
+            return (nil, "The originally selected clip is no longer available. Analyze the clip again.")
         }
         let windows = workflowReviewWindows()
         guard windows.count == 1, let window = windows.first else {
@@ -197,7 +197,7 @@ extension FinalCutAXSession {
             }
         }
         guard !requireForeground || workflowForegroundIsOwned() else {
-            return (nil, "Another application owns the foreground; return to Final Cut before applying.")
+            return (nil, "Another application is in front. Return to Final Cut Pro before applying cuts.")
         }
         return (window, nil)
     }
@@ -208,6 +208,43 @@ extension FinalCutAXSession {
 
     func canAuthorizeWorkflowUpdate(view: UUID, edit: UUID) -> Bool {
         canAuthorizeWorkflowAction(view: view, gesture: edit, action: "update")
+    }
+
+    /// Setting edits may settle while the user has returned to this same
+    /// timeline. Automatic refresh observes only; it never activates a host or
+    /// exports, and another window/app cannot authorize the pending snapshot.
+    func canAuthorizeWorkflowAutomaticPreview(view: UUID, edit: UUID, settings: ReviewWireSettings,
+                                             output: SilentSnipOutputMode) -> Bool {
+        func connection() -> AXUIElement? {
+            guard !Task.isCancelled, application.isActive,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier else { return nil }
+            let observed = workflowConnection(view: view, requireFocused: false, requireForeground: true)
+            guard observed.failure == nil, let window = observed.window,
+                  let focused = Self.elementAttribute(root, kAXFocusedWindowAttribute),
+                  CFEqual(focused, window) || CFEqual(focused, mainWindow) else { return nil }
+            return window
+        }
+        guard let window = connection() else { return false }
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        let shouldContinue = { !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline }
+        let marker = WorkflowAutomaticPreviewSnapshot.marker(edit: edit)
+        let query = FinalCutAXQuery(role: kAXGroupRole, identifier: marker)
+        func group(in window: AXUIElement) -> FinalCutAXMatch<AXUIElement>? {
+            FinalCutAXSearch.find(root: window, query: query, maxDepth: 24, maxNodes: 3000,
+                read: { FinalCutAXAttributes.read($0, names: $1) },
+                children: { self.children($0) }, equals: { CFEqual($0, $1) }, shouldContinue: shouldContinue)
+        }
+        guard let pending = group(in: window),
+              WorkflowAutomaticPreviewSnapshot.matches(group: pending.element, edit: edit, settings: settings,
+                output: output, read: { FinalCutAXAttributes.read($0, names: $1) },
+                equals: { CFEqual($0, $1) }, shouldContinue: shouldContinue),
+              let freshWindow = connection(), CFEqual(freshWindow, window),
+              let freshGroup = group(in: freshWindow), CFEqual(freshGroup.element, pending.element) else { return false }
+        // The second connection supplies fresh project/selection/focus proof;
+        // the final native marker binds the exact values read above to this edit.
+        let last = FinalCutAXAttributes.read(freshGroup.element, names: [kAXRoleAttribute, kAXIdentifierAttribute])
+        return shouldContinue() && last[kAXRoleAttribute] as? String == kAXGroupRole
+            && last[kAXIdentifierAttribute] as? String == marker
     }
 
     private func canAuthorizeWorkflowAction(view: UUID, gesture: UUID, action: String) -> Bool {

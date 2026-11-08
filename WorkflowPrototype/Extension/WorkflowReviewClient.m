@@ -10,7 +10,7 @@ static NSString * const SSCommandName = @"local.silentsnip.review.command.v1";
 static NSString * const SSCapabilityName = @"local.silentsnip.workflow.capabilities.v1";
 static NSString * const SSHelperID = @"local.silentsnip.app";
 static NSString * const SSHostID = @"com.apple.FinalCut";
-static NSString * const SSInstallMessage = @"Install the updated Silent Snip app that supports the Workflow Extension, then Analyze again.";
+static NSString * const SSInstallMessage = @"Install the updated Silent Snip app, then try again.";
 
 static BOOL SSBoolean(id value) {
     return [value isKindOfClass:NSNumber.class] && CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID();
@@ -74,6 +74,7 @@ static NSString *SSResponseName(NSString *request) {
 @property (nonatomic, strong) NSDate *capabilityStarted;
 @property (nonatomic) BOOL helperLaunched;
 @property (nonatomic) BOOL cancelRequested;
+@property (nonatomic, copy) NSDictionary *pendingCancel;
 @property (nonatomic) BOOL locallyFailed;
 @property (nonatomic) BOOL observing;
 @property (nonatomic) BOOL analysisDispatched;
@@ -86,6 +87,13 @@ static NSString *SSResponseName(NSString *request) {
 @property (nonatomic) BOOL recoveryPending;
 @property (nonatomic, copy) NSString *recoveryGesture;
 @property (nonatomic) NSUInteger settingsSequence;
+@property (nonatomic) NSUInteger settingsDraftGeneration;
+@property (nonatomic) NSUInteger automaticSettingsDraftGeneration;
+@property (nonatomic) NSUInteger automaticSettingsSequence;
+@property (nonatomic, copy) NSString *automaticSettingsEdit;
+@property (nonatomic, copy) NSDictionary *automaticSettingsValues;
+@property (nonatomic, copy) NSString *rejectedAutomaticSettingsEdit;
+@property (nonatomic, strong) NSNumber *rejectedAutomaticSettingsSequence;
 @property (nonatomic, copy) NSNumber *navigationRevision;
 @end
 
@@ -119,6 +127,28 @@ static NSString *SSResponseName(NSString *request) {
     return !self.recoveryOnly && self.requestID && !self.busy && !self.locallyFailed && !self.connection.timedOut &&
         !self.cancelRequested && !self.connection.pendingSelection && self.connection.revision &&
         [self.connection.state isEqual:SilentSnipReviewStateReview] && [self.response[@"canUpdateCuts"] isEqual:@YES];
+}
+- (BOOL)automaticPreviewAvailable {
+    return !self.recoveryOnly && self.requestID && !self.locallyFailed && !self.connection.timedOut &&
+        !self.cancelRequested && !SilentSnipReviewStateIsTerminal(self.connection.state) &&
+        [self.response[@"automaticPreviewAvailable"] isEqual:@YES];
+}
+- (BOOL)updatingCuts {
+    return self.automaticSettingsEdit != nil && !self.locallyFailed && !self.connection.timedOut &&
+        !self.cancelRequested && !SilentSnipReviewStateIsTerminal(self.connection.state);
+}
+- (BOOL)hostIsAlreadyFrontmost {
+    NSArray<NSRunningApplication *> *hosts = [self runningHostApplications];
+    NSRunningApplication *host = hosts.count == 1 ? hosts.firstObject : nil;
+    NSRunningApplication *front = [self frontmostApplication];
+    return host && !host.terminated && host.processIdentifier > 0 && [host.bundleIdentifier isEqual:SSHostID] &&
+        front.processIdentifier == host.processIdentifier && [front.bundleIdentifier isEqual:SSHostID];
+}
+- (void)clearAutomaticUpdate {
+    self.automaticSettingsEdit = nil;
+    self.automaticSettingsValues = nil;
+    self.automaticSettingsSequence = 0;
+    self.automaticSettingsDraftGeneration = 0;
 }
 - (BOOL)canHighlight {
     return !self.settingsDirty && !self.recoveryOnly && self.canChangeSelection && [self.response[@"canHighlight"] isEqual:@YES];
@@ -255,7 +285,7 @@ static NSString *SSResponseName(NSString *request) {
         dispatch_async(dispatch_get_main_queue(), ^{
             NSError *result = error;
             if (!result && ![self application:app matchesPinnedURL:url]) result = [NSError errorWithDomain:@"SilentSnipWorkflow" code:1
-                userInfo:@{NSLocalizedDescriptionKey: @"The launched Silent Snip helper did not match the pinned installation."}];
+                userInfo:@{NSLocalizedDescriptionKey: @"Silent Snip could not verify the app that opened. Reopen the installed app and try again."}];
             completion(result);
         });
     }];
@@ -268,7 +298,7 @@ static NSString *SSResponseName(NSString *request) {
         dispatch_async(dispatch_get_main_queue(), ^{
             NSError *result = error;
             if (!result && ![self application:app matchesPinnedURL:url]) result = [NSError errorWithDomain:@"SilentSnipWorkflow" code:1
-                userInfo:@{NSLocalizedDescriptionKey: @"The Silent Snip request was delivered to an unexpected application."}];
+                userInfo:@{NSLocalizedDescriptionKey: @"The request was sent to a different app. Reopen the installed Silent Snip app and try again."}];
             completion(result);
         });
     }];
@@ -321,6 +351,15 @@ static NSString *SSResponseName(NSString *request) {
     value[@"updateCutsAvailable"] = @(!self.recoveryOnly && !self.locallyFailed && !self.connection.timedOut &&
         [self.response[@"canUpdateCuts"] isEqual:@YES]);
     value[@"canHighlight"] = @(self.canHighlight);
+    value[@"automaticPreviewAvailable"] = @(self.automaticPreviewAvailable);
+    value[@"updatingCuts"] = @(self.updatingCuts);
+    value[@"settingsDirty"] = @(self.settingsDirty);
+    [value removeObjectForKey:@"rejectedSettingsEdit"];
+    [value removeObjectForKey:@"rejectedSettingsSequence"];
+    if (self.rejectedAutomaticSettingsEdit) {
+        value[@"rejectedSettingsEdit"] = self.rejectedAutomaticSettingsEdit;
+        value[@"rejectedSettingsSequence"] = self.rejectedAutomaticSettingsSequence;
+    }
     value[@"verificationOnly"] = @(self.recoveryOnly);
     if (self.localMessage) value[@"message"] = self.localMessage;
     if (self.update) self.update(value);
@@ -332,6 +371,8 @@ static NSString *SSResponseName(NSString *request) {
     self.connection.pendingSelection = nil;
     self.connection.pendingRetry = nil;
     self.connection.pendingSettings = nil;
+    self.pendingCancel = nil;
+    [self clearAutomaticUpdate];
     self.navigationRevision = nil;
     self.capabilityNonce = nil;
     self.activationPending = NO;
@@ -342,9 +383,9 @@ static NSString *SSResponseName(NSString *request) {
 
 - (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName
                   settings:(NSDictionary *)settings gesture:(NSString *)gesture {
-    if (self.busy) { if (self.failure) self.failure(@"Wait for the current Silent Snip operation to finish."); return NO; }
+    if (self.busy) { if (self.failure) self.failure(@"Wait for Silent Snip to finish the current task."); return NO; }
     if (!SSUUID(self.viewID) || !SSUUID(gesture) || !SSProject(libraryURL, projectUID, projectName) || !SSSettings(settings)) {
-        if (self.failure) self.failure(@"Select a verified Final Cut project and valid settings before Analyze."); return NO;
+        if (self.failure) self.failure(@"Open a project in Final Cut Pro and check the settings before clicking Analyze Audio."); return NO;
     }
     return [self beginRequestWithFields:@{@"view": self.viewID, @"gesture": gesture,
         @"library": libraryURL.absoluteString, @"project": projectUID, @"projectName": projectName,
@@ -479,10 +520,16 @@ static NSString *SSResponseName(NSString *request) {
     if (![states containsObject:value[@"state"]]) return NO;
     for (NSString *key in @[@"canApply", @"canChangeSelection", @"canCancel", @"canHighlight"])
         if (!SSBoolean(value[key])) return NO;
-    for (NSString *key in @[@"canRetryVerification", @"previewVisible", @"provisional", @"canUpdateCuts", @"usesAudioSnapshot"])
+    for (NSString *key in @[@"canRetryVerification", @"previewVisible", @"provisional", @"canUpdateCuts", @"usesAudioSnapshot", @"automaticPreviewAvailable"])
         if (value[key] && !SSBoolean(value[key])) return NO;
     for (NSString *key in @[@"summary", @"targetClipName"])
         if (value[key] && !SSDisplayText(value[key], 16384)) return NO;
+    if (value[@"settingsEdit"] && !SSUUID(value[@"settingsEdit"])) return NO;
+    if ((value[@"rejectedSettingsEdit"] != nil) != (value[@"rejectedSettingsSequence"] != nil)) return NO;
+    if (value[@"rejectedSettingsEdit"] && (!SSUUID(value[@"rejectedSettingsEdit"]) ||
+        ![value[@"rejectedSettingsSequence"] isKindOfClass:NSNumber.class] ||
+        !SSInteger(value[@"rejectedSettingsSequence"], [value[@"rejectedSettingsSequence"] longLongValue]) ||
+        [value[@"rejectedSettingsSequence"] longLongValue] <= 0)) return NO;
     id progress = value[@"progress"];
     if (progress && (![progress isKindOfClass:NSNumber.class] || SSBoolean(progress) || !isfinite([progress doubleValue]) ||
         [progress doubleValue] < 0 || [progress doubleValue] > 1)) return NO;
@@ -511,9 +558,62 @@ static NSString *SSResponseName(NSString *request) {
     if (![self validResponse:value]) return;
     if (SilentSnipReviewStateIsTerminal(self.connection.state) && !self.connection.pendingRetry) return;
     if (self.connection.pendingRetry && !SilentSnipReviewStateIsTerminal(value[@"state"]) && ![value[@"state"] isEqual:@"verifying"]) return;
+    // A declined automatic edit is a read-only acknowledgment of that exact
+    // nonce/sequence, not a new accepted review revision. Handle it before the
+    // shared connection's ordinary same-revision heartbeat deduplication.
+    if (value[@"rejectedSettingsEdit"]) {
+        BOOL current = [value[@"rejectedSettingsEdit"] isEqual:self.automaticSettingsEdit] &&
+            [value[@"rejectedSettingsSequence"] isEqual:@(self.automaticSettingsSequence)] &&
+            [self.connection.pendingSettings[@"settingsEdit"] isEqual:self.automaticSettingsEdit] &&
+            [self.connection.pendingSettings[@"automaticPreview"] isEqual:@YES] &&
+            [@[SilentSnipReviewStateReview, SilentSnipReviewStateRecalculating] containsObject:value[@"state"]] &&
+            [value[@"revision"] compare:self.connection.revision] != NSOrderedAscending;
+        if (!current) {
+            if (!self.automaticSettingsEdit && !self.connection.pendingSettings &&
+                [value[@"rejectedSettingsEdit"] isEqual:self.rejectedAutomaticSettingsEdit] &&
+                [value[@"rejectedSettingsSequence"] isEqual:self.rejectedAutomaticSettingsSequence] &&
+                [value[@"revision"] compare:self.connection.revision] != NSOrderedAscending)
+                self.connection.lastResponse = [self now];
+            return;
+        }
+        self.rejectedAutomaticSettingsEdit = self.automaticSettingsEdit;
+        self.rejectedAutomaticSettingsSequence = @(self.automaticSettingsSequence);
+        self.settingsDirty = YES;
+        self.connection.pendingSettings = nil;
+        self.connection.awaitingResponse = NO;
+        self.connection.lastResponse = [self now];
+        [self clearAutomaticUpdate];
+        NSDictionary *newer = [self.connection acceptNotification:notification];
+        if (newer) self.response = newer;
+        self.connection.lastResponse = [self now];
+        self.connection.operationBusy = SilentSnipReviewStateIsBusy(value[@"state"]);
+        self.localMessage = value[@"message"];
+        [self publish];
+        return;
+    }
     NSDictionary *accepted = [self.connection acceptNotification:notification];
     if (!accepted) return;
     self.response = accepted;
+    BOOL hideSupersededPreview = NO;
+    if (self.automaticSettingsEdit && [accepted[@"settingsEdit"] isEqual:self.automaticSettingsEdit] &&
+        [accepted[@"state"] isEqual:SilentSnipReviewStateReview] && ![accepted[@"provisional"] isEqual:@YES]) {
+        NSDictionary *wire = accepted[@"settings"];
+        NSDictionary *wanted = self.automaticSettingsValues;
+        BOOL sameSnapshot = [wire isKindOfClass:NSDictionary.class] &&
+            [wire[@"threshold"] isEqual:wanted[@"thresholdDBFS"]] &&
+            [wire[@"minimum"] isEqual:wanted[@"minimumSilenceDuration"]] &&
+            [wire[@"before"] isEqual:wanted[@"beforeSpeechPadding"]] &&
+            [wire[@"after"] isEqual:wanted[@"afterSpeechPadding"]] &&
+            [accepted[@"output"] isEqual:wanted[@"outputMode"]];
+        BOOL newestDraft = self.settingsDraftGeneration == self.automaticSettingsDraftGeneration;
+        self.settingsDirty = !sameSnapshot || !newestDraft;
+        hideSupersededPreview = self.settingsDirty;
+        if (!sameSnapshot) {
+            self.rejectedAutomaticSettingsEdit = self.automaticSettingsEdit;
+            self.rejectedAutomaticSettingsSequence = @(self.automaticSettingsSequence);
+        }
+        [self clearAutomaticUpdate];
+    }
     if (self.navigationRevision && [accepted[@"revision"] compare:self.navigationRevision] == NSOrderedDescending) self.navigationRevision = nil;
     if (!self.activationPending) self.localMessage = nil;
     if (self.connection.applying && ([accepted[@"state"] isEqual:@"applying"] || SilentSnipReviewStateIsTerminal(accepted[@"state"]))) {
@@ -524,9 +624,22 @@ static NSString *SSResponseName(NSString *request) {
     self.connection.operationBusy = SilentSnipReviewStateIsBusy(accepted[@"state"]);
     if (SilentSnipReviewStateIsTerminal(accepted[@"state"])) {
         self.cancelRequested = NO;
+        self.pendingCancel = nil;
+        [self clearAutomaticUpdate];
         [self.timer invalidate]; self.timer = nil;
     }
+    NSUInteger generation = self.generation;
+    NSString *request = self.requestID;
+    // Publishing can synchronously dispatch the next coalesced draft. Pin this
+    // hide to that draft's prospective sequence before its send increments it.
+    NSDictionary *hide = hideSupersededPreview && self.settingsSequence < NSIntegerMax
+        ? @{@"version": @1, @"request": request, @"command": @"preview", @"included": @NO,
+            @"localPreview": @YES, @"expectedRevision": accepted[@"revision"], @"view": self.viewID,
+            @"settingsSequence": @(self.settingsSequence + 1)} : nil;
     [self publish];
+    if (hide && generation == self.generation && [request isEqual:self.requestID] &&
+        self.settingsDirty && !self.cancelRequested && !self.locallyFailed)
+        [self send:hide name:SSCommandName];
 }
 - (void)poll {
     if (!self.requestID || self.locallyFailed || self.activationPending) return;
@@ -537,8 +650,17 @@ static NSString *SSResponseName(NSString *request) {
         if (self.helperLaunched) [self send:@{@"version": @1, @"view": self.viewID, @"nonce": self.capabilityNonce} name:SSCapabilityName];
         return;
     }
-    if ([self.connection hasTimedOutAt:[self now]]) { [self fail:@"Silent Snip stopped responding. Check Final Cut before starting another operation."]; return; }
+    if ([self.connection hasTimedOutAt:[self now]]) { [self fail:@"Silent Snip stopped responding. Check Final Cut Pro before starting another task."]; return; }
     if (self.recoveryPending) return;
+    if (self.pendingCancel) {
+        // Cancellation is idempotent and bound to this exact request. A lost
+        // notification must not leave a live review permanently locked while
+        // ordinary status heartbeats continue to keep the connection alive.
+        NSDictionary *command = self.pendingCancel;
+        NSUInteger generation = self.generation;
+        [self send:command name:SSCommandName];
+        if (generation != self.generation || self.pendingCancel != command || self.locallyFailed) return;
+    }
     for (NSDictionary *command in self.connection.commandsToRetry) [self send:command name:SSCommandName];
     [self send:@{@"version": @1, @"request": self.requestID, @"command": @"status"} name:SSCommandName];
 }
@@ -559,16 +681,68 @@ static NSString *SSResponseName(NSString *request) {
 }
 - (BOOL)selectAll:(BOOL)included { return [self selection:@{@"command": included ? @"selectAll" : @"deselectAll"}]; }
 - (void)markSettingsDirty {
-    if (self.busy || self.recoveryOnly || self.settingsDirty || !self.requestID ||
-        ![self.connection.state isEqual:SilentSnipReviewStateReview]) return;
+    if ((self.busy && !self.updatingCuts) || self.recoveryOnly || !self.requestID || self.cancelRequested ||
+        self.locallyFailed || self.connection.timedOut ||
+        (![self.connection.state isEqual:SilentSnipReviewStateReview] && !self.updatingCuts)) return;
+    self.settingsDraftGeneration += 1;
+    BOOL alreadyDirty = self.settingsDirty;
+    BOOL supersedingUpdate = self.updatingCuts;
     self.settingsDirty = YES;
-    self.connection.pendingSelection = nil;
-    NSDictionary *command = @{@"version": @1, @"request": self.requestID, @"command": @"preview", @"included": @NO,
-        @"localPreview": @YES, @"expectedRevision": self.connection.revision};
+    if (alreadyDirty && !supersedingUpdate) return;
+    // Inclusion edits already in flight must acknowledge their revision before
+    // the coalesced settings snapshot can bind a new recalculation to it.
+    if (!self.automaticPreviewAvailable) self.connection.pendingSelection = nil;
+    NSDictionary *command = self.settingsSequence < NSIntegerMax
+        ? @{@"version": @1, @"request": self.requestID, @"command": @"preview", @"included": @NO,
+            @"localPreview": @YES, @"expectedRevision": self.connection.revision, @"view": self.viewID,
+            @"settingsSequence": @(self.settingsSequence + 1)} : nil;
     NSUInteger generation = self.generation;
-    [self publish];
-    if (generation == self.generation && self.settingsDirty && !self.locallyFailed)
+    if (!alreadyDirty) [self publish];
+    if (command && generation == self.generation && self.settingsDirty && !self.locallyFailed && !self.cancelRequested)
         [self send:command name:SSCommandName];
+}
+- (BOOL)automaticallyUpdateCutsWithSettings:(NSDictionary *)settings edit:(NSString *)edit {
+    if (!self.automaticPreviewAvailable || !self.canUpdateCuts || !self.settingsDirty ||
+        self.automaticSettingsEdit || !SSUUID(edit) || !SSSettings(settings) ||
+        self.settingsSequence >= NSIntegerMax || ![self hostIsAlreadyFrontmost]) return NO;
+    NSDictionary *values = @{@"thresholdDBFS": settings[@"thresholdDBFS"],
+        @"minimumSilenceDuration": settings[@"minimumSilenceDuration"],
+        @"beforeSpeechPadding": settings[@"beforeSpeechPadding"],
+        @"afterSpeechPadding": settings[@"afterSpeechPadding"], @"outputMode": [settings[@"outputMode"] copy]};
+    NSNumber *revision = self.connection.revision;
+    self.settingsSequence += 1;
+    self.automaticSettingsSequence = self.settingsSequence;
+    self.automaticSettingsDraftGeneration = self.settingsDraftGeneration;
+    self.automaticSettingsEdit = [edit copy];
+    self.automaticSettingsValues = values;
+    self.rejectedAutomaticSettingsEdit = nil;
+    self.rejectedAutomaticSettingsSequence = nil;
+    NSDictionary *command = @{@"version": @1, @"request": self.requestID, @"command": @"recalculate",
+        @"expectedRevision": revision, @"view": self.viewID, @"settingsEdit": edit,
+        @"settingsSequence": @(self.settingsSequence), @"verifySettings": @YES, @"localPreview": @YES,
+        @"automaticPreview": @YES,
+        @"settings": @{@"threshold": values[@"thresholdDBFS"], @"minimum": values[@"minimumSilenceDuration"],
+            @"before": values[@"beforeSpeechPadding"], @"after": values[@"afterSpeechPadding"]},
+        @"output": values[@"outputMode"]};
+    self.connection.pendingSettings = command;
+    self.connection.awaitingResponse = YES;
+    self.connection.lastResponse = [self now];
+    self.localMessage = @"Updating cuts from the last analyzed audio…";
+    NSUInteger generation = self.generation, draft = self.settingsDraftGeneration;
+    [self publish];
+    if (generation != self.generation || self.cancelRequested || self.locallyFailed ||
+        self.connection.pendingSettings != command || draft != self.settingsDraftGeneration || ![self hostIsAlreadyFrontmost]) {
+        if (generation == self.generation && self.connection.pendingSettings == command) {
+            self.connection.pendingSettings = nil;
+            self.connection.awaitingResponse = NO;
+            [self clearAutomaticUpdate];
+            self.localMessage = nil;
+            [self publish];
+        }
+        return NO;
+    }
+    [self send:command name:SSCommandName];
+    return YES;
 }
 - (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture {
     if (!self.canUpdateCuts || !SSUUID(gesture) || !SSSettings(settings)) return NO;
@@ -578,7 +752,7 @@ static NSString *SSResponseName(NSString *request) {
     NSDictionary *values = [settings copy];
     [self prepareHostForUserRequest:^(NSError *error) {
         if (error || ![self.connection.revision isEqual:revision] || !self.canUpdateCuts) {
-            self.localMessage = error.localizedDescription ?: @"The review changed. Update cuts again from the current review.";
+            self.localMessage = error.localizedDescription ?: @"The review changed. Review the current ranges before trying again.";
             [self publish]; return;
         }
         self.settingsSequence += 1;
@@ -607,7 +781,7 @@ static NSString *SSResponseName(NSString *request) {
     NSNumber *revision = self.connection.revision;
     [self prepareHostForUserRequest:^(NSError *error) {
         if (error || ![self.connection.revision isEqual:revision] || !self.canHighlight) {
-            self.localMessage = error.localizedDescription ?: @"The review changed. Select the cut again.";
+            self.localMessage = error.localizedDescription ?: @"The review changed. Review the current ranges before trying again.";
             [self publish]; return;
         }
         self.navigationRevision = revision;
@@ -628,7 +802,7 @@ static NSString *SSResponseName(NSString *request) {
     NSNumber *revision = self.connection.revision;
     [self prepareHostForUserRequest:^(NSError *error) {
         if (error || ![self.connection.revision isEqual:revision] || !self.canApply) {
-            self.localMessage = error.localizedDescription ?: @"The review changed before Apply. Review the current cuts, then try again.";
+            self.localMessage = error.localizedDescription ?: @"The review changed before Apply Cuts. Review the current ranges, then try again.";
             [self publish];
             return;
         }
@@ -657,7 +831,7 @@ static NSString *SSResponseName(NSString *request) {
     NSNumber *revision = self.connection.revision;
     [self prepareHostForUserRequest:^(NSError *error) {
         if (error || ![self.connection.revision isEqual:revision] || ![self canRetryVerification]) {
-            self.localMessage = error.localizedDescription ?: @"The verification result changed. Check the current result before retrying.";
+            self.localMessage = error.localizedDescription ?: @"The result changed. Review it in Final Cut Pro before clicking Retry Verification.";
             [self publish];
             return;
         }
@@ -680,7 +854,7 @@ static NSString *SSResponseName(NSString *request) {
     self.activationPending = NO;
     self.localMessage = nil;
     if (SilentSnipReviewStateIsTerminal(self.connection.state)) {
-        self.localMessage = @"Cancelled before verification retry started.";
+        self.localMessage = @"Verification retry canceled before it started.";
         [self publish];
         return;
     }
@@ -689,6 +863,9 @@ static NSString *SSResponseName(NSString *request) {
     self.connection.pendingRetry = nil;
     self.connection.pendingApply = nil;
     self.connection.pendingSettings = nil;
+    [self clearAutomaticUpdate];
+    self.rejectedAutomaticSettingsEdit = nil;
+    self.rejectedAutomaticSettingsSequence = nil;
     self.navigationRevision = nil;
     self.capabilityNonce = nil;
     if (!self.analysisDispatched) {
@@ -696,13 +873,14 @@ static NSString *SSResponseName(NSString *request) {
         self.connection.awaitingResponse = NO;
         self.connection.state = SilentSnipReviewStateCancelled;
         self.response = @{@"version": @1, @"request": self.requestID, @"revision": @0,
-            @"state": @"cancelled", @"message": @"Cancelled before analysis started.", @"cuts": @[], @"canApply": @NO};
+            @"state": @"cancelled", @"message": @"Analysis canceled before it started.", @"cuts": @[], @"canApply": @NO};
         self.cancelRequested = NO;
         [self.timer invalidate]; self.timer = nil;
         [self publish];
         return;
     }
-    [self send:@{@"version": @1, @"request": self.requestID, @"command": @"cancel"} name:SSCommandName];
+    self.pendingCancel = @{@"version": @1, @"request": self.requestID, @"command": @"cancel"};
+    [self send:self.pendingCancel name:SSCommandName];
     [self publish];
 }
 - (void)detach {
@@ -712,9 +890,13 @@ static NSString *SSResponseName(NSString *request) {
     self.connection = nil; self.response = nil;
     self.helperURL = nil; self.analysisURL = nil; self.capabilityNonce = nil; self.capabilityStarted = nil;
     self.helperLaunched = NO; self.cancelRequested = NO; self.locallyFailed = NO;
+    self.pendingCancel = nil;
     self.analysisDispatched = NO;
     self.settingsDirty = NO; self.recoveryOnly = NO; self.recoveryPending = NO;
-    self.settingsSequence = 0; self.navigationRevision = nil; self.recoveryGesture = nil;
+    self.settingsSequence = 0; self.settingsDraftGeneration = 0;
+    [self clearAutomaticUpdate];
+    self.rejectedAutomaticSettingsEdit = nil; self.rejectedAutomaticSettingsSequence = nil;
+    self.navigationRevision = nil; self.recoveryGesture = nil;
     self.activationPending = NO; self.activationToken += 1; self.localMessage = nil;
 }
 - (void)dealloc {

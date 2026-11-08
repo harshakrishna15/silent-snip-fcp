@@ -117,6 +117,6 @@ enum XMLProjectApply {
 struct XMLProjectBaselineError: LocalizedError {
     let changes: [String]
     var errorDescription: String? {
-        "The project changed after Analyze (\(changes.joined(separator: "; "))). Analyze again before applying cuts. No edited project was generated."
+        "The project changed after analysis (\(changes.joined(separator: "; "))). Click Analyze Again before applying cuts. No cleaned project was created."
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import SilentSnipMac
 
@@ -9,6 +10,55 @@ final class MediaContentSnapshotTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: directory) }
+
+    func testFileStampRejectsNonregularSourcesBeforeReading() throws {
+        XCTAssertThrowsError(try MediaContentSnapshot.FileStamp(directory)) {
+            guard case ProjectAnalysisError.changedRenderArtifact = $0 else { return XCTFail("Unexpected error: \($0)") }
+        }
+        try withFiniteFIFO { url in
+            XCTAssertThrowsError(try MediaContentSnapshot.FileStamp(url)) {
+                guard case ProjectAnalysisError.changedRenderArtifact = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+        }
+    }
+
+    func testContentHashRejectsPipeInsteadOfWaitingForAudio() throws {
+        try withFiniteFIFO { url in
+            XCTAssertThrowsError(try MediaContentSnapshot.contentHash(at: url)) {
+                guard case ProjectAnalysisError.changedRenderArtifact = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+        }
+    }
+
+    func testSourceReplacedByPipeStopsHistoricalValidation() async throws {
+        let source = directory.appendingPathComponent("replaced.wav")
+        try Data([1, 2, 3]).write(to: source)
+        let snapshot = try await MediaContentSnapshot.capture([source])
+        try FileManager.default.removeItem(at: source)
+        try withFiniteFIFO(at: source) { _ in
+            // The historical preflight rejects this before a host export or a
+            // content read, without adopting the replacement's identity.
+            XCTAssertThrowsError(try snapshot.prepareValidationRead()) {
+                guard case ProjectAnalysisError.changedRenderArtifact = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+        }
+    }
+
+    /// A temporary writer makes regressions fail with an assertion rather than
+    /// hanging the test runner in an old blocking open/read implementation.
+    private func withFiniteFIFO(at path: URL? = nil, _ body: (URL) throws -> Void) throws {
+        let url = path ?? directory.appendingPathComponent("pipe-\(UUID()).wav")
+        XCTAssertEqual(mkfifo(url.path, 0o600), 0)
+        let keeper = open(url.path, O_RDWR | O_NONBLOCK | O_CLOEXEC)
+        guard keeper >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        let released = DispatchSemaphore(value: 0)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            close(keeper)
+            released.signal()
+        }
+        defer { XCTAssertEqual(released.wait(timeout: .now() + 1), .success) }
+        try body(url)
+    }
 
     @MainActor func testRepeatedSourcesAndAliasesHashOnceOffMainThread() async throws {
         let source = directory.appendingPathComponent("source.wav")
@@ -181,6 +231,37 @@ final class MediaContentSnapshotTests: XCTestCase {
         try Data([3, 2, 1]).write(to: source)
         do { try await legacy.validate(); XCTFail("Legacy recovery must still hash source contents") }
         catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
+    func testAdditionalCaptureCannotRebindHistoricalSnapshotToANewerGuard() async throws {
+        let source = directory.appendingPathComponent("source.wav")
+        let durable = directory.appendingPathComponent("durable.wav")
+        try Data([1, 2, 3]).write(to: source)
+        try Data([4, 5, 6]).write(to: durable)
+        let snapshot = try await MediaContentSnapshot.capture([source])
+        try Data([3, 2, 1]).write(to: source)
+        let newerGuard = try MediaContentSnapshot.prepareRead([source])
+        do {
+            _ = try await snapshot.capturingAdditionalFiles([durable.resolvingSymlinksInPath()], protectedBy: newerGuard,
+                hash: { _ in XCTFail("A newer metadata guard cannot stand in for the completed original read"); return "unexpected" })
+            XCTFail("Composition must bind the exact original guard, including historical mutation stamps")
+        } catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
+    func testAdditionalCaptureRejectsDifferentGuardReferencesWithEqualSourceContents() async throws {
+        let source = directory.appendingPathComponent("source.wav")
+        let equalOther = directory.appendingPathComponent("equal-other.wav")
+        let durable = directory.appendingPathComponent("durable.wav")
+        try Data([1, 2, 3]).write(to: source)
+        try Data([1, 2, 3]).write(to: equalOther)
+        try Data([4, 5, 6]).write(to: durable)
+        let snapshot = try await MediaContentSnapshot.capture([source])
+        let otherGuard = try MediaContentSnapshot.prepareRead([equalOther])
+        do {
+            _ = try await snapshot.capturingAdditionalFiles([durable.resolvingSymlinksInPath()], protectedBy: otherGuard,
+                hash: { _ in XCTFail("Exact original URLs and associations must match before added reads"); return "unexpected" })
+            XCTFail("Matching content at another URL cannot replace the source phase's identity")
+        } catch ProjectAnalysisError.changedRenderArtifact { }
     }
 
     private func removingFields(_ fields: [String], from snapshot: MediaContentSnapshot) throws -> MediaContentSnapshot {

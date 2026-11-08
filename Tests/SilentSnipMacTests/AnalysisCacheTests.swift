@@ -96,12 +96,14 @@ import XCTest
         XCTAssertTrue(reused.review.cuts.isEmpty,
             "A further local update must not switch from the bound 44.1 kHz project grid to the 48 kHz raw decoder grid")
     }
-    func testProcessingChangesInvalidateFullSemanticKey() async throws {
-        let data = xml(gate + secondGate), original = try await key(data)
+    func testSerializedAdjustmentsAndSourceChangesInvalidateEligibleKey() async throws {
+        let volume = "<adjust-volume amount=\"3dB\"/>"
+        let pan = "<adjust-panner mode=\"stereo\" amount=\"20\"/>"
+        let data = xml(volume + pan), original = try await key(data)
         XCTAssertNotNil(original)
         let text = String(decoding: data, as: UTF8.self)
-        for (before, after) in [("AQIDBA==", "BQYHCA=="), ("value=\"2\"", "value=\"6\""),
-            (gate + secondGate, secondGate + gate), (gate, ""), ("<filter-audio ref=\"gate\">", "<filter-audio ref=\"gate\" enabled=\"0\">"),
+        for (before, after) in [("amount=\"3dB\"", "amount=\"6dB\""), ("amount=\"20\"", "amount=\"40\""),
+            (volume + pan, pan + volume), (volume, ""),
             ("duration=\"5s\" audioRole", "duration=\"4s\" audioRole"), ("start=\"0s\" duration=\"5s\"", "start=\"1s\" duration=\"5s\""),
             ("audioRole=\"dialogue\"", "audioRole=\"music\"")] {
             XCTAssertTrue(text.contains(before))
@@ -110,21 +112,48 @@ import XCTest
         }
         for adjustment in ["<adjust-volume amount=\"3dB\"/>", "<adjust-volume amount=\"3dB\"><param key=\"amount\"><keyframeAnimation><keyframe time=\"0s\" value=\"0dB\"/></keyframeAnimation></param></adjust-volume>",
             "<adjust-panner mode=\"stereo\" amount=\"20\"/>", "<audio-channel-source srcCh=\"1\" role=\"dialogue\"/>", "<fadeIn type=\"linear\" duration=\"1s\"/>"] {
-            let updated = try await key(xml(adjustment + gate + secondGate))
+            let updated = try await key(xml(adjustment + volume + pan))
             XCTAssertNotEqual(original, updated)
         }
         let differentWindow = try await key(data, window: 0.02)
         XCTAssertNotEqual(original, differentWindow)
     }
-    func testUnknownAndPresetOnlyStateAlwaysRerenders() async throws {
-        for processing in ["<filter-audio ref=\"gate\"/>", "<filter-audio ref=\"gate\" presetID=\"Voice.aupreset\"/>",
+    func testEveryRenderingEffectAlwaysRerendersRegardlessOfSerializedState() async throws {
+        for processing in [gate, secondGate, gate + secondGate,
+            "<filter-audio ref=\"gate\"/>", "<filter-audio ref=\"gate\" presetID=\"Voice.aupreset\"/>",
+            "<filter-audio ref=\"gate\" name=\"Silent Snip Audio\" enabled=\"0\"><data key=\"effectState\">AQIDBA==</data></filter-audio>",
             "<filter-audio ref=\"third\"><data key=\"effectState\">AQID</data></filter-audio>",
             "<filter-audio ref=\"limiter\"/>", "<filter-audio ref=\"limiter\"><param key=\"gain\" value=\"2\"/></filter-audio>",
+            "<audio-channel-source srcCh=\"1\" role=\"dialogue\">\(gate)</audio-channel-source>",
             "<audio-channel-source srcCh=\"1\"><adjust-noiseReduction amount=\"20\"/></audio-channel-source>",
             "<adjust-noiseReduction amount=\"20\"/>"] {
             let value = try await key(xml(processing))
             XCTAssertNil(value)
         }
+    }
+
+    func testAHiddenEffectOnAnotherClipAlsoPreventsProjectRenderReuse() async throws {
+        let base = String(decoding: xml(), as: UTF8.self)
+        let data = Data(base.replacingOccurrences(of: "</spine>", with: """
+        <asset-clip ref="a" offset="5s" start="5s" duration="1s" audioRole="dialogue">\(gate)</asset-clip></spine>
+        """).replacingOccurrences(of: "sequence format=\"f\" duration=\"5s\"", with: "sequence format=\"f\" duration=\"6s\"").utf8)
+        let value = try await key(data)
+        XCTAssertNil(value, "An unchanged partial effect archive elsewhere cannot authorize reuse of native processed audio")
+    }
+
+    func testRenderingEffectMissCannotReuseAnEarlierEligibleMeasurement() async throws {
+        let clean = xml("<adjust-volume amount=\"3dB\"/>")
+        let original = try await analysis(clean, rendered: true)
+        let cache = AnalysisCache(storage: StorageCleanup(root: directory)); defer { cache.clear() }
+        try await cache.store(key: key(clean), analysis: original, directory: cacheDirectory)
+        XCTAssertTrue(cache.hasEntry)
+        let processed = xml(gate)
+        let doc = try document(processed), effectKey = try await key(processed)
+        XCTAssertNil(effectKey)
+        let reused = try await cache.reuse(key: effectKey, document: doc, target: doc.clips[0], settings: .defaults, jobID: UUID())
+        XCTAssertNil(reused)
+        XCTAssertFalse(cache.hasEntry)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
     func testSameSizeSourceReplacementInvalidatesDespiteSameDate() async throws {
         let data = xml(), original = try await key(data)
@@ -155,7 +184,7 @@ import XCTest
         source = oldSource
     }
     func testRenderedCopySurvivesShareCleanupButTamperingCausesMiss() async throws {
-        let data = xml(secondGate), original = try await analysis(data, rendered: true)
+        let data = xml("<adjust-volume amount=\"3dB\"/>"), original = try await analysis(data, rendered: true)
         let baseline = try await key(data)
         let cache = AnalysisCache(storage: StorageCleanup(root: directory)); defer { cache.clear() }
         try await cache.store(key: baseline, analysis: original, directory: cacheDirectory)
@@ -171,7 +200,7 @@ import XCTest
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
     func testCacheMissEvictsItsOwnedCopy() async throws {
-        let data = xml(secondGate), original = try await analysis(data, rendered: true)
+        let data = xml("<adjust-volume amount=\"3dB\"/>"), original = try await analysis(data, rendered: true)
         let cache = AnalysisCache(storage: StorageCleanup(root: directory)); defer { cache.clear() }
         try await cache.store(key: key(data), analysis: original, directory: cacheDirectory)
         let miss = try await cache.reuse(key: nil, document: original.document, target: original.target, settings: .defaults, jobID: UUID())
@@ -179,7 +208,7 @@ import XCTest
         XCTAssertFalse(FileManager.default.fileExists(atPath: cacheDirectory.appendingPathComponent("Cached-Processed-Audio.wav").path))
     }
     func testFailedCopyKeepsTheFileAlreadyAtItsDestination() async throws {
-        let data = xml(secondGate), original = try await analysis(data, rendered: true)
+        let data = xml("<adjust-volume amount=\"3dB\"/>"), original = try await analysis(data, rendered: true)
         let destination = cacheDirectory.appendingPathComponent("Cached-Processed-Audio.wav")
         let important = Data("User-provided file already here".utf8)
         try important.write(to: destination)
@@ -194,7 +223,7 @@ import XCTest
     }
 
     func testManualCleanupDropsOnlyTheOptionalAnalysisCache() async throws {
-        let data = xml(secondGate), original = try await analysis(data, rendered: true)
+        let data = xml("<adjust-volume amount=\"3dB\"/>"), original = try await analysis(data, rendered: true)
         let storage = StorageCleanup(root: directory), cache = AnalysisCache(storage: StorageCleanup(root: directory))
         let baseline = try await key(data)
         try await cache.store(key: baseline, analysis: original, directory: cacheDirectory)

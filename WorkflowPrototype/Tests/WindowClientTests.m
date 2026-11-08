@@ -43,6 +43,7 @@ static void unexpectedBoundary(void) {
 - (BOOL)canHighlight { unexpectedBoundary(); return NO; }
 - (void)markSettingsDirty { unexpectedBoundary(); }
 - (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
+- (BOOL)automaticallyUpdateCutsWithSettings:(NSDictionary *)settings edit:(NSString *)edit { unexpectedBoundary(); return NO; }
 - (BOOL)highlightCut:(NSString *)cutID { unexpectedBoundary(); return NO; }
 - (BOOL)verifyExistingResultURL:(NSURL *)resultURL libraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID
                   projectName:(NSString *)projectName gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
@@ -140,6 +141,9 @@ static void attachRenewDetachAndFreshNonce(void) {
     [value stop]; [value stop]; [value tick];
     require(value.posts.count == 4 && [packet(value,3)[@"command"] isEqual:@"detach"] && [packet(value,3)[@"nonce"] isEqual:attach[@"nonce"]] &&
         !value.observing && !value.timerActive && value.timerStops == 1 && [value.state isEqual:@"stopped"], @"Stop sends one matching detach and revokes observation and timer");
+    for (NSDictionary *post in value.posts)
+        require([[NSSet setWithArray:[post[@"packet"] allKeys]] isEqual:[NSSet setWithArray:@[@"version",@"command",@"view",@"nonce"]]],
+            @"Attach retries, renew, and detach retain the exact strict worker lease envelope");
     [value start]; [value completeHelper:nil];
     require(![packet(value,4)[@"nonce"] isEqual:attach[@"nonce"]], @"A new visible lease uses a fresh nonce");
     [value stop]; groups += 1;

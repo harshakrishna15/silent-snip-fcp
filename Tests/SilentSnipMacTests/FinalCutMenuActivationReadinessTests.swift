@@ -2,6 +2,54 @@ import XCTest
 @testable import SilentSnipMac
 
 final class FinalCutMenuActivationReadinessTests: XCTestCase {
+    func testAlreadyOpenedExactTargetDoesNotRequireOriginalProjectPin() throws {
+        XCTAssertTrue(try FinalCutMenuProjectTransition.openedOrAssertOriginal(opened: { true }, assertOriginal: {
+            XCTFail("An observed exact target handoff must not recheck the displaced source title")
+        }))
+    }
+
+    func testUnchangedOriginalContinuesWaitingForMenuCompletion() throws {
+        var observations = 0
+        var originalChecks = 0
+        XCTAssertFalse(try FinalCutMenuProjectTransition.openedOrAssertOriginal(opened: {
+            observations += 1; return false
+        }, assertOriginal: { originalChecks += 1 }))
+        XCTAssertEqual(observations, 1)
+        XCTAssertEqual(originalChecks, 1)
+    }
+
+    func testIntendedProjectArrivingBetweenAXReadsCompletesWithoutAnotherInput() throws {
+        var observations = 0
+        XCTAssertTrue(try FinalCutMenuProjectTransition.openedOrAssertOriginal(opened: {
+            observations += 1
+            return observations == 2
+        }, assertOriginal: { throw FinalCutCaptureError.changedProject }))
+        XCTAssertEqual(observations, 2)
+    }
+
+    func testUnrelatedProjectTransitionStillFailsTheOriginalPin() {
+        var observations = 0
+        XCTAssertThrowsError(try FinalCutMenuProjectTransition.openedOrAssertOriginal(opened: {
+            observations += 1; return false
+        }, assertOriginal: { throw FinalCutCaptureError.changedProject })) { error in
+            guard case FinalCutCaptureError.changedProject = error else {
+                return XCTFail("Expected strict unrelated-project rejection, received \(error)")
+            }
+        }
+        XCTAssertEqual(observations, 2)
+    }
+
+    func testFocusAndCancellationErrorsCannotBeExcusedByALaterProjectObservation() {
+        let failures: [Error] = [FinalCutCaptureError.unavailable("Focus changed"), CancellationError()]
+        for failure in failures {
+            var observations = 0
+            XCTAssertThrowsError(try FinalCutMenuProjectTransition.openedOrAssertOriginal(opened: {
+                observations += 1; return observations > 1
+            }, assertOriginal: { throw failure }))
+            XCTAssertEqual(observations, 1, "Only a changed original project permits the exact target recheck")
+        }
+    }
+
     func testObservedCompletionReturnsWithoutWaitingForSelectionOrGracePeriod() {
         XCTAssertTrue(FinalCutMenuActivationReadiness.isReady(completed: true, exactlySelected: false, elapsed: 0))
         XCTAssertTrue(FinalCutMenuActivationReadiness.isReady(completed: true, exactlySelected: true, elapsed: 0.01))

@@ -132,6 +132,147 @@ final class ImportedVerificationIOTests: XCTestCase {
         XCTAssertEqual(events.values.last, "validated2", "The final full-content check follows the recovered host export")
     }
 
+    @MainActor func testTimingDetailsPreserveConcurrentValidationAndSuccessfulReport() async throws {
+        let result = try prepare()
+        let verification = try await makeVerification(result)
+        let actual = try hostCopy(result.output.xmlData)
+        let clock = TimingClock()
+        let timing = AnalysisTiming(request: verification.request.id, clock: { clock.now })
+        timing.begin("importAndVerification")
+        let validation = ValidationCompletion()
+        var captures = 0
+        let report = try await verification.verify(capture: {
+            captures += 1
+            clock.advance(3)
+            guard try await validation.wait() else {
+                XCTFail("Timing must preserve concurrent source validation rather than serialize it after capture")
+                throw CocoaError(.fileReadUnknown)
+            }
+            return actual
+        }, restore: { _, _ in
+            XCTFail("Instrumentation cannot introduce a recovery write")
+        }, validateMedia: { media in
+            try await media.validate()
+            clock.advance(2)
+            await validation.finish()
+        }, timing: timing)
+
+        XCTAssertTrue(report.verified)
+        XCTAssertEqual(report.sourceMediaVerified, true)
+        XCTAssertEqual(captures, 1)
+        let recorded = timing.report(outcome: "verified")
+        XCTAssertEqual(recorded.totalSeconds, 5)
+        XCTAssertEqual(recorded.stages, ["importAndVerification": 5],
+            "Fine-grained observations must not replace or split the caller's critical-path stage")
+        XCTAssertGreaterThanOrEqual(recorded.details["verification.capture"] ?? -1, 3)
+        XCTAssertGreaterThanOrEqual(recorded.details["verification.mediaValidation"] ?? -1, 2)
+        for name in ["savedResultRead", "expectedParse", "sourceGuardSetup", "sourceSnapshot",
+                     "sourceGuard", "destination", "actualParse", "comparison", "reportWrite",
+                     "receipt", "recoveryPlan", "finalGuard"] {
+            XCTAssertNotNil(recorded.details["verification." + name], name)
+        }
+        XCTAssertEqual(recorded.counters["verification.readOnlyPhases"], 1)
+        XCTAssertEqual(recorded.counters["verification.captureCalls"], 1)
+        XCTAssertEqual(recorded.counters["verification.mediaValidationPasses"], 1)
+        XCTAssertNil(recorded.counters["verification.recoveryWrites"])
+        XCTAssertNil(recorded.counters["verification.ctimeRestarts"])
+    }
+
+    @MainActor func testTimingRecordsFailedCaptureWithoutRetryOrRecovery() async throws {
+        struct CaptureFailure: Error {}
+        let result = try prepare()
+        let verification = try await makeVerification(result)
+        let clock = TimingClock()
+        let timing = AnalysisTiming(request: verification.request.id, clock: { clock.now })
+        var captures = 0
+        do {
+            _ = try await verification.verify(capture: {
+                captures += 1
+                clock.advance(4)
+                throw CaptureFailure()
+            }, restore: { _, _ in
+                XCTFail("A failed native capture cannot authorize recovery")
+            }, timing: timing)
+            XCTFail("The original capture failure must escape")
+        } catch is CaptureFailure { }
+        let recorded = timing.report(outcome: "failed")
+        XCTAssertEqual(captures, 1)
+        XCTAssertEqual(recorded.details["verification.capture"], 4,
+            "Failed intervals remain visible rather than disappearing from timing")
+        XCTAssertEqual(recorded.counters["verification.captureCalls"], 1)
+        XCTAssertNil(recorded.counters["verification.recoveryWrites"])
+        XCTAssertNil(recorded.counters["verification.ctimeRestarts"])
+        let reportURL = result.outputURL.deletingLastPathComponent().appendingPathComponent("Import-Verification.json")
+        let report = try JSONDecoder().decode(ProjectRoundTripReport.self, from: Data(contentsOf: reportURL))
+        XCTAssertFalse(report.verified)
+        XCTAssertEqual(report.sourceMediaVerified, false)
+    }
+
+    @MainActor func testTimingSeparatesRecoveryWorkAndRetainsPostRecoveryValidation() async throws {
+        let result = try prepare()
+        let verification = try await makeVerification(result)
+        let clock = TimingClock()
+        let timing = AnalysisTiming(request: verification.request.id, clock: { clock.now })
+        var actual = try hostCopy(result.output.xmlData, strippingSettings: true)
+        var captures = 0, restores = 0
+        let report = try await verification.verify(capture: {
+            captures += 1
+            clock.advance(2)
+            return actual
+        }, restore: { correction, _ in
+            restores += 1
+            clock.advance(1)
+            actual = try AudioControllerSettings.embedding(correction.settings, in: actual,
+                selection: .init(timelineRange: correction.clip.timelineRange))
+        }, validateMedia: { media in
+            try await media.validate()
+            clock.advance(3)
+        }, timing: timing)
+        XCTAssertTrue(report.verified)
+        XCTAssertEqual(report.controllerSettingsPreserved, true)
+        XCTAssertEqual(report.sourceMediaVerified, true)
+        XCTAssertEqual(captures, 2)
+        XCTAssertGreaterThan(restores, 0)
+        let recorded = timing.report(outcome: "verified")
+        XCTAssertEqual(recorded.counters["verification.captureCalls"], 2)
+        XCTAssertEqual(recorded.counters["verification.recoveryWrites"], restores)
+        XCTAssertEqual(recorded.counters["verification.mediaValidationPasses"], 2)
+        XCTAssertGreaterThanOrEqual(recorded.details["verification.recoveryWrite"] ?? -1, Double(restores))
+        XCTAssertEqual(recorded.details["verification.recoveryCapture"], 2)
+        XCTAssertEqual(recorded.details["verification.recoveryValidation"], 3)
+    }
+
+    @MainActor func testTimingRecordsCancelledCaptureWithoutAnotherAttempt() async throws {
+        let result = try prepare()
+        let verification = try await makeVerification(result)
+        let clock = TimingClock()
+        let timing = AnalysisTiming(request: verification.request.id, clock: { clock.now })
+        var captures = 0
+        do {
+            _ = try await verification.verify(capture: {
+                captures += 1
+                clock.advance(1)
+                throw CancellationError()
+            }, restore: { _, _ in
+                XCTFail("Cancellation cannot authorize a recovery write")
+            }, timing: timing)
+            XCTFail("Cancellation must escape unchanged")
+        } catch is CancellationError { }
+        let recorded = timing.report(outcome: "cancelled")
+        XCTAssertEqual(captures, 1)
+        XCTAssertEqual(recorded.details["verification.capture"], 1)
+        XCTAssertEqual(recorded.counters["verification.captureCalls"], 1)
+        XCTAssertNil(recorded.counters["verification.recoveryWrites"])
+        XCTAssertNil(recorded.counters["verification.ctimeRestarts"])
+    }
+
+    private final class TimingClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0.0
+        var now: Double { lock.lock(); defer { lock.unlock() }; return value }
+        func advance(_ seconds: Double) { lock.lock(); defer { lock.unlock() }; value += seconds }
+    }
+
     private final class Events: @unchecked Sendable {
         private let lock = NSLock()
         private var storage: [String] = []

@@ -4,9 +4,250 @@
 #import <QuartzCore/QuartzCore.h>
 #import <ProExtension/ProExtension.h>
 #import <ProExtensionHost/ProExtensionHost.h>
+#import <math.h>
+#import <os/log.h>
 #import "SSWorkflowPersistence-Swift.h"
 #import "WorkflowReviewClient.h"
 #import "WorkflowWindowClient.h"
+
+static NSCursor *SSWorkflowHostArrowCursor(void) {
+    NSArray<NSRunningApplication *> *hosts =
+        [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.FinalCut"];
+    NSRunningApplication *host = hosts.count == 1 ? hosts.firstObject : nil;
+    NSURL *hostURL = host.bundleURL;
+    if (!host || host.terminated || !hostURL.isFileURL ||
+        ![host.bundleIdentifier isEqual:@"com.apple.FinalCut"]) return nil;
+    NSBundle *hostBundle = [NSBundle bundleWithURL:hostURL];
+    if (![hostBundle.bundleIdentifier isEqual:@"com.apple.FinalCut"]) return nil;
+
+    // Read the running host's artwork as data; never load its framework code.
+    // These resource names can change between Final Cut versions, so missing
+    // or inaccessible data falls back to AppKit's standard arrow.
+    NSURL *frameworkURL = [hostURL URLByAppendingPathComponent:@"Contents/Frameworks/LunaKit.framework" isDirectory:YES];
+    NSBundle *artworkBundle = [NSBundle bundleWithURL:frameworkURL];
+    NSURL *metadataURL = [artworkBundle URLForResource:@"LKCursor" withExtension:@"plist"];
+    NSData *metadataData = metadataURL ? [NSData dataWithContentsOfURL:metadataURL options:0 error:NULL] : nil;
+    id metadata = metadataData ? [NSPropertyListSerialization propertyListWithData:metadataData
+        options:NSPropertyListImmutable format:NULL error:NULL] : nil;
+    if (![metadata isKindOfClass:NSDictionary.class]) return nil;
+    id arrow = metadata[@"ArrowCursor"];
+    if (![arrow isKindOfClass:NSDictionary.class]) return nil;
+    id hotspotX = arrow[@"hotspotx"];
+    id hotspotY = arrow[@"hotspoty"];
+    if (![hotspotX isKindOfClass:NSNumber.class] || ![hotspotY isKindOfClass:NSNumber.class] ||
+        CFGetTypeID((__bridge CFTypeRef)hotspotX) == CFBooleanGetTypeID() ||
+        CFGetTypeID((__bridge CFTypeRef)hotspotY) == CFBooleanGetTypeID()) return nil;
+
+    NSImage *image = [artworkBundle imageForResource:@"ArrowCursor"];
+    if (![image isKindOfClass:NSImage.class] || !image.isValid) return nil;
+    NSSize size = image.size;
+    double x = [hotspotX doubleValue];
+    double y = [hotspotY doubleValue];
+    if (!isfinite(size.width) || !isfinite(size.height) || size.width <= 0 || size.height <= 0 ||
+        !isfinite(x) || !isfinite(y) || x < 0 || y < 0 || x >= size.width || y >= size.height) return nil;
+    return [[NSCursor alloc] initWithImage:image hotSpot:NSMakePoint(x, y)];
+}
+
+@interface SSWorkflowPointerObservation : NSObject
+@property (nonatomic) BOOL hostForeground;
+@property (nonatomic) BOOL visibleRoot;
+@property (nonatomic) BOOL pointerInside;
+@property (nonatomic) BOOL ownedHit;
+@property (nonatomic) BOOL eventMatchesWindow;
+@property (nonatomic) BOOL topmostMatchesWindow;
+@property (nonatomic) BOOL editableText;
+@property (nonatomic) NSUInteger pressedButtons;
+@property (nonatomic) NSInteger windowNumber;
+@property (nonatomic) NSInteger windowAtPoint;
+@property (nonatomic) BOOL keyWindow;
+@property (nonatomic) BOOL applicationActive;
+@property (nonatomic) pid_t foregroundPID;
+@property (nonatomic, copy) NSString *foregroundBundle;
+@property (nonatomic, copy) NSString *windowClass;
+@end
+@implementation SSWorkflowPointerObservation
+@end
+
+@interface SSWorkflowContentView : NSView
+@property (nonatomic, strong) NSCursor *defaultCursor;
+@property (nonatomic, strong) NSTrackingArea *defaultCursorTrackingArea;
+@property (nonatomic, strong) NSTrackingArea *defaultMouseTrackingArea;
+@property (nonatomic, weak) NSWindow *pointerObservedWindow;
+@property (nonatomic) BOOL cursorRefreshScheduled;
+@property (nonatomic, copy) NSString *pendingCursorRefreshPhase;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *pointerDiagnostics;
+- (void)requestDefaultCursorRefreshForPhase:(NSString *)phase;
+@end
+@implementation SSWorkflowContentView
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.defaultCursor = SSWorkflowHostArrowCursor();
+        NSLog(@"Silent Snip pointer: %@", self.defaultCursor ? @"using Final Cut artwork" : @"system fallback");
+        if (!self.defaultCursor) self.defaultCursor = NSCursor.arrowCursor;
+    }
+    return self;
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.defaultCursorTrackingArea) [self removeTrackingArea:self.defaultCursorTrackingArea];
+    if (self.defaultMouseTrackingArea) [self removeTrackingArea:self.defaultMouseTrackingArea];
+    self.defaultCursorTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingCursorUpdate | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+        owner:self userInfo:nil];
+    [self addTrackingArea:self.defaultCursorTrackingArea];
+    // CursorUpdate cannot use ActiveAlways. These local mouse events repair
+    // a standard-arrow reset while another Final Cut window is key.
+    self.defaultMouseTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        owner:self userInfo:nil];
+    [self addTrackingArea:self.defaultMouseTrackingArea];
+}
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    // Let AppKit arbitrate stationary-pointer updates and nested native
+    // editing/resize rectangles instead of forcing a global cursor change.
+    if (self.defaultCursor) [self addCursorRect:self.visibleRect cursor:self.defaultCursor];
+}
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    if (self.pointerObservedWindow) {
+        [center removeObserver:self name:NSWindowDidBecomeKeyNotification object:self.pointerObservedWindow];
+        [center removeObserver:self name:NSWindowDidResignKeyNotification object:self.pointerObservedWindow];
+    }
+    self.pointerObservedWindow = self.window;
+    if (self.window) {
+        [center addObserver:self selector:@selector(pointerWindowKeyChanged:) name:NSWindowDidBecomeKeyNotification object:self.window];
+        [center addObserver:self selector:@selector(pointerWindowKeyChanged:) name:NSWindowDidResignKeyNotification object:self.window];
+        [self requestDefaultCursorRefreshForPhase:@"window-attach"];
+    }
+}
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+- (void)pointerWindowKeyChanged:(NSNotification *)notification {
+    if (notification.object == self.window)
+        [self requestDefaultCursorRefreshForPhase:[notification.name isEqual:NSWindowDidBecomeKeyNotification] ? @"window-key" : @"window-resign"];
+}
+- (void)layout {
+    [super layout];
+    [self requestDefaultCursorRefreshForPhase:@"layout"];
+}
+- (BOOL)editableTextAtHitView:(NSView *)hit {
+    for (NSView *view = hit; view; view = view.superview) {
+        if ([view isKindOfClass:NSTextField.class]) {
+            NSTextField *field = (NSTextField *)view;
+            if (field.enabled && (field.editable || field.selectable)) return YES;
+        }
+        if ([view isKindOfClass:NSTextView.class]) {
+            NSTextView *text = (NSTextView *)view;
+            if (text.editable || text.selectable) return YES;
+        }
+        if (view == self) break;
+    }
+    return NO;
+}
+- (SSWorkflowPointerObservation *)pointerObservationForEvent:(NSEvent *)event {
+    SSWorkflowPointerObservation *observation = [SSWorkflowPointerObservation new];
+    NSWindow *window = self.window;
+    NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
+    NSArray<NSRunningApplication *> *hosts = [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.FinalCut"];
+    NSRunningApplication *host = hosts.count == 1 ? hosts.firstObject : nil;
+    observation.hostForeground = host && !host.terminated && host.processIdentifier > 0 &&
+        [host.bundleIdentifier isEqual:@"com.apple.FinalCut"] && front.processIdentifier == host.processIdentifier &&
+        [front.bundleIdentifier isEqual:@"com.apple.FinalCut"];
+    observation.foregroundPID = front.processIdentifier;
+    observation.foregroundBundle = front.bundleIdentifier ?: @"none";
+    observation.applicationActive = NSApp.isActive;
+    observation.pressedButtons = NSEvent.pressedMouseButtons;
+    observation.windowClass = window ? NSStringFromClass(window.class) : @"none";
+    observation.windowNumber = window.windowNumber;
+    observation.keyWindow = window.isKeyWindow;
+    observation.visibleRoot = window && window.isVisible && !self.hiddenOrHasHiddenAncestor;
+    observation.eventMatchesWindow = window && event && event.window == window;
+    if (window) {
+        NSPoint screenPoint = NSEvent.mouseLocation;
+        NSPoint localPoint = [self convertPoint:[window convertPointFromScreen:screenPoint] fromView:nil];
+        observation.pointerInside = NSPointInRect(localPoint, self.bounds) && NSPointInRect(localPoint, self.visibleRect);
+        if (observation.pointerInside && observation.visibleRoot) {
+            observation.windowAtPoint = [NSWindow windowNumberAtPoint:screenPoint belowWindowWithWindowNumber:0];
+            observation.topmostMatchesWindow = observation.windowNumber > 0 &&
+                observation.windowAtPoint == observation.windowNumber;
+            NSView *hit = [self hitTest:[self convertPoint:localPoint toView:self.superview]];
+            observation.ownedHit = hit && (hit == self || [hit isDescendantOf:self]);
+            observation.editableText = [self editableTextAtHitView:hit];
+        }
+    }
+    return observation;
+}
+- (NSCursor *)currentApplicationCursor { return NSCursor.currentCursor; }
+- (NSCursor *)systemArrowCursor { return NSCursor.arrowCursor; }
+- (void)recordPointerObservation:(SSWorkflowPointerObservation *)observation phase:(NSString *)phase
+                     cursorKind:(NSString *)kind restored:(BOOL)restored {
+    NSString *details = [NSString stringWithFormat:@"window=%@/%ld key=%d visible=%d appActive=%d front=%d/%@ inside=%d at=%ld cursor=%@ restored=%d",
+        observation.windowClass ?: @"none", (long)observation.windowNumber, observation.keyWindow,
+        observation.visibleRoot, observation.applicationActive, observation.foregroundPID,
+        observation.foregroundBundle ?: @"none", observation.pointerInside, (long)observation.windowAtPoint, kind, restored];
+    if (!self.pointerDiagnostics) self.pointerDiagnostics = [NSMutableDictionary new];
+    if (![self.pointerDiagnostics[phase] isEqual:details]) {
+        self.pointerDiagnostics[phase] = details;
+        os_log_with_type(OS_LOG_DEFAULT, OS_LOG_TYPE_DEFAULT, "Silent Snip pointer %{public}s: %{public}s",
+            phase.UTF8String, details.UTF8String);
+    }
+}
+- (void)restoreDefaultCursorForEvent:(NSEvent *)event phase:(NSString *)phase {
+    SSWorkflowPointerObservation *observation = [self pointerObservationForEvent:event];
+    NSCursor *current = [self currentApplicationCursor];
+    BOOL systemArrow = current && current == [self systemArrowCursor];
+    BOOL ownArrow = current && current == self.defaultCursor;
+    BOOL allowed = observation.hostForeground && observation.visibleRoot && observation.pointerInside && observation.ownedHit &&
+        observation.pressedButtons == 0 && !observation.editableText &&
+        (event ? observation.eventMatchesWindow : observation.topmostMatchesWindow);
+    // Explicit repairs must never replace a child I-beam, resize, drag, or
+    // custom cursor. AppKit owns transitions out of those cursor rectangles.
+    BOOL restored = allowed && self.defaultCursor && !ownArrow && systemArrow;
+    if (restored) [self.defaultCursor set];
+    [self recordPointerObservation:observation phase:phase
+        cursorKind:ownArrow ? @"host-arrow" : (systemArrow ? @"system-arrow" : @"special") restored:restored];
+}
+- (void)cursorUpdate:(NSEvent *)event {
+    [self restoreDefaultCursorForEvent:event phase:@"cursor-update"];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    [self restoreDefaultCursorForEvent:event phase:@"mouse"];
+}
+- (void)mouseMoved:(NSEvent *)event {
+    [self restoreDefaultCursorForEvent:event phase:@"mouse"];
+}
+- (void)enqueueDefaultCursorRefresh:(dispatch_block_t)refresh {
+    dispatch_async(dispatch_get_main_queue(), refresh);
+}
+- (void)invalidateOwnedCursorRects {
+    if (self.window) [self.window invalidateCursorRectsForView:self];
+}
+- (void)requestDefaultCursorRefreshForPhase:(NSString *)phase {
+    if (!self.pendingCursorRefreshPhase || ![phase isEqual:@"layout"]) self.pendingCursorRefreshPhase = phase;
+    if (self.cursorRefreshScheduled) return;
+    self.cursorRefreshScheduled = YES;
+    __weak SSWorkflowContentView *weakSelf = self;
+    [self enqueueDefaultCursorRefresh:^{
+        SSWorkflowContentView *view = weakSelf;
+        if (!view) return;
+        NSString *pendingPhase = view.pendingCursorRefreshPhase ?: @"state";
+        view.pendingCursorRefreshPhase = nil;
+        view.cursorRefreshScheduled = NO;
+        [view invalidateOwnedCursorRects];
+        [view restoreDefaultCursorForEvent:nil phase:pendingPhase];
+    }];
+}
+@end
+
+static BOOL SSWorkflowSetControlEnabled(NSControl *control, BOOL enabled) {
+    if (!control || control.enabled == enabled) return NO;
+    control.enabled = enabled;
+    return YES;
+}
 
 static NSColor *SSWorkflowGray(CGFloat value) {
     return [NSColor colorWithSRGBRed:value green:value blue:value alpha:1];
@@ -26,7 +267,8 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 - (BOOL)wantsUpdateLayer { return YES; }
 - (void)updateLayer {
     self.layer.backgroundColor = SSWorkflowGray(0.145).CGColor;
-    self.layer.borderWidth = 0;
+    self.layer.borderWidth = 1;
+    self.layer.borderColor = NSColor.separatorColor.CGColor;
     self.layer.cornerRadius = 0;
 }
 - (void)viewDidChangeEffectiveAppearance {
@@ -50,6 +292,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 @property (nonatomic, strong) NSFont *textFont;
 - (NSRect)columnRectForIndex:(NSUInteger)index;
 - (NSTextAlignment)textAlignmentForColumn:(NSUInteger)index;
+- (NSFont *)textFontForColumn:(NSUInteger)index;
 @end
 @implementation SSWorkflowCutRow
 - (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric, 22); }
@@ -62,17 +305,25 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 - (NSTextAlignment)textAlignmentForColumn:(NSUInteger)index {
     return index < 2 ? NSTextAlignmentLeft : NSTextAlignmentRight;
 }
+- (NSFont *)textFontForColumn:(NSUInteger)index {
+    return index == 2 ? [NSFont monospacedDigitSystemFontOfSize:self.textFont.pointSize weight:NSFontWeightMedium] : self.textFont;
+}
 - (void)drawRect:(NSRect)dirtyRect {
+    if (self.tag % 2 == 0) {
+        [[NSColor.labelColor colorWithAlphaComponent:0.035] setFill];
+        NSRectFillUsingOperation(self.bounds, NSCompositingOperationSourceOver);
+    }
     [super drawRect:dirtyRect];
     NSMutableParagraphStyle *style = [NSMutableParagraphStyle new];
     style.alignment = NSTextAlignmentRight;
     style.lineBreakMode = NSLineBreakByClipping;
-    NSDictionary *attributes = @{NSFontAttributeName: self.textFont,
-        NSForegroundColorAttributeName: self.enabled ? NSColor.controlTextColor : NSColor.disabledControlTextColor,
-        NSParagraphStyleAttributeName: style};
     NSArray *values = @[self.startValue ?: @"", self.endValue ?: @"", self.durationValue ?: @""];
     for (NSUInteger index = 0; index < values.count; ++index) {
         style.alignment = [self textAlignmentForColumn:index];
+        NSColor *color = !self.enabled ? NSColor.disabledControlTextColor :
+            (index == 1 ? NSColor.secondaryLabelColor : NSColor.labelColor);
+        NSDictionary *attributes = @{NSFontAttributeName: [self textFontForColumn:index],
+            NSForegroundColorAttributeName: color, NSParagraphStyleAttributeName: style};
         [values[index] drawInRect:[self columnRectForIndex:index] withAttributes:attributes];
     }
 }
@@ -82,26 +333,32 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 @property (nonatomic, strong) id<FCPXHost> host;
 @property (nonatomic, strong) SSWorkflowWindowClient *windowClient;
 @property (nonatomic) BOOL viewVisible;
+@property (nonatomic) BOOL handlingTextSettingsChange;
 @property (nonatomic) BOOL windowClientRunning;
 @property (nonatomic, strong) FCPXTimeline *timeline;
 @property (nonatomic, strong) SSWorkflowSettingsBridge *settings;
 @property (nonatomic, strong) NSTextField *projectLabel;
 @property (nonatomic, strong) NSTextField *playheadLabel;
 @property (nonatomic, strong) NSTextField *statusLabel;
+@property (nonatomic, strong) NSImageView *statusIcon;
 @property (nonatomic, strong) NSArray<NSTextField *> *fields;
 @property (nonatomic, strong) NSPopUpButton *output;
 @property (nonatomic, strong) NSButton *saveButton;
 @property (nonatomic, strong) NSButton *connectButton;
-@property (nonatomic, strong) NSScrollView *scroll;
+@property (nonatomic, strong) NSView *bodyView;
 @property (nonatomic, strong) NSStackView *content;
 @property (nonatomic, strong) NSView *contentColumn;
 @property (nonatomic, strong) NSView *headerView;
 @property (nonatomic, strong) NSView *footerView;
+@property (nonatomic, strong) NSLayoutConstraint *chromeLeadingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *chromeWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *footerHeightConstraint;
 @property (nonatomic, strong) NSStackView *settingsPanel;
 @property (nonatomic, strong) NSStackView *settingsGroups;
 @property (nonatomic, strong) NSStackView *settingsTopRow;
 @property (nonatomic, strong) NSStackView *settingsBottomRow;
+@property (nonatomic, strong) NSStackView *outputActions;
+@property (nonatomic, strong) NSLayoutConstraint *outputRowWidthConstraint;
 @property (nonatomic, copy) NSArray<NSView *> *numericGroups;
 @property (nonatomic) BOOL settingsWideLayout;
 @property (nonatomic, strong) NSStackView *cutColumnHeader;
@@ -128,7 +385,15 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 @property (nonatomic, copy) NSString *viewID;
 @property (nonatomic, strong) SSWorkflowReviewClient *reviewClient;
 @property (nonatomic, strong) NSButton *analyzeButton;
-@property (nonatomic, strong) NSButton *updateButton;
+@property (nonatomic, strong) NSTimer *automaticUpdateTimer;
+@property (nonatomic) NSUInteger automaticUpdateGeneration;
+@property (nonatomic) NSUInteger automaticUpdateSubmittedGeneration;
+@property (nonatomic) NSUInteger automaticUpdateRejectedGeneration;
+@property (nonatomic) BOOL automaticUpdatePending;
+@property (nonatomic) BOOL settingsSavePending;
+@property (nonatomic, copy) NSDictionary *pendingAutomaticSettings;
+@property (nonatomic, copy) NSDictionary *submittedAutomaticSettings;
+@property (nonatomic, copy) NSString *automaticUpdateEdit;
 @property (nonatomic, strong) NSButton *verifyButton;
 @property (nonatomic, strong) NSPopUpButton *navigateMenu;
 @property (nonatomic, strong) NSButton *applyButton;
@@ -141,6 +406,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 @property (nonatomic, strong) NSStackView *cutList;
 @property (nonatomic, copy) NSArray<NSDictionary *> *reviewCuts;
 @property (nonatomic, copy) NSDictionary *reviewResponse;
+@property (nonatomic, copy) NSString *pointerReviewState;
 @property (nonatomic, copy) NSString *completionMessage;
 @property (nonatomic, copy) NSDictionary *completionContext;
 @property (nonatomic) NSUInteger reviewGeneration;
@@ -165,6 +431,47 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     return label;
 }
 
+- (void)styleReviewSummary {
+    NSString *text = self.reviewSummary.stringValue ?: @"";
+    NSMutableAttributedString *styled = [[NSMutableAttributedString alloc] initWithString:text
+        attributes:@{NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular],
+                     NSForegroundColorAttributeName: NSColor.secondaryLabelColor}];
+    NSRange newline = [text rangeOfString:@"\n"];
+    if (newline.location != NSNotFound) {
+        NSRange name = NSMakeRange(0, newline.location);
+        [styled addAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightMedium],
+                               NSForegroundColorAttributeName: NSColor.labelColor} range:name];
+        if ([text hasPrefix:@"Clip: "]) {
+            [styled addAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium],
+                                   NSForegroundColorAttributeName: NSColor.secondaryLabelColor} range:NSMakeRange(0, 6)];
+        }
+        NSUInteger start = NSMaxRange(newline);
+        NSRange separator = [text rangeOfString:@" · " options:0 range:NSMakeRange(start, text.length - start)];
+        NSRange count = NSMakeRange(start, (separator.location == NSNotFound ? text.length : separator.location) - start);
+        [styled addAttributes:@{NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium],
+                               NSForegroundColorAttributeName: NSColor.labelColor} range:count];
+        NSRange arrow = [text rangeOfString:@"→ " options:NSBackwardsSearch];
+        if (arrow.location != NSNotFound && NSMaxRange(arrow) < text.length) {
+            [styled addAttributes:@{NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightSemibold],
+                                   NSForegroundColorAttributeName: NSColor.labelColor}
+                            range:NSMakeRange(NSMaxRange(arrow), text.length - NSMaxRange(arrow))];
+        }
+    }
+    // Styling never replaces the worker's wording, exact values, or AX text.
+    self.reviewSummary.attributedStringValue = styled;
+}
+
+- (void)updateActionAppearance {
+    NSString *state = self.reviewResponse[@"state"];
+    BOOL reviewing = [@[@"review", @"recalculating"] containsObject:state];
+    for (NSButton *button in @[self.analyzeButton, self.applyButton, self.retryButton]) {
+        BOOL primary = button == self.retryButton ? !self.retryButton.hidden :
+            (button == self.applyButton ? reviewing && self.retryButton.hidden : !reviewing && self.retryButton.hidden);
+        button.bezelColor = primary && button.enabled ? NSColor.controlAccentColor : nil;
+        button.contentTintColor = primary && button.enabled ? NSColor.whiteColor : nil;
+    }
+}
+
 - (NSStackView *)cardWithViews:(NSArray<NSView *> *)views {
     NSStackView *card = [SSWorkflowSection stackViewWithViews:views];
     card.wantsLayer = YES;
@@ -178,12 +485,16 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 // These read-only extension size hints are advisory; the host can ignore
 // them. They do not install preferredContentSize constraints on the root.
 - (NSSize)preferredMaximumSize { return NSMakeSize(560, CGFLOAT_MAX); }
-- (NSSize)preferredMinimumSize { return NSMakeSize(460, 300); }
+- (NSSize)preferredMinimumSize { return NSMakeSize(460, 540); }
+
+- (SSWorkflowContentView *)newContentViewWithFrame:(NSRect)frame {
+    return [[SSWorkflowContentView alloc] initWithFrame:frame];
+}
 
 - (void)loadView {
     // The SDK owns the window size. Keep the root frame-driven so its remote
     // viewport can resize it without introducing preferred-size constraints.
-    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 480, 640)];
+    self.view = [self newContentViewWithFrame:NSMakeRect(0, 0, 480, 640)];
     self.view.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     self.view.wantsLayer = YES;
     self.view.layer.backgroundColor = SSWorkflowGray(0.12).CGColor;
@@ -199,12 +510,8 @@ static NSColor *SSWorkflowGray(CGFloat value) {
         chrome.wantsLayer = YES;
         chrome.layer.backgroundColor = SSWorkflowGray(0.145).CGColor;
     }
-    self.scroll = [NSScrollView new];
-    self.scroll.drawsBackground = NO;
-    self.scroll.hasVerticalScroller = YES;
-    self.scroll.hasHorizontalScroller = NO;
-    self.scroll.autohidesScrollers = YES;
-    for (NSView *part in @[self.headerView, self.scroll, self.footerView]) {
+    self.bodyView = [NSView new];
+    for (NSView *part in @[self.headerView, self.bodyView, self.footerView]) {
         part.translatesAutoresizingMaskIntoConstraints = NO;
         [self.contentColumn addSubview:part];
     }
@@ -212,7 +519,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.connectButton = [NSButton buttonWithTitle:@"Connect to Final Cut Pro" target:self action:@selector(requestConnection:)];
     self.connectButton.accessibilityIdentifier = @"silentsnip.workflow.connect";
     self.connectButton.hidden = YES;
-    self.projectLabel = [self label:@"Connecting to Final Cut Pro…" size:13 weight:NSFontWeightSemibold];
+    self.projectLabel = [self label:@"Connecting to Final Cut Pro…" size:15 weight:NSFontWeightSemibold];
     self.projectLabel.maximumNumberOfLines = 1;
     self.projectLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.projectLabel.accessibilityIdentifier = @"silentsnip.workflow.project";
@@ -260,11 +567,11 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 
     NSMutableArray *fields = [NSMutableArray new];
     NSMutableArray *groups = [NSMutableArray new];
-    NSArray *labels = @[@"Silence threshold", @"Minimum silence", @"Before speech", @"After speech"];
+    NSArray *labels = @[@"Silence Threshold", @"Minimum Silence", @"Before Speech", @"After Speech"];
     NSArray *units = @[@"dBFS", @"sec", @"sec", @"sec"];
     for (NSUInteger index = 0; index < labels.count; ++index) {
         NSTextField *field = [NSTextField textFieldWithString:@""];
-        field.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+        field.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium];
         field.controlSize = NSControlSizeSmall;
         field.bezelStyle = NSTextFieldSquareBezel;
         field.alignment = NSTextAlignmentRight;
@@ -272,9 +579,10 @@ static NSColor *SSWorkflowGray(CGFloat value) {
         field.accessibilityIdentifier = [NSString stringWithFormat:@"silentsnip.workflow.setting.%lu", (unsigned long)index];
         field.delegate = self;
         [field.widthAnchor constraintEqualToConstant:64].active = YES;
-        NSTextField *name = [self label:labels[index] size:11 weight:NSFontWeightRegular];
+        NSTextField *name = [self label:labels[index] size:10.5 weight:NSFontWeightMedium];
+        name.textColor = NSColor.secondaryLabelColor;
         name.maximumNumberOfLines = 1;
-        NSTextField *unit = [self label:units[index] size:11 weight:NSFontWeightRegular];
+        NSTextField *unit = [self label:units[index] size:10.5 weight:NSFontWeightRegular];
         unit.textColor = NSColor.secondaryLabelColor;
         unit.maximumNumberOfLines = 1;
         unit.lineBreakMode = NSLineBreakByClipping;
@@ -313,7 +621,9 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     [self.output setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.saveButton = [NSButton buttonWithTitle:@"Save Settings" target:self action:@selector(saveSettings:)];
     self.saveButton.accessibilityIdentifier = @"silentsnip.workflow.save";
-    NSTextField *outputLabel = [self label:@"Output" size:11 weight:NSFontWeightRegular];
+    self.saveButton.toolTip = @"Save these settings for the open project.";
+    NSTextField *outputLabel = [self label:@"Output" size:10.5 weight:NSFontWeightMedium];
+    outputLabel.textColor = NSColor.secondaryLabelColor;
     outputLabel.maximumNumberOfLines = 1;
     [outputLabel.widthAnchor constraintEqualToConstant:42].active = YES;
     [self.saveButton setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -321,7 +631,21 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     NSStackView *outputRow = [NSStackView stackViewWithViews:@[outputLabel, self.output, self.saveButton]];
     outputRow.distribution = NSStackViewDistributionFill;
     outputRow.spacing = 10;
-    self.settingsPanel = [self cardWithViews:@[self.settingsGroups, outputRow]];
+    self.verifyButton = [NSButton buttonWithTitle:@"Verify Existing Result" target:self action:@selector(verifyExistingResult:)];
+    self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
+    self.verifyButton.toolTip = @"Verify an existing cleaned project using its saved Silent Snip.fcpxml file.";
+    [self.verifyButton setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.verifyButton setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.outputActions = [NSStackView stackViewWithViews:@[outputRow, self.verifyButton]];
+    self.outputActions.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.outputActions.alignment = NSLayoutAttributeLeading;
+    self.outputActions.spacing = 4;
+    self.outputRowWidthConstraint = [outputRow.widthAnchor constraintEqualToAnchor:self.outputActions.widthAnchor];
+    NSTextField *settingsHeading = [self label:@"Detection Settings" size:14 weight:NSFontWeightSemibold];
+    self.settingsPanel = [self cardWithViews:@[settingsHeading, self.settingsGroups, self.outputActions]];
+    self.settingsPanel.accessibilityElement = YES;
+    self.settingsPanel.accessibilityRole = NSAccessibilityGroupRole;
+    self.settingsPanel.accessibilityIdentifier = @"silentsnip.workflow.settings";
 
     self.statusLabel = [self label:@"" size:11 weight:NSFontWeightRegular];
     self.statusLabel.textColor = NSColor.secondaryLabelColor;
@@ -336,16 +660,14 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.detailsButton.hidden = YES;
     self.statusDetails = [self label:self.statusLabel.stringValue size:11 weight:NSFontWeightRegular];
     self.statusDetails.textColor = NSColor.secondaryLabelColor;
+    self.statusDetails.maximumNumberOfLines = 3;
+    self.statusDetails.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.statusDetails.selectable = YES;
     self.statusDetails.accessibilityIdentifier = @"silentsnip.workflow.status-details";
     self.statusDetails.hidden = YES;
     self.analyzeButton = [NSButton buttonWithTitle:@"Analyze Audio" target:self action:@selector(analyzeAudio:)];
     self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
-    self.updateButton = [NSButton buttonWithTitle:@"Update Cuts" target:self action:@selector(updateCuts:)];
-    self.updateButton.accessibilityIdentifier = @"silentsnip.workflow.update";
-    self.verifyButton = [NSButton buttonWithTitle:@"Verify Existing Result…" target:self action:@selector(verifyExistingResult:)];
-    self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
-    [self.settingsPanel addArrangedSubview:self.verifyButton];
-    self.settingsPanel.spacing = 4;
+    self.settingsPanel.spacing = 7;
     self.applyButton = [NSButton buttonWithTitle:@"Apply Cuts" target:self action:@selector(applyCuts:)];
     self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
     self.cancelButton = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancelReview:)];
@@ -355,18 +677,28 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.retryButton = [NSButton buttonWithTitle:@"Retry Verification" target:self action:@selector(retryVerification:)];
     self.retryButton.hidden = YES;
     for (NSButton *button in @[self.connectButton, self.saveButton, self.verifyButton,
-        self.analyzeButton, self.updateButton, self.applyButton, self.retryButton, self.cancelButton]) {
+        self.analyzeButton, self.applyButton, self.retryButton, self.cancelButton]) {
         button.controlSize = NSControlSizeSmall;
         button.bezelStyle = NSBezelStyleAccessoryBarAction;
-        button.font = [NSFont systemFontOfSize:11];
+        button.font = [NSFont systemFontOfSize:10.5];
+    }
+    for (NSButton *button in @[self.analyzeButton, self.applyButton, self.retryButton]) {
+        button.bezelStyle = NSBezelStyleRounded;
+        button.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     }
     NSView *actionSpring = [NSView new];
     [actionSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *actions = [NSStackView stackViewWithViews:@[actionSpring, self.analyzeButton, self.updateButton, self.applyButton, self.retryButton, self.cancelButton]];
+    NSStackView *actions = [NSStackView stackViewWithViews:@[actionSpring, self.analyzeButton, self.applyButton, self.retryButton, self.cancelButton]];
     [actions setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
     actions.spacing = 8;
-    NSStackView *status = [NSStackView stackViewWithViews:@[self.statusLabel, self.detailsButton]];
-    status.spacing = 8;
+    self.statusIcon = [NSImageView new];
+    self.statusIcon.imageScaling = NSImageScaleProportionallyUpOrDown;
+    self.statusIcon.accessibilityElement = NO;
+    self.statusIcon.hidden = YES;
+    [self.statusIcon.widthAnchor constraintEqualToConstant:12].active = YES;
+    [self.statusIcon.heightAnchor constraintEqualToConstant:12].active = YES;
+    NSStackView *status = [NSStackView stackViewWithViews:@[self.statusIcon, self.statusLabel, self.detailsButton]];
+    status.spacing = 6;
     status.alignment = NSLayoutAttributeCenterY;
     self.progressIndicator = [NSProgressIndicator new];
     self.progressIndicator.style = NSProgressIndicatorStyleBar;
@@ -391,6 +723,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.reviewSummary.accessibilityIdentifier = @"silentsnip.workflow.summary";
     self.reviewSummary.maximumNumberOfLines = 2;
     self.reviewSummary.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self styleReviewSummary];
     self.allButton = [NSButton buttonWithTitle:@"Select All" target:self action:@selector(selectAllCuts:)];
     self.noneButton = [NSButton buttonWithTitle:@"Deselect All" target:self action:@selector(deselectAllCuts:)];
     self.navigateMenu = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
@@ -401,12 +734,12 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.navigateMenu.font = [NSFont systemFontOfSize:11];
     for (NSButton *button in @[self.allButton, self.noneButton]) {
         button.controlSize = NSControlSizeSmall;
-        button.font = [NSFont systemFontOfSize:11];
+        button.font = [NSFont systemFontOfSize:10.5];
         button.bezelStyle = NSBezelStyleAccessoryBarAction;
     }
     NSView *reviewSpring = [NSView new];
     [reviewSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[[self label:@"Cut review" size:12 weight:NSFontWeightSemibold], reviewSpring, self.navigateMenu, self.allButton, self.noneButton]];
+    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[[self label:@"Cut Review" size:14 weight:NSFontWeightSemibold], reviewSpring, self.navigateMenu, self.allButton, self.noneButton]];
     reviewActions.spacing = 6;
     self.cutList = [SSWorkflowDocument stackViewWithViews:@[]];
     self.cutList.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -418,16 +751,18 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.reviewScroll = [NSScrollView new];
     self.reviewScroll.drawsBackground = YES;
     self.reviewScroll.backgroundColor = SSWorkflowGray(0.105);
-    self.reviewScroll.hasVerticalScroller = YES;
+    self.reviewScroll.hasVerticalScroller = NO;
     self.reviewScroll.hasHorizontalScroller = NO;
     self.reviewScroll.autohidesScrollers = YES;
+    self.reviewScroll.verticalScrollElasticity = NSScrollElasticityNone;
+    self.reviewScroll.horizontalScrollElasticity = NSScrollElasticityNone;
     self.reviewScroll.borderType = NSBezelBorder;
     self.reviewScroll.documentView = self.cutList;
-    self.reviewListHeightConstraint = [self.reviewScroll.heightAnchor constraintEqualToConstant:320];
+    self.reviewListHeightConstraint = [self.reviewScroll.heightAnchor constraintGreaterThanOrEqualToConstant:80];
     self.reviewListHeightConstraint.active = YES;
     NSMutableArray<NSTextField *> *columnLabels = [NSMutableArray new];
     for (NSString *title in @[@"Start", @"End", @"Duration"]) {
-        NSTextField *column = [self label:title size:11 weight:NSFontWeightMedium];
+        NSTextField *column = [self label:title size:10.5 weight:NSFontWeightMedium];
         column.textColor = NSColor.secondaryLabelColor;
         column.alignment = columnLabels.count < 2 ? NSTextAlignmentLeft : NSTextAlignmentRight;
         column.maximumNumberOfLines = 1;
@@ -449,49 +784,58 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.reviewPanel = [self cardWithViews:@[reviewActions, self.reviewSummary,
         self.statusDetails, self.cutColumnHeader, self.reviewScroll]];
     self.reviewPanel.spacing = 4;
+    [self.settingsPanel setHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationVertical];
+    [self.reviewPanel setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+    [self.reviewScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
     self.content = [SSWorkflowDocument stackViewWithViews:@[self.settingsPanel, self.reviewPanel]];
     self.content.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.content.alignment = NSLayoutAttributeLeading;
     self.content.spacing = 12;
     self.content.edgeInsets = NSEdgeInsetsMake(12, 12, 12, 12);
-    self.content.translatesAutoresizingMaskIntoConstraints = YES;
-    self.content.autoresizingMask = NSViewWidthSizable;
-    self.scroll.documentView = self.content;
+    self.content.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.bodyView addSubview:self.content];
     self.settingsPanelWidthConstraint = [self.settingsPanel.widthAnchor constraintEqualToConstant:448];
     self.reviewPanelWidthConstraint = [self.reviewPanel.widthAnchor constraintEqualToConstant:448];
+    self.chromeLeadingConstraint = [self.headerView.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor constant:12];
+    self.chromeWidthConstraint = [self.headerView.widthAnchor constraintEqualToConstant:448];
     self.footerHeightConstraint = [self.footerView.heightAnchor constraintEqualToConstant:64];
     [NSLayoutConstraint activateConstraints:@[
         self.settingsPanelWidthConstraint, self.reviewPanelWidthConstraint,
+        [self.content.leadingAnchor constraintEqualToAnchor:self.bodyView.leadingAnchor],
+        [self.content.trailingAnchor constraintEqualToAnchor:self.bodyView.trailingAnchor],
+        [self.content.topAnchor constraintEqualToAnchor:self.bodyView.topAnchor],
+        [self.content.bottomAnchor constraintEqualToAnchor:self.bodyView.bottomAnchor],
         [self.settingsGroups.widthAnchor constraintEqualToAnchor:self.settingsPanel.widthAnchor constant:-24],
         [self.settingsTopRow.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
         [self.settingsBottomRow.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
-        [outputRow.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
+        [self.outputActions.widthAnchor constraintEqualToAnchor:self.settingsGroups.widthAnchor],
+        self.outputRowWidthConstraint,
         [self.reviewScroll.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
         [reviewActions.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
         [self.reviewSummary.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
-        [self.reviewSummary.heightAnchor constraintEqualToConstant:30],
+        [self.reviewSummary.heightAnchor constraintEqualToConstant:34],
         [self.statusDetails.widthAnchor constraintEqualToAnchor:self.reviewPanel.widthAnchor constant:-24],
-        [self.headerView.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
-        [self.headerView.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
+        self.chromeLeadingConstraint,
+        self.chromeWidthConstraint,
         [self.headerView.topAnchor constraintEqualToAnchor:self.contentColumn.topAnchor],
-        [self.headerView.heightAnchor constraintEqualToConstant:44],
-        [header.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:16],
-        [header.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-16],
+        [self.headerView.heightAnchor constraintEqualToConstant:46],
+        [header.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:12],
+        [header.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-12],
         [header.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
         [self.projectLabel.widthAnchor constraintEqualToAnchor:project.widthAnchor],
-        [self.footerView.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
-        [self.footerView.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
+        [self.footerView.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor],
+        [self.footerView.widthAnchor constraintEqualToAnchor:self.headerView.widthAnchor],
         [self.footerView.bottomAnchor constraintEqualToAnchor:self.contentColumn.bottomAnchor],
         self.footerHeightConstraint,
-        [footer.leadingAnchor constraintEqualToAnchor:self.footerView.leadingAnchor constant:16],
-        [footer.trailingAnchor constraintEqualToAnchor:self.footerView.trailingAnchor constant:-16],
+        [footer.leadingAnchor constraintEqualToAnchor:self.footerView.leadingAnchor constant:12],
+        [footer.trailingAnchor constraintEqualToAnchor:self.footerView.trailingAnchor constant:-12],
         [footer.topAnchor constraintEqualToAnchor:self.footerView.topAnchor constant:7],
         [self.footerMainRow.widthAnchor constraintEqualToAnchor:footer.widthAnchor],
         [self.progressIndicator.widthAnchor constraintEqualToAnchor:footer.widthAnchor],
-        [self.scroll.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
-        [self.scroll.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
-        [self.scroll.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor],
-        [self.scroll.bottomAnchor constraintEqualToAnchor:self.footerView.topAnchor]
+        [self.bodyView.leadingAnchor constraintEqualToAnchor:self.contentColumn.leadingAnchor],
+        [self.bodyView.trailingAnchor constraintEqualToAnchor:self.contentColumn.trailingAnchor],
+        [self.bodyView.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor],
+        [self.bodyView.bottomAnchor constraintEqualToAnchor:self.footerView.topAnchor]
     ]];
     [self setControlsEnabled:NO];
     [self updateReviewControls];
@@ -504,14 +848,14 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 
 - (void)updateDocumentFrame {
-    if (self.updatingDocumentLayout || !self.content || !self.scroll) return;
+    if (self.updatingDocumentLayout || !self.content || !self.bodyView) return;
     CGFloat hostHeight = self.view.bounds.size.height;
     CGFloat columnWidth = fmin(560, self.view.bounds.size.width);
     if (columnWidth <= 48 || hostHeight <= 0) return;
     self.updatingDocumentLayout = YES;
     self.reviewScroll.hidden = NO;
     self.cutColumnHeader.hidden = NO;
-    self.reviewListHeightConstraint.constant = 320;
+    self.reviewScroll.hasVerticalScroller = self.reviewCuts.count > 0;
     BOOL settingsWide = columnWidth >= 530;
     if (self.settingsWideLayout != settingsWide) {
         for (NSUInteger index = 2; index < self.numericGroups.count; ++index) {
@@ -533,22 +877,32 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.content.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.content.alignment = NSLayoutAttributeLeading;
     self.statusLabel.preferredMaxLayoutWidth = fmax(100, columnWidth - 104);
-    // The host owns root size. Reserve the same review area for idle, short,
-    // and long reviews; only the list and the surrounding body can scroll.
+    // The body is fixed to the host viewport. Only the timestamp document
+    // grows with analyzed ranges; its viewport takes the remaining height.
     NSRect columnFrame = NSMakeRect(floor((self.view.bounds.size.width - columnWidth) / 2),
         0, columnWidth, hostHeight);
     if (!NSEqualRects(self.contentColumn.frame, columnFrame)) self.contentColumn.frame = columnFrame;
     for (NSUInteger pass = 0; pass < 2; ++pass) {
         [self.contentColumn layoutSubtreeIfNeeded];
-        [self.scroll tile];
-        CGFloat width = self.scroll.contentView.bounds.size.width;
-        CGFloat cardWidth = width - 24;
+        CGFloat width = self.bodyView.bounds.size.width;
+        NSEdgeInsets insets = self.content.edgeInsets;
+        CGFloat cardWidth = width - insets.left - insets.right;
+        self.chromeLeadingConstraint.constant = insets.left;
+        self.chromeWidthConstraint.constant = cardWidth;
         self.settingsPanelWidthConstraint.constant = cardWidth;
         self.reviewPanelWidthConstraint.constant = cardWidth;
+        // Fit both action titles and the longest output choice before using
+        // one row. The fixed body never reserves an outer scrollbar gutter.
+        CGFloat outputWidth = fmax(180, ceil(self.output.intrinsicContentSize.width));
+        CGFloat actionsWidth = 42 + outputWidth + ceil(self.saveButton.intrinsicContentSize.width) +
+            ceil(self.verifyButton.intrinsicContentSize.width) + 28;
+        BOOL outputWide = cardWidth - 24 >= actionsWidth;
+        self.outputRowWidthConstraint.active = !outputWide;
+        self.outputActions.orientation = outputWide ? NSUserInterfaceLayoutOrientationHorizontal : NSUserInterfaceLayoutOrientationVertical;
+        self.outputActions.alignment = outputWide ? NSLayoutAttributeCenterY : NSLayoutAttributeLeading;
+        self.outputActions.spacing = outputWide ? 8 : 4;
         self.reviewSummary.preferredMaxLayoutWidth = cardWidth - 24;
         self.statusDetails.preferredMaxLayoutWidth = cardWidth - 24;
-        NSSize contentWidthSize = NSMakeSize(width, self.content.frame.size.height);
-        if (!NSEqualSizes(self.content.frame.size, contentWidthSize)) [self.content setFrameSize:contentWidthSize];
         [self.content layoutSubtreeIfNeeded];
         [self.reviewScroll tile];
         CGFloat listWidth = self.reviewScroll.contentView.bounds.size.width;
@@ -559,9 +913,6 @@ static NSColor *SSWorkflowGray(CGFloat value) {
         NSSize listSize = NSMakeSize(fmax(1, listWidth), fmax(1, ceil(self.cutList.fittingSize.height)));
         if (!NSEqualSizes(self.cutList.frame.size, listSize)) [self.cutList setFrameSize:listSize];
         [self.cutList layoutSubtreeIfNeeded];
-        NSSize bodySize = NSMakeSize(width, fmax(1, ceil(self.content.fittingSize.height)));
-        if (!NSEqualSizes(self.content.frame.size, bodySize)) [self.content setFrameSize:bodySize];
-        [self.content layoutSubtreeIfNeeded];
     }
     self.updatingDocumentLayout = NO;
 }
@@ -588,16 +939,28 @@ static NSColor *SSWorkflowGray(CGFloat value) {
         // Local persistence and transport errors carry explicit presentation
         // intent: an earlier review or completion cannot classify that error.
         if (changed || requiresAttention) self.detailsExpanded = attention;
-        if (requiresAttention) self.statusLabel.stringValue = @"Unable to finish. Review the details.";
-        else if ([self.reviewResponse[@"canRetryVerification"] boolValue]) self.statusLabel.stringValue = @"Verification needs attention. Review the details.";
-        else if ([state isEqual:@"cancelled"]) self.statusLabel.stringValue = @"Cancelled. Review the details.";
-        else if (attention) self.statusLabel.stringValue = @"Unable to finish. Review the details.";
+        if (requiresAttention) self.statusLabel.stringValue = @"Unable to complete the operation. Review the details.";
+        else if ([self.reviewResponse[@"canRetryVerification"] boolValue]) self.statusLabel.stringValue = @"Unable to verify the result. Review the details.";
+        else if ([state isEqual:@"cancelled"]) self.statusLabel.stringValue = @"Canceled. Review the details.";
+        else if (attention) self.statusLabel.stringValue = @"Unable to complete the operation. Review the details.";
         else if (self.reviewClient.busy) self.statusLabel.stringValue = @"Working in Final Cut Pro…";
         else if ([@[@"completed", @"complete"] containsObject:state]) self.statusLabel.stringValue = @"Cuts applied.";
         else self.statusLabel.stringValue = @"";
     }
     self.statusDetails.hidden = !longMessage || !self.detailsExpanded;
     self.detailsButton.title = self.detailsExpanded ? @"Hide Details" : @"Details";
+    NSString *state = self.reviewResponse[@"state"];
+    BOOL warning = requiresAttention || [self.reviewResponse[@"canRetryVerification"] boolValue] ||
+        [@[@"failed", @"unavailable", @"error"] containsObject:state];
+    BOOL completed = !warning && [@[@"completed", @"complete"] containsObject:state];
+    NSString *symbol = warning ? @"exclamationmark.triangle.fill" :
+        (completed ? @"checkmark.circle.fill" : @"info.circle");
+    self.statusIcon.image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil];
+    self.statusIcon.contentTintColor = warning ? NSColor.systemOrangeColor :
+        (completed ? NSColor.systemGreenColor : NSColor.secondaryLabelColor);
+    self.statusIcon.hidden = self.statusLabel.stringValue.length == 0;
+    self.statusLabel.textColor = warning ? NSColor.labelColor : NSColor.secondaryLabelColor;
+    self.statusDetails.textColor = warning ? NSColor.labelColor : NSColor.secondaryLabelColor;
     [self updateDocumentFrame];
 }
 
@@ -610,12 +973,16 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 
 - (void)setControlsEnabled:(BOOL)enabled {
-    enabled = enabled && !self.verificationPanelPending && !self.reviewClient.busy && ![self.reviewResponse[@"canRetryVerification"] boolValue];
-    for (NSTextField *field in self.fields) field.enabled = enabled;
-    self.output.enabled = enabled;
-    self.saveButton.enabled = enabled;
-    self.analyzeButton.enabled = enabled && !self.reviewClient.busy;
-    self.verifyButton.enabled = enabled;
+    enabled = enabled && !self.verificationPanelPending &&
+        (!self.reviewClient.busy || self.reviewClient.updatingCuts) && ![self.reviewResponse[@"canRetryVerification"] boolValue];
+    BOOL changed = NO;
+    for (NSTextField *field in self.fields) changed |= SSWorkflowSetControlEnabled(field, enabled);
+    changed |= SSWorkflowSetControlEnabled(self.output, enabled);
+    changed |= SSWorkflowSetControlEnabled(self.saveButton, enabled && !self.settingsSavePending);
+    changed |= SSWorkflowSetControlEnabled(self.analyzeButton, enabled && !self.reviewClient.busy && !self.settingsSavePending);
+    changed |= SSWorkflowSetControlEnabled(self.verifyButton, enabled && !self.settingsSavePending && !self.automaticUpdatePending && !self.reviewClient.updatingCuts);
+    [self updateActionAppearance];
+    if (changed) [(SSWorkflowContentView *)self.view requestDefaultCursorRefreshForPhase:@"controls"];
 }
 
 - (SSWorkflowWindowClient *)newWindowClient {
@@ -647,6 +1014,8 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 - (void)viewDidAppear {
     [super viewDidAppear];
     self.viewVisible = YES;
+    [(SSWorkflowContentView *)self.view requestDefaultCursorRefreshForPhase:@"appear"];
+    [self startAutomaticUpdateObservers];
     if (self.host) {
         [self startWindowClientIfVisible];
         return;
@@ -654,14 +1023,14 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     id singleton = ProExtensionHostSingleton();
     if (![singleton conformsToProtocol:@protocol(FCPXHost)]) {
         [self stopWindowClient];
-        [self setStatusMessage:@"Open this extension from Final Cut Pro."];
+        [self setStatusMessage:@"In Final Cut Pro, choose Window > Extensions > Silent Snip."];
         return;
     }
     self.host = singleton;
     if (![@"com.apple.FinalCut" isEqual:self.host.bundleIdentifier]) {
         [self stopWindowClient];
         self.host = nil;
-        [self setStatusMessage:@"The Final Cut host could not be verified."];
+        [self setStatusMessage:@"Unable to connect to Final Cut Pro. Open Silent Snip from Window > Extensions."];
         return;
     }
     [self startWindowClientIfVisible];
@@ -693,7 +1062,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     if (!self.viewVisible || ![self hasVerifiedWindowHost]) return;
     NSUInteger generation = self.contextGeneration;
     self.connectButton.enabled = NO;
-    [self setStatusMessage:ask ? @"Waiting for macOS permission…" : @"Checking the Final Cut connection…"];
+    [self setStatusMessage:ask ? @"Waiting for macOS permission…" : @"Checking the Final Cut Pro connection…"];
     __weak SSWorkflowViewController *weakSelf = self;
     [self checkHostPermissionAskingUser:ask completion:^(OSStatus status) {
         SSWorkflowViewController *owner = weakSelf;
@@ -706,7 +1075,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
             owner.connectButton.hidden = NO;
             owner.connectButton.enabled = YES;
             owner.projectLabel.stringValue = @"Connect to Final Cut Pro";
-            [owner setStatusMessage:@"Allow access to display the open project and playhead."];
+            [owner setStatusMessage:@"Allow Silent Snip to access Final Cut Pro to show the open project and playhead."];
             return;
         }
         owner.connectButton.hidden = YES;
@@ -718,6 +1087,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 
 - (void)viewWillDisappear {
     self.viewVisible = NO;
+    [self stopAutomaticUpdateObservers];
     self.verificationPanelPending = NO;
     self.verificationPanelToken += 1;
     [self stopWindowClient];
@@ -727,6 +1097,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.timeline = nil;
     self.host = nil;
     self.contextGeneration += 1;
+    self.settingsSavePending = NO;
     self.libraryURL = nil;
     self.projectUID = nil;
     self.settingsLoaded = NO;
@@ -766,8 +1137,12 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     if (self.verificationPanelPending) return;
     // The worker can temporarily open an isolated analysis project or the
     // verified result. Keep its request bound until that operation settles.
-    if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
+    if ((self.reviewClient.busy && !self.reviewClient.updatingCuts) ||
+        [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
     NSDictionary *context = [self observedProjectContext];
+    BOOL ownsPendingAutomaticReview = self.automaticUpdatePending && self.settingsLoaded &&
+        self.libraryURL != nil && self.projectUID.length && self.reviewClient.requestID.length;
+    if (!context && (self.handlingTextSettingsChange || ownsPendingAutomaticReview)) return;
     if (self.completionMessage && (![context[@"projectUID"] isEqual:self.completionContext[@"projectUID"]] ||
         ![context[@"libraryURL"] isEqual:self.completionContext[@"libraryURL"]])) [self clearCompletionMessage];
     self.projectLabel.stringValue = context[@"projectName"] ?: @"Open a project in Final Cut Pro";
@@ -779,6 +1154,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
         [context[@"libraryURL"] isEqual:self.libraryURL]) return;
     [self invalidateReview];
     self.contextGeneration += 1;
+    self.settingsSavePending = NO;
     NSUInteger generation = self.contextGeneration;
     self.libraryURL = nil;
     self.projectUID = nil;
@@ -850,6 +1226,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 
 - (void)invalidateReview {
+    [self cancelAutomaticUpdate];
     self.reviewGeneration += 1;
     if (self.reviewClient.canCancel) [self.reviewClient cancel];
     [self.reviewClient detach];
@@ -865,50 +1242,205 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.reviewCuts = @[];
     for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
     self.reviewSummary.stringValue = @"Select a clip to analyze.";
+    [self styleReviewSummary];
     self.reviewSummary.toolTip = self.reviewSummary.stringValue;
     self.analyzeButton.title = @"Analyze Audio";
     self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
     self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
-    self.updateButton.accessibilityIdentifier = @"silentsnip.workflow.update";
     self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
     [self.navigateMenu removeAllItems];
     [self.navigateMenu addItemWithTitle:@"Go to Cut"];
     [self updateReviewControls];
 }
 
+// Only retained measurements are refreshed here. A timer can never create an
+// Analyze request, activate Final Cut, import a project, or apply timeline cuts.
+- (void)startAutomaticUpdateObservers {
+    NSNotificationCenter *center = NSWorkspace.sharedWorkspace.notificationCenter;
+    [center removeObserver:self name:NSWorkspaceDidActivateApplicationNotification object:nil];
+    [center addObserver:self selector:@selector(hostDidActivate:) name:NSWorkspaceDidActivateApplicationNotification object:nil];
+}
+
+- (void)stopAutomaticUpdateObservers {
+    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self name:NSWorkspaceDidActivateApplicationNotification object:nil];
+}
+
+- (void)hostDidActivate:(NSNotification *)notification {
+    id application = notification.userInfo[NSWorkspaceApplicationKey];
+    if (![application respondsToSelector:@selector(bundleIdentifier)] ||
+        ![[application bundleIdentifier] isEqual:@"com.apple.FinalCut"]) return;
+    [self onMain:^{
+        if (!self.automaticUpdatePending || !self.viewVisible) return;
+        self.automaticUpdateRejectedGeneration = 0;
+        [self queueAutomaticUpdate];
+    }];
+}
+
+- (void)cancelAutomaticUpdate {
+    [self.automaticUpdateTimer invalidate];
+    self.automaticUpdateTimer = nil;
+    self.automaticUpdateGeneration += 1;
+    self.automaticUpdatePending = NO;
+    self.pendingAutomaticSettings = nil;
+    self.submittedAutomaticSettings = nil;
+    self.automaticUpdateEdit = nil;
+    self.automaticUpdateRejectedGeneration = 0;
+    self.settingsPanel.accessibilityIdentifier = @"silentsnip.workflow.settings";
+}
+
+- (NSDictionary *)automaticSettingsValues {
+    NSArray *keys = @[@"thresholdDBFS", @"minimumSilenceDuration", @"beforeSpeechPadding", @"afterSpeechPadding"];
+    NSArray *lower = @[@-80, @0.0001, @0, @0], *upper = @[@0, @10, @2, @2];
+    NSMutableDictionary *values = [NSMutableDictionary new];
+    for (NSUInteger index = 0; index < keys.count; ++index) {
+        NSTextField *field = self.fields[index];
+        NSString *text = field.currentEditor ? field.currentEditor.string : field.stringValue;
+        text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        // A decimal point or exponent suffix is still an unfinished draft.
+        if (!text.length || [text hasSuffix:@"."] || [text hasSuffix:@"e"] || [text hasSuffix:@"E"] ||
+            [text hasSuffix:@"+"] || [text hasSuffix:@"-"]) return nil;
+        NSScanner *scanner = [NSScanner scannerWithString:text];
+        scanner.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        double number;
+        if (![scanner scanDouble:&number] || !scanner.isAtEnd || !isfinite(number) ||
+            number < [lower[index] doubleValue] || number > [upper[index] doubleValue]) return nil;
+        values[keys[index]] = @(number);
+    }
+    values[@"outputMode"] = self.output.indexOfSelectedItem == 1 ? @"gaps" : @"remove";
+    return values;
+}
+
+- (NSDictionary *)settingsValuesFromResponse:(NSDictionary *)response {
+    NSDictionary *wire = response[@"settings"];
+    if (![wire isKindOfClass:NSDictionary.class] || ![response[@"output"] isKindOfClass:NSString.class]) return nil;
+    NSArray *source = @[@"threshold", @"minimum", @"before", @"after"];
+    NSArray *target = @[@"thresholdDBFS", @"minimumSilenceDuration", @"beforeSpeechPadding", @"afterSpeechPadding"];
+    NSMutableDictionary *values = [NSMutableDictionary new];
+    for (NSUInteger index = 0; index < source.count; ++index) {
+        if (![wire[source[index]] isKindOfClass:NSNumber.class]) return nil;
+        values[target[index]] = wire[source[index]];
+    }
+    values[@"outputMode"] = response[@"output"];
+    return values;
+}
+
+// The harness injects this scheduler, so coalescing/cancellation tests use no
+// real run loop, windows, host activation, or elapsed-time assumptions.
+- (void)scheduleAutomaticUpdate:(dispatch_block_t)block afterDelay:(NSTimeInterval)delay {
+    [self.automaticUpdateTimer invalidate];
+    self.automaticUpdateTimer = [NSTimer timerWithTimeInterval:delay repeats:NO block:^(NSTimer *timer) { block(); }];
+    [NSRunLoop.mainRunLoop addTimer:self.automaticUpdateTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)queueAutomaticUpdate {
+    if (!self.automaticUpdatePending || self.automaticUpdateEdit || self.reviewClient.updatingCuts ||
+        self.automaticUpdateRejectedGeneration == self.automaticUpdateGeneration) return;
+    NSUInteger generation = self.automaticUpdateGeneration;
+    __weak SSWorkflowViewController *weakSelf = self;
+    [self scheduleAutomaticUpdate:^{ [weakSelf performAutomaticUpdate:generation]; } afterDelay:0.25];
+}
+
+- (void)performAutomaticUpdate:(NSUInteger)generation {
+    if (generation != self.automaticUpdateGeneration || !self.automaticUpdatePending ||
+        !self.viewVisible || !self.timeline || !self.settingsLoaded || self.verificationPanelPending ||
+        self.settingsSavePending || self.automaticUpdateEdit || self.reviewClient.busy ||
+        self.automaticUpdateRejectedGeneration == generation) return;
+    if (!self.libraryURL || !self.projectUID.length) return;
+    NSDictionary *context = [self observedProjectContext];
+    if (context && ![self projectContext:context hasSameIdentityAs:
+        @{@"projectUID": self.projectUID, @"libraryURL": self.libraryURL}]) {
+        [self refreshProject]; return;
+    }
+    // A missing SDK proxy cannot erase an already-owned local draft. This
+    // read-only command still requires the worker's independent fresh native
+    // project, selection, view, and visible-settings authorization. Manual
+    // Analyze and Apply retain their separate fresh SDK identity checks.
+    NSDictionary *values = [self automaticSettingsValues];
+    if (!values) return;
+    if (![values isEqual:self.pendingAutomaticSettings]) { [self settingsChanged:nil]; return; }
+    if (!self.reviewClient.automaticPreviewAvailable || !self.reviewClient.canUpdateCuts) return;
+    NSString *edit = NSUUID.UUID.UUIDString;
+    self.automaticUpdateEdit = edit;
+    self.automaticUpdateSubmittedGeneration = generation;
+    self.submittedAutomaticSettings = values;
+    self.settingsPanel.accessibilityIdentifier = [@"silentsnip.workflow.settings.requested." stringByAppendingString:edit];
+    [self setStatusMessage:@"Updating cut ranges…"];
+    if (![self.reviewClient automaticallyUpdateCutsWithSettings:values edit:edit]) {
+        BOOL superseded = generation != self.automaticUpdateGeneration;
+        if ([self.automaticUpdateEdit isEqual:edit]) {
+            self.automaticUpdateEdit = nil;
+            self.submittedAutomaticSettings = nil;
+            self.settingsPanel.accessibilityIdentifier = @"silentsnip.workflow.settings";
+            [self setStatusMessage:superseded ? @"Updating cut ranges…" : @"Return to Final Cut Pro to update the ranges."];
+        }
+        // A synchronous client publication can reenter with a newer draft.
+        // Resume that generation only; an unchanged background refusal waits
+        // for foreground activation rather than starting a retry loop.
+        if (superseded) [self queueAutomaticUpdate];
+    }
+    [self updateReviewControls];
+}
+
 - (void)settingsChanged:(id)sender {
-    if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
+    if ((self.reviewClient.busy && !self.reviewClient.updatingCuts) ||
+        [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
+    if (!self.handlingTextSettingsChange && ![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
     [self clearCompletionMessage];
     BOOL hadReview = self.reviewClient != nil;
-    if (self.reviewClient.canUpdateCuts) {
+    if (self.reviewClient.automaticPreviewAvailable || self.reviewClient.updatingCuts) {
+        NSDictionary *values = [self automaticSettingsValues];
+        if (values && ((self.automaticUpdatePending && [values isEqual:self.pendingAutomaticSettings]) ||
+            (!self.automaticUpdatePending && !self.reviewClient.updatingCuts &&
+             [values isEqual:[self settingsValuesFromResponse:self.reviewResponse]]))) return;
+        [self.automaticUpdateTimer invalidate];
+        self.automaticUpdateTimer = nil;
+        self.automaticUpdateGeneration += 1;
+        self.automaticUpdateRejectedGeneration = 0;
+        self.automaticUpdatePending = YES;
+        self.pendingAutomaticSettings = values;
+        // Invalidate the old native snapshot immediately, including while its
+        // reply is in flight. It cannot represent the user's newer field text.
+        self.settingsPanel.accessibilityIdentifier = @"silentsnip.workflow.settings";
         [self.reviewClient markSettingsDirty];
         [self updateReviewControls];
-        [self setStatusMessage:@"Settings changed—click Update Cuts."];
+        [self setStatusMessage:values ? @"Updating cut ranges…" : @"Finish entering detection settings."];
+        [self queueAutomaticUpdate];
         return;
     }
     [self invalidateReview];
     self.analyzeButton.enabled = self.settingsLoaded;
-    if (hadReview) [self setStatusMessage:@"Analyze again to update cuts."];
+    if (hadReview) {
+        self.analyzeButton.title = @"Analyze Again";
+        [self setStatusMessage:@"Click Analyze Again to update the cuts."];
+    }
 }
 
-- (void)controlTextDidChange:(NSNotification *)notification { [self settingsChanged:notification.object]; }
+- (void)controlTextDidChange:(NSNotification *)notification {
+    // During the native field-editor notification the SDK can temporarily
+    // omit its active sequence. Record the draft without synchronously asking
+    // the host; the debounced update still requires a fresh identity match.
+    BOOL previous = self.handlingTextSettingsChange;
+    self.handlingTextSettingsChange = YES;
+    [self settingsChanged:notification.object];
+    self.handlingTextSettingsChange = previous;
+}
 
 - (void)updateReviewControls {
-    self.applyButton.enabled = self.reviewClient.canApply;
-    self.cancelButton.enabled = self.reviewClient.canCancel;
-    self.allButton.enabled = self.reviewClient.canChangeSelection;
-    self.noneButton.enabled = self.reviewClient.canChangeSelection;
-    self.navigateMenu.enabled = self.reviewClient.canHighlight;
-    BOOL pendingUpdate = self.reviewClient.busy &&
-        [self.updateButton.accessibilityIdentifier hasPrefix:@"silentsnip.workflow.update.requested."];
-    self.updateButton.hidden = !self.reviewClient.canUpdateCuts && !pendingUpdate;
-    self.updateButton.enabled = self.settingsLoaded && self.reviewClient.canUpdateCuts && !self.reviewClient.busy;
+    BOOL currentRanges = !self.automaticUpdatePending && !self.reviewClient.updatingCuts;
+    BOOL changed = SSWorkflowSetControlEnabled(self.applyButton, currentRanges && self.reviewClient.canApply);
+    changed |= SSWorkflowSetControlEnabled(self.cancelButton, self.reviewClient.canCancel);
+    changed |= SSWorkflowSetControlEnabled(self.allButton, currentRanges && self.reviewClient.canChangeSelection);
+    changed |= SSWorkflowSetControlEnabled(self.noneButton, currentRanges && self.reviewClient.canChangeSelection);
+    changed |= SSWorkflowSetControlEnabled(self.navigateMenu, currentRanges && self.reviewClient.canHighlight);
+    BOOL previousRetryHidden = self.retryButton.hidden;
+    BOOL previousApplyHidden = self.applyButton.hidden;
     self.retryButton.hidden = ![self.reviewResponse[@"canRetryVerification"] boolValue];
     self.applyButton.hidden = !self.retryButton.hidden;
     self.cancelButton.hidden = NO;
     self.allButton.hidden = NO;
     self.noneButton.hidden = NO;
-    self.retryButton.enabled = !self.reviewClient.busy;
+    changed |= previousRetryHidden != self.retryButton.hidden || previousApplyHidden != self.applyButton.hidden;
+    changed |= SSWorkflowSetControlEnabled(self.retryButton, !self.reviewClient.busy);
     self.progressIndicator.hidden = !self.reviewClient.busy;
     NSNumber *fraction = self.reviewResponse[@"progress"];
     self.progressIndicator.indeterminate = fraction == nil;
@@ -917,10 +1449,21 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     else [self.progressIndicator stopAnimation:nil];
     for (NSButton *row in self.cutList.arrangedSubviews) {
         NSUInteger index = (NSUInteger)row.tag;
-        row.enabled = self.reviewClient.canChangeSelection && index < self.reviewCuts.count &&
-            [self.reviewCuts[index][@"eligible"] boolValue];
+        changed |= SSWorkflowSetControlEnabled(row, self.reviewClient.canChangeSelection && index < self.reviewCuts.count &&
+            [self.reviewCuts[index][@"eligible"] boolValue]);
     }
+    [self updateActionAppearance];
     [self updateDocumentFrame];
+    NSString *state = self.reviewResponse[@"state"] ?: @"idle";
+    if (self.reviewClient.updatingCuts) state = @"recalculating";
+    NSArray *knownStates = @[@"idle", @"starting", @"capturing", @"rendering", @"analyzing", @"review",
+        @"recalculating", @"applying", @"importing", @"verifying", @"completed", @"complete", @"cancelled", @"cancelling", @"failed"];
+    if (![knownStates containsObject:state]) state = @"working";
+    if (![self.pointerReviewState isEqual:state]) {
+        self.pointerReviewState = state;
+        changed = YES;
+    }
+    if (changed) [(SSWorkflowContentView *)self.view requestDefaultCursorRefreshForPhase:[@"state-" stringByAppendingString:state]];
 }
 
 - (void)setReviewStatus:(NSDictionary *)response {
@@ -928,18 +1471,36 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     NSString *state = response[@"state"];
     BOOL recovery = [response[@"canRetryVerification"] boolValue];
     BOOL completed = [@[@"completed", @"complete"] containsObject:state] && !recovery;
-    NSString *normalReview = @"Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts.";
+    // Accept the previous worker's known informational copy as well as the
+    // current wording. Unknown appended warnings must remain visible.
+    NSArray<NSString *> *normalReviews = @[
+        @"Analysis complete. Review the proposed ranges, then click Apply Cuts.",
+        @"Analysis complete. Review the proposed ranges, then choose Apply Selected Cuts."
+    ];
+    NSString *normalReview = nil;
+    for (NSString *candidate in normalReviews) {
+        if ([message hasPrefix:candidate]) { normalReview = candidate; break; }
+    }
     BOOL snapshot = [response[@"usesAudioSnapshot"] boolValue];
-    NSString *snapshotNotice = @"Cuts use the last analyzed audio. Apply verifies current audio before editing. Use Analyze Audio Again after changing volume or effects.";
+    NSArray<NSString *> *snapshotNotices = @[
+        @"Cuts use the last analyzed audio. Apply Cuts verifies the current audio before editing. Click Analyze Again after changing volume or audio effects.",
+        @"Cuts use the last analyzed audio. Apply verifies current audio before editing. Use Analyze Audio Again after changing volume or effects."
+    ];
+    BOOL knownSnapshotMessage = NO;
+    for (NSString *notice in snapshotNotices) {
+        for (NSString *review in normalReviews) {
+            if ([message isEqual:[NSString stringWithFormat:@"%@ %@", notice, review]]) knownSnapshotMessage = YES;
+        }
+    }
     if (!recovery && snapshot && [state isEqual:@"review"] &&
-        [message isEqual:[NSString stringWithFormat:@"%@ %@", snapshotNotice, normalReview]]) {
-        [self setStatusMessage:@"Cuts updated. Apply verifies current audio; Analyze again after changing volume or effects."];
+        knownSnapshotMessage) {
+        [self setStatusMessage:@"Cuts updated. Apply Cuts verifies the current audio. Click Analyze Again after changing volume or audio effects."];
         self.statusDetails.stringValue = message;
         self.statusDetails.toolTip = message;
         self.statusLabel.toolTip = message;
         return;
     }
-    if (completed || (!recovery && !snapshot && [state isEqual:@"review"] && [message hasPrefix:normalReview])) {
+    if (completed || (!recovery && !snapshot && [state isEqual:@"review"] && normalReview != nil)) {
         NSString *remaining = message;
         if (!completed) {
             // Remove only known informational copy. Any appended cleanup or
@@ -948,10 +1509,12 @@ static NSColor *SSWorkflowGray(CGFloat value) {
                 normalReview,
                 @"Reused verified audio measurements after checking the current project and source contents.",
                 @"Analyzed original audio; this clip has no audio adjustments or processing effects.",
+                @"Analyzed Final Cut Pro’s rendered audio, including clip volume and enabled audio effects.",
                 @"Analyzed Final Cut’s rendered audio, including clip volume and enabled effects.",
                 @"Threshold uses 10 ms average loudness (RMS), not peak meters.",
                 @"Apply creates a cleaned project copy with the retained processed sound preserved.",
                 @"The original project keeps its editable effects.",
+                @"Apply cuts the source clips in a cleaned project copy and keeps their audio effects editable.",
                 @"Quiet breaths may qualify; this detector does not classify breaths."
             ];
             for (NSString *text in boilerplate) remaining = [remaining stringByReplacingOccurrencesOfString:text withString:@""];
@@ -967,12 +1530,39 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 
 - (void)receiveReview:(NSDictionary *)response {
+    NSString *state = response[@"state"];
+    BOOL terminal = [@[@"completed", @"complete", @"failed", @"cancelled", @"unavailable"] containsObject:state];
+    if (terminal) {
+        [self cancelAutomaticUpdate];
+    } else if (self.automaticUpdateEdit && !self.reviewClient.updatingCuts &&
+        ([response[@"settingsEdit"] isEqual:self.automaticUpdateEdit] ||
+         [response[@"rejectedSettingsEdit"] isEqual:self.automaticUpdateEdit])) {
+        BOOL rejected = [response[@"rejectedSettingsEdit"] isEqual:self.automaticUpdateEdit];
+        BOOL latest = self.automaticUpdateSubmittedGeneration == self.automaticUpdateGeneration;
+        BOOL accepted = !rejected && [state isEqual:@"review"] && ![response[@"provisional"] boolValue] &&
+            [[self settingsValuesFromResponse:response] isEqual:self.submittedAutomaticSettings] &&
+            [[self automaticSettingsValues] isEqual:self.submittedAutomaticSettings];
+        self.automaticUpdateEdit = nil;
+        self.submittedAutomaticSettings = nil;
+        self.settingsPanel.accessibilityIdentifier = @"silentsnip.workflow.settings";
+        if (latest && accepted) {
+            self.automaticUpdatePending = NO;
+            self.pendingAutomaticSettings = nil;
+            [self.automaticUpdateTimer invalidate];
+            self.automaticUpdateTimer = nil;
+        } else if (latest && rejected) {
+            // A rejected native snapshot is not an accepted settings revision.
+            // Wait for a new edit/foreground return instead of resending it in
+            // an endless timer loop.
+            self.automaticUpdateRejectedGeneration = self.automaticUpdateGeneration;
+        }
+    }
     self.reviewResponse = response;
     if (!self.reviewClient.busy) {
-        self.updateButton.accessibilityIdentifier = @"silentsnip.workflow.update";
         self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
     }
-    NSArray *cuts = response[@"cuts"] ?: @[];
+    BOOL deferRanges = self.automaticUpdatePending && !terminal;
+    NSArray *cuts = deferRanges ? self.reviewCuts : (response[@"cuts"] ?: @[]);
     if (![cuts isEqual:self.reviewCuts]) {
         self.reviewCuts = cuts;
         [self.navigateMenu removeAllItems];
@@ -1011,17 +1601,24 @@ static NSColor *SSWorkflowGray(CGFloat value) {
             [self.cutList addArrangedSubview:row];
             [row.widthAnchor constraintEqualToAnchor:self.cutList.widthAnchor constant:-12].active = YES;
         }
+        [(SSWorkflowContentView *)self.view requestDefaultCursorRefreshForPhase:@"rows"];
     }
     NSString *summary = response[@"summary"] ?: @"";
     NSString *target = response[@"targetClipName"];
-    self.reviewSummary.stringValue = target.length ? [NSString stringWithFormat:@"Clip: %@\n%@", target, summary] : summary;
-    self.reviewSummary.toolTip = self.reviewSummary.stringValue;
-    [self setReviewStatus:response];
-    [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
+    if (!deferRanges) {
+        self.reviewSummary.stringValue = target.length ? [NSString stringWithFormat:@"Clip: %@\n%@", target, summary] : summary;
+        [self styleReviewSummary];
+        self.reviewSummary.toolTip = self.reviewSummary.stringValue;
+        [self setReviewStatus:response];
+    } else {
+        [self setStatusMessage:!self.pendingAutomaticSettings ? @"Finish entering detection settings." :
+            (self.automaticUpdateRejectedGeneration == self.automaticUpdateGeneration ?
+                @"Unable to update the ranges. Click Analyze Again to refresh the audio." : @"Updating cut ranges…")];
+    }
+    [self setControlsEnabled:self.settingsLoaded && (!self.reviewClient.busy || self.reviewClient.updatingCuts)];
     self.analyzeButton.title = @"Analyze Again";
     [self updateReviewControls];
-    NSString *state = response[@"state"];
-    if ([@[@"completed", @"complete", @"failed", @"cancelled", @"unavailable"] containsObject:state]) {
+    if (terminal) {
         self.completionMessage = [@[@"completed", @"complete"] containsObject:state] &&
             ![response[@"canRetryVerification"] boolValue] ? ([response[@"verificationOnly"] boolValue] ? @"Result verified." : @"Cuts applied.") : response[@"message"];
         // The response has no explicit result identity. Only the request's
@@ -1032,6 +1629,8 @@ static NSColor *SSWorkflowGray(CGFloat value) {
         // Apply can open its verified project copy; bind the settings UI to the
         // SDK's new active project only after the worker has finished.
         [self refreshProject];
+    } else if (self.automaticUpdatePending && !self.reviewClient.busy && !self.automaticUpdateEdit) {
+        [self queueAutomaticUpdate];
     }
 }
 
@@ -1046,7 +1645,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 
 - (void)analyzeAudio:(id)sender {
-    if (!self.settingsLoaded || self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
+    if (!self.settingsLoaded || self.settingsSavePending || self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
     if (![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
     NSDictionary *values = [self currentSettingsValues];
     if (!values) return;
@@ -1067,43 +1666,27 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     NSString *gesture = NSUUID.UUID.UUIDString;
     self.analyzeButton.accessibilityIdentifier = [@"silentsnip.workflow.analyze.requested." stringByAppendingString:gesture];
     [self setControlsEnabled:NO];
-    [self setStatusMessage:@"Starting analysis of the selected timeline clip…"];
+    [self setStatusMessage:@"Analyzing the selected timeline clip…"];
     [self.reviewClient startWithLibraryURL:self.libraryURL projectUID:self.projectUID
         projectName:self.projectLabel.stringValue settings:values gesture:gesture];
     [self updateReviewControls];
 }
 
 - (void)applyCuts:(id)sender {
-    if (!self.reviewClient.canApply) return;
+    if (self.automaticUpdatePending || self.reviewClient.updatingCuts || !self.reviewClient.canApply) return;
     if (![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
     NSString *gesture = NSUUID.UUID.UUIDString;
     self.applyButton.accessibilityIdentifier = [@"silentsnip.workflow.apply.requested." stringByAppendingString:gesture];
     self.applyButton.enabled = NO;
     [self.reviewClient sendApplyWithGesture:gesture];
-    [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
-    [self updateReviewControls];
-}
-
-- (void)updateCuts:(id)sender {
-    if (!self.settingsLoaded || !self.reviewClient.canUpdateCuts || self.reviewClient.busy) return;
-    if (![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
-    NSDictionary *values = [self currentSettingsValues];
-    if (!values) return;
-    NSString *gesture = NSUUID.UUID.UUIDString;
-    self.updateButton.accessibilityIdentifier = [@"silentsnip.workflow.update.requested." stringByAppendingString:gesture];
-    self.updateButton.enabled = NO;
-    if (![self.reviewClient updateCutsWithSettings:values gesture:gesture]) {
-        self.updateButton.accessibilityIdentifier = @"silentsnip.workflow.update";
-        [self setStatusMessage:@"The review changed. Analyze again to refresh cuts." requiresAttention:YES];
-    }
-    [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
+    [self setControlsEnabled:self.settingsLoaded && (!self.reviewClient.busy || self.reviewClient.updatingCuts)];
     [self updateReviewControls];
 }
 
 - (void)goToCut:(NSMenuItem *)sender {
     if (!self.reviewClient.canHighlight || ![self observedProjectMatchesSettings]) return;
     [self.reviewClient highlightCut:sender.representedObject];
-    [self setControlsEnabled:self.settingsLoaded && !self.reviewClient.busy];
+    [self setControlsEnabled:self.settingsLoaded && (!self.reviewClient.busy || self.reviewClient.updatingCuts)];
     [self updateReviewControls];
 }
 
@@ -1114,7 +1697,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     NSDictionary *current = [self observedProjectContext];
     if (generation != self.contextGeneration || !self.settingsLoaded || self.reviewClient.busy ||
         ![self observedProjectMatchesSettings] || ![self projectContext:context hasSameIdentityAs:current]) {
-        [self setStatusMessage:@"The open project changed. Choose Verify Existing Result again from the intended project." requiresAttention:YES];
+        [self setStatusMessage:@"The active project changed. Open the intended project and click Verify Existing Result." requiresAttention:YES];
         return;
     }
     [self clearCompletionMessage];
@@ -1134,7 +1717,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     NSString *gesture = NSUUID.UUID.UUIDString;
     self.verifyButton.accessibilityIdentifier = [@"silentsnip.workflow.verify.requested." stringByAppendingString:gesture];
     [self setControlsEnabled:NO];
-    [self setStatusMessage:@"Checking the existing result…"];
+    [self setStatusMessage:@"Verifying the existing result…"];
     if (![self.reviewClient verifyExistingResultURL:url libraryURL:self.libraryURL projectUID:self.projectUID
         projectName:current[@"projectName"] gesture:gesture]) {
         [self invalidateReview];
@@ -1158,7 +1741,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 // These two boundaries let the harness model the real file-sheet completion
 // and delayed SDK restoration without opening a panel or running host events.
 - (NSDictionary *)beginVerificationPanel {
-    if (!self.settingsLoaded || self.verificationPanelPending || self.reviewClient.busy ||
+    if (!self.settingsLoaded || self.settingsSavePending || self.automaticUpdatePending || self.verificationPanelPending || self.reviewClient.busy ||
         [self.reviewResponse[@"canRetryVerification"] boolValue] || ![self observedProjectMatchesSettings]) return nil;
     NSDictionary *context = [self observedProjectContext];
     if (!context) return nil;
@@ -1189,13 +1772,13 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.verificationPanelPending = NO;
     [self setControlsEnabled:self.settingsLoaded];
     if (!current) {
-        [self setStatusMessage:@"Final Cut did not restore the open project after closing the file chooser. Reopen Verify Existing Result to try again." requiresAttention:YES];
+        [self setStatusMessage:@"Final Cut Pro did not restore the open project after the file dialog closed. Click Verify Existing Result to try again." requiresAttention:YES];
         return;
     }
     if ([ticket[@"generation"] unsignedIntegerValue] != self.contextGeneration ||
         ![self projectContext:ticket[@"context"] hasSameIdentityAs:current]) {
         [self refreshProject];
-        [self setStatusMessage:@"The open project changed while choosing the result. Choose Verify Existing Result again from the intended project." requiresAttention:YES];
+        [self setStatusMessage:@"The active project changed while selecting the result. Open the intended project and click Verify Existing Result." requiresAttention:YES];
         return;
     }
     [self verifyResultURL:url context:ticket[@"context"] generation:[ticket[@"generation"] unsignedIntegerValue]];
@@ -1222,7 +1805,9 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     NSDictionary *ticket = [self beginVerificationPanel];
     if (!ticket) return;
     NSOpenPanel *panel = [NSOpenPanel openPanel];
-    panel.message = @"Choose Silent Snip.fcpxml from the saved result folder. Verification checks the existing project without importing again.";
+    panel.title = @"Verify Existing Result";
+    panel.prompt = @"Verify";
+    panel.message = @"Select Silent Snip.fcpxml from the saved result folder. Silent Snip verifies the existing project without importing it again.";
     panel.canChooseDirectories = NO;
     panel.allowsMultipleSelection = NO;
     __weak SSWorkflowViewController *weakSelf = self;
@@ -1233,6 +1818,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 
 - (void)cancelReview:(id)sender {
+    [self cancelAutomaticUpdate];
     if (self.reviewClient.canCancel) [self.reviewClient cancel];
     [self updateReviewControls];
 }
@@ -1247,7 +1833,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 - (void)retryVerification:(id)sender { [self.reviewClient retryVerification]; [self updateReviewControls]; }
 
 - (void)saveSettings:(id)sender {
-    if (!self.settingsLoaded || self.reviewClient.busy || !self.libraryURL || !self.projectUID.length) return;
+    if (!self.settingsLoaded || self.settingsSavePending || (self.reviewClient.busy && !self.reviewClient.updatingCuts) || !self.libraryURL || !self.projectUID.length) return;
     // A pending host notification must not let old visible controls write
     // settings under a different project's identity.
     if (![self observedProjectMatchesSettings]) {
@@ -1257,14 +1843,20 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     NSDictionary *values = [self currentSettingsValues];
     if (!values) return;
     NSUInteger generation = self.contextGeneration;
-    [self setControlsEnabled:NO];
-    [self setStatusMessage:@"Saving…"];
+    self.settingsSavePending = YES;
+    [self setControlsEnabled:self.reviewClient.automaticPreviewAvailable || self.reviewClient.updatingCuts];
+    [self setStatusMessage:@"Saving settings…"];
     __weak SSWorkflowViewController *weakSelf = self;
     [self.settings saveValues:values libraryURL:self.libraryURL projectUID:self.projectUID completion:^(NSError *error) {
         SSWorkflowViewController *owner = weakSelf;
         if (!owner || generation != owner.contextGeneration || !owner.timeline) return;
+        owner.settingsSavePending = NO;
         [owner setControlsEnabled:YES];
-        if (!owner.reviewClient.busy && ![owner.reviewResponse[@"canRetryVerification"] boolValue])
+        if (owner.automaticUpdatePending) {
+            owner.automaticUpdateRejectedGeneration = 0;
+            [owner queueAutomaticUpdate];
+        }
+        if (!owner.automaticUpdatePending && !owner.reviewClient.busy && ![owner.reviewResponse[@"canRetryVerification"] boolValue])
             [owner setStatusMessage:error ? error.localizedDescription : @"Settings saved." requiresAttention:error != nil];
     }];
 }

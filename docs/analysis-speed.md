@@ -10,9 +10,9 @@ Analyze captures fresh project XML and hashes source contents before checking a 
 
 The key includes the project fingerprint and identity, selected occurrence, measurement window size, host process and launch time, and source content snapshot. Silent Snip controller settings are excluded from the rendering fingerprint. Processing order, bypass, serialized settings, trim, timing, volume, fades, automation, and channel changes invalidate reuse. Source files changed without changing their size or timestamp also invalidate it. Apply retains its separate fresh-project and media checks.
 
-Processed-audio reuse is deliberately narrow. Supported built-in volume/panning/channel/fade data and Apple's Noise Gate with serialized `effectState` can qualify. Preset-only state, missing effect state, partial native parameter lists, other effects, nested mixes, extra audio references, and retiming cannot qualify. These use the existing full Final Cut render workflow, which retains the complete supported effect chain; there is no source-audio fallback.
+Worker71 rejects cache reuse whenever any retained project audio filter is present, including Noise Gate with an opaque `effectState`, third-party or bypassed effects, component effects, and effects on neighboring clips. Names, UID formats, parameters and archive bytes do not prove private settings are complete. Only the exact passthrough Silent Snip controller is exempt. Supported fully serialized volume/panning/channel/fade adjustments can still qualify; nested mixes, extra references and retiming remain excluded. Effects obtain fresh native audio; XML isolation of rendering filters is blocked rather than reconstructing omitted state.
 
-The saved Noise Gate/Limiter export inspected for this update contains a gate preset reference and a limiter with omitted settings. That combination always rerenders under this policy. A preset name does not establish that the preset contents are unchanged, and a partial parameter list does not establish complete state. Further effect types require evidence of complete serialized state before enabling their cache reuse.
+The saved Noise Gate/Limiter export inspected for this update contains a gate preset reference and a limiter with omitted settings. That combination always rerenders under this policy. A preset name does not establish that the preset contents are unchanged, and a partial parameter list does not establish complete state. No rendering effect currently has a validated completeness policy that permits cross-Analyze reuse.
 
 An eligible cache retains at most one analysis, capped at 360,000 measurement windows, eight channels, and a 256 MiB rendered file. Rendered audio is copied into the owning job directory and content-verified before the Share-delivered file is cleaned up. Every reuse verifies that copy again. A mismatch, eviction, or normal helper shutdown removes only the owned cache copy. Source media is never deleted. There is no disk-cache restoration after helper restart; an abrupt termination can leave an unused job artifact.
 
@@ -20,7 +20,7 @@ After render, source, restored-project, and edit-representability checks pass, v
 
 ## Timing evidence
 
-Each run writes `Analysis-Timing.json` under `~/Library/Application Support/SilentSnip/Temporary/<request UUID>/`. It records outcome, cache status, total seconds, time to verified preview, and stage durations. Stages distinguish capture, source validation, cache validation/recalculation, render preparation, rendering, render verification, returning to the original, measurement, detection, original-project verification, cache storage, cleanup, and Controls restoration. Failed and cancelled attempts also write reports; only reached stages appear.
+Each run writes `Analysis-Timing.json` under `~/Library/Application Support/Silent Snip/Temporary/<request UUID>/`. It records outcome, cache status, total seconds, time to verified preview, and stage durations. Stages distinguish capture, source validation, cache validation/recalculation, render preparation, rendering, render verification, returning to the original, measurement, detection, original-project verification, cache storage, cleanup, and Controls restoration. Failed and cancelled attempts also write reports; only reached stages appear.
 
 The offline fixture is 300 seconds of stereo 48 kHz PCM. Three decoding/hash runs and thirty detector recalculations were measured per build configuration. Debug and Release produced identical 60 cut ranges, and both source and rendered-file decoding paths agreed.
 
@@ -35,7 +35,7 @@ This benchmark excludes Final Cut exports, effect rendering, project transitions
 
 Evidence is in `build/AnalysisSpeed/`: `Benchmark-Summary.json`, raw `benchmark-debug.json` and `benchmark-release.json`, full test logs, Controls/build-script logs, and candidate-build logs. The opt-in benchmark test takes `SILENT_SNIP_BENCHMARK_INPUT` and `SILENT_SNIP_BENCHMARK_OUTPUT`; otherwise it skips. Reuse `build/swift` for sequential Debug/Release runs.
 
-Offline verification: 358 full Release Swift tests pass (281 Mac, 77 Core); eight focused cache/timing checks pass after the final policy adjustment; 16 independent Controls scenarios plus the shared-state contract pass; 22 build/registration tests pass. The earlier full Debug run passed 357 tests before the host-session/alias case was added.
+Historical cache implementation verification: 358 full Release Swift tests passed (281 Mac, 77 Core); eight focused cache/timing checks pass after the final policy adjustment; 16 independent Controls scenarios plus the shared-state contract pass; 22 build/registration tests pass. The earlier full Debug run passed 357 tests before the host-session/alias case was added.
 
 ## Install and test
 
@@ -57,3 +57,6 @@ Use small disposable projects only in the existing workspace `Cutdown Integratio
 5. Check preview persistence, effect-removal dismissal, and Apply to a separate result project. Offline tests do not establish these host behaviors.
 
 Live Analyze/Apply correctness and end-to-end speed remain unverified for this revision.
+
+
+Worker71 final validation passed **843 Swift tests**, three existing skips and zero failures. Native Gate/Legacy Limiter preservation and exact timing are documented in the [current correction report](workflow-extension-prototype.md#native-audio-effect-preservation-correction).

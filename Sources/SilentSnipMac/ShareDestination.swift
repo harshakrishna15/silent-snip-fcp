@@ -29,15 +29,15 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     case invalidName, invalidFile, unknownDelivery, duplicateXML, unsupportedMedia, alreadyCompleted, shareInProgress, changedDelivery, scriptingUnavailable
     public var errorDescription: String? {
         switch self {
-        case .invalidName: return "Final Cut supplied an empty or unsafe project name for Share to Silent Snip."
+        case .invalidName: return "Final Cut Pro supplied an empty or unsupported project name for Share to Silent Snip."
         case .invalidFile: return "A shared file is missing, empty, or outside the folder reserved for this export. Share the project again."
         case .unknownDelivery: return "These files do not belong to a pending Share to Silent Snip export."
-        case .duplicateXML: return "Final Cut supplied more than one project XML file for this export."
+        case .duplicateXML: return "Final Cut Pro supplied more than one project XML file for this export."
         case .unsupportedMedia: return "Share to Silent Snip needs uncompressed audio. Configure the destination for Audio Only with WAV, AIFF, or CAF audio."
         case .alreadyCompleted: return "This Share to Silent Snip export was already received."
         case .shareInProgress: return "Another Share to Silent Snip export or analysis is in progress. Wait for it to finish, or cancel it in Silent Snip before sharing again."
-        case .changedDelivery: return "A shared file changed after Final Cut delivered it. Silent Snip left that file in place; share the project again."
-        case .scriptingUnavailable: return "Silent Snip could not create the scripting reference needed by Final Cut. Rebuild and register the helper with its SilentSnip.sdef resource."
+        case .changedDelivery: return "A shared file changed after Final Cut Pro delivered it. Silent Snip left that file in place; share the project again."
+        case .scriptingUnavailable: return "Silent Snip could not connect to the Share destination in Final Cut Pro. Reinstall Silent Snip, then try again."
         }
     }
 }
@@ -69,7 +69,9 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         var completedXML: Data?
     }
     private var xmlRequest: XMLRequest?
-    public var hasActiveRequest: Bool { xmlRequest != nil }
+    private var cleanupRegistrations: [UUID: Task<Void, Never>] = [:]
+    private var cleanupRegistrationTail: (id: UUID, task: Task<Void, Never>)?
+    public var hasActiveRequest: Bool { xmlRequest != nil || !cleanupRegistrations.isEmpty }
 #if DEBUG
     func prototypeShareRequestMatches(projectName: String) -> Bool {
         xmlRequest?.projectName == projectName
@@ -103,13 +105,36 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     public func captureMedia(projectName: String, timeout: TimeInterval = 3600,
                              trigger: () async throws -> Void) async throws -> ShareDestinationReceipt {
         let receipt = try await capture(projectName: projectName, requiresMedia: true, timeout: timeout, trigger: trigger)
-        // Register only verified, request-owned renders. Manual Share exports,
-        // unknown/incomplete files and original media are never cleanup inputs.
-        let storage = cleanupStorage
-        await Task.detached(priority: .utility) {
-            for url in receipt.mediaURLs { _ = try? storage.register(url) }
-        }.value
+        // Completion schedules registration even if this waiter is canceled.
+        // A successful consumer still waits for its disposable-media inventory.
+        if let registration = cleanupRegistrations[receipt.id] { await registration.value }
         return receipt
+    }
+
+    /// Keep registration independent of a successful capture waiter. Native
+    /// background exports can complete after Cancel, timeout or worker restart.
+    /// Only the exact verified, completed request-owned media enter this queue.
+    private func registerCompletedRender(_ receipt: ShareDestinationReceipt) {
+        guard cleanupRegistrations[receipt.id] == nil else { return }
+        let id = receipt.id, urls = receipt.mediaURLs, storage = cleanupStorage
+        let previous = cleanupRegistrationTail?.task
+        let work = Task.detached(priority: .utility) {
+            // Serialize record-folder creation and writes across late deliveries.
+            await previous?.value
+            for url in urls { _ = try? storage.register(url) }
+        }
+        let completion = Task { @MainActor [weak self] in
+            await work.value
+            self?.cleanupRegistrations.removeValue(forKey: id)
+            if self?.cleanupRegistrationTail?.id == id { self?.cleanupRegistrationTail = nil }
+        }
+        cleanupRegistrations[id] = completion
+        cleanupRegistrationTail = (id, completion)
+    }
+
+    /// Await already scheduled disk work without starting a Share or a cleanup.
+    func waitForCleanupRegistrations() async {
+        for task in Array(cleanupRegistrations.values) { await task.value }
     }
 
     private func capture(projectName: String, requiresMedia: Bool, timeout: TimeInterval,
@@ -167,7 +192,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
             }
             try await Task.sleep(for: .milliseconds(100))
         }
-        throw FinalCutCaptureError.unavailable("Final Cut did not deliver the requested project XML through Share to Silent Snip. No cuts were imported.")
+        throw FinalCutCaptureError.unavailable("Final Cut Pro did not deliver the requested project XML through Share to Silent Snip. No cuts were imported.")
     }
 
     public init(rootURL: URL? = nil) {
@@ -233,6 +258,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                 asset.completed = true
                 try persist(asset)
                 record("open-complete", asset: asset, details: ["files": urls.map(\.path)])
+                if asset.requestOwned && asset.requiresMedia { registerCompletedRender(receipt) }
                 if asset.requestOwned || !asset.requiresMedia {
                     if xmlRequest?.assetID == asset.id { xmlRequest?.result = .success(receipt) }
                     // A canceled or restarted request must never start a different analysis.

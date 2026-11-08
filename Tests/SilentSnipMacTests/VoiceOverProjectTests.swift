@@ -7,6 +7,15 @@ import FoundationXML
 @testable import SilentSnipMac
 
 final class VoiceOverProjectTests: XCTestCase {
+    /// Diagnostic bytes have no send/import operation. They only exercise
+    /// source geometry and serialized-state verification in this test folder.
+    private struct SerializationFixture {
+        let output: EditedProjectOutput
+        let outputURL: URL
+        let recoveryURL: URL
+        let recoveryData: Data
+    }
+
     private var folder: URL!
     private var library: URL { folder.appendingPathComponent("VoiceOver.fcpbundle") }
     private var voice: URL { folder.appendingPathComponent("Narration.wav") }
@@ -44,16 +53,30 @@ final class VoiceOverProjectTests: XCTestCase {
         """.utf8)
     }
 
-    private func prepare(mode: SilentSnipOutputMode = .remove) throws -> PreparedXMLProject {
-        try XMLProjectApply.prepare(projectData: fixture(), selection: selection, cuts: cuts,
-            settings: .defaults, mode: mode, outputName: "Narration — Cleaned — Test",
-            directory: folder.appendingPathComponent("Result"), selectedClipOnly: true, useOriginalEvent: true, omitController: true)
+    private func serializationFixture(_ input: Data? = nil, mode: SilentSnipOutputMode = .remove,
+                                      outputName: String = "Narration — Cleaned — Test", suffix: String = "Result",
+                                      selectedClipOnly: Bool = true) throws -> SerializationFixture {
+        let original = input ?? fixture()
+        let document = try TimelineParser.parse(data: original)
+        let gap = try mode.gapDuration(frame: document.frameDuration)
+        let gaps = gap.map { duration in Dictionary(uniqueKeysWithValues: cuts.map { ($0, duration) }) } ?? [:]
+        let output = try EditedProjectWriter.serializationExpectation(projectData: original, selection: selection,
+            selectedRanges: cuts, outputName: outputName, destinationLibrary: library, replacementGaps: gaps,
+            selectedClipOnly: selectedClipOnly, useOriginalEvent: true, omitController: true)
+        let recovery = try ProjectRecoverySnapshot.recovery(data: original, name: document.projectName + " — Before Cuts")
+        let directory = folder.appendingPathComponent(suffix)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let outputURL = directory.appendingPathComponent("Silent Snip.fcpxml")
+        let recoveryURL = directory.appendingPathComponent("Before-Cuts.fcpxml")
+        try output.xmlData.write(to: outputURL, options: .withoutOverwriting)
+        try recovery.write(to: recoveryURL, options: .withoutOverwriting)
+        return .init(output: output, outputURL: outputURL, recoveryURL: recoveryURL, recoveryData: recovery)
     }
 
-    func testSelectedRecordingBecomesSeparateProjectAtZeroWithOriginalSourceTrimsAndEffects() throws {
+    func testSerializationExpectationPlacesSelectedRecordingAtZeroWithOriginalSourceTrimsAndFilterXML() throws {
         let input = fixture()
         XCTAssertEqual(try ClipAudioAnalysisRoute.resolve(projectData: input, selection: selection), .finalCutRender)
-        let prepared = try prepare()
+        let prepared = try serializationFixture()
         let result = try TimelineParser.parse(data: prepared.output.xmlData)
         XCTAssertEqual(result.projectRange.duration, .init(7))
         XCTAssertEqual(result.projectTimecodeStart, .zero)
@@ -71,7 +94,7 @@ final class VoiceOverProjectTests: XCTestCase {
         XCTAssertEqual(prepared.output.report.eventUID.uuidString, event)
         let xml = try XMLDocument(data: prepared.output.xmlData)
         XCTAssertEqual(try xml.nodes(forXPath: "//spine/asset-clip/filter-audio[@ref='ss']").count, 0,
-                       "Keep all sound-processing effects, while leaving the passthrough detector on the original")
+                       "Diagnostic XML copies serialized processing while omitting the passthrough detector")
         XCTAssertEqual(try xml.nodes(forXPath: "//event/@name").first?.stringValue, "Voice-over Event")
         XCTAssertEqual(try xml.nodes(forXPath: "//event/project").count, 1)
         XCTAssertEqual(try xml.nodes(forXPath: "//filter-audio[@ref='gate']/param[@key='threshold']/@value").map(\.stringValue), ["-35", "-35", "-35"])
@@ -83,13 +106,11 @@ final class VoiceOverProjectTests: XCTestCase {
                        try TimelineParser.parse(data: input).fingerprint)
     }
 
-    func testFullProjectCopyKeepsNeighborsAndLinkedVideoWithEditableEffects() throws {
+    func testSerializationExpectationKeepsNeighborsLinkedVideoAndFilterXML() throws {
         let input = Data(String(decoding: fixture(), as: UTF8.self)
             .replacingOccurrences(of: "hasAudio=\"1\"", with: "hasAudio=\"1\" hasVideo=\"1\"").utf8)
-        let prepared = try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
-            settings: .defaults, mode: .remove, outputName: "Full Edit — Cleaned",
-            directory: folder.appendingPathComponent("Full Result"), selectedClipOnly: false,
-            useOriginalEvent: true, omitController: true)
+        let prepared = try serializationFixture(input, outputName: "Full Edit — Cleaned", suffix: "Full Result",
+            selectedClipOnly: false)
         let result = try TimelineParser.parse(data: prepared.output.xmlData)
         XCTAssertEqual(result.projectRange.duration, .init(14))
         XCTAssertEqual(result.projectTimecodeStart, .init(7200))
@@ -108,8 +129,8 @@ final class VoiceOverProjectTests: XCTestCase {
                        try TimelineParser.parse(data: input).fingerprint)
     }
 
-    func testGapOutputUsesSelectedRecordingClockAndKeepsOriginalEvent() throws {
-        let prepared = try prepare(mode: .gaps)
+    func testGapSerializationExpectationUsesSelectedRecordingClockAndOriginalEvent() throws {
+        let prepared = try serializationFixture(mode: .gaps)
         let output = try TimelineParser.parse(data: prepared.output.xmlData)
         XCTAssertEqual(output.projectRange.duration, .init(9))
         XCTAssertEqual(output.clips.filter { $0.kind == "gap" }.map(\.timelineRange), [
@@ -121,14 +142,34 @@ final class VoiceOverProjectTests: XCTestCase {
     }
 
     func testSeparateOutputCannotReplaceOriginalOrReuseItsName() throws {
-        XCTAssertThrowsError(try EditedProjectWriter.write(projectData: fixture(), selection: selection,
+        XCTAssertThrowsError(try EditedProjectWriter.serializationExpectation(projectData: fixture(), selection: selection,
             selectedRanges: cuts, outputName: "Original Edit", replaceOriginal: true, selectedClipOnly: true))
-        XCTAssertThrowsError(try EditedProjectWriter.write(projectData: fixture(), selection: selection,
+        XCTAssertThrowsError(try EditedProjectWriter.serializationExpectation(projectData: fixture(), selection: selection,
             selectedRanges: cuts, outputName: "Original Edit", selectedClipOnly: true, useOriginalEvent: true))
     }
 
-    @MainActor func testVerificationUsesSelectedSourceEvidenceAndRejectsChangedEffectsOrDestination() async throws {
-        let prepared = try prepare()
+    func testPublicPrepareRejectsEffectBearingSourceBeforeCreatingImportArtifacts() throws {
+        let input = fixture()
+        for mode in [SilentSnipOutputMode.remove, .gaps] {
+            let directory = folder.appendingPathComponent("Rejected-" + mode.rawValue)
+            XCTAssertThrowsError(try XMLProjectApply.prepare(projectData: input, selection: selection, cuts: cuts,
+                settings: .defaults, mode: mode, outputName: "Blocked Narration " + mode.rawValue,
+                directory: directory, selectedClipOnly: true, useOriginalEvent: true, omitController: true)) {
+                guard let error = $0 as? EditedProjectWriterError, case .unsupported(let reason) = error else {
+                    return XCTFail("Expected the native-effect reconstruction guard, got \($0)")
+                }
+                XCTAssertTrue(reason.contains("Noise Gate"))
+                XCTAssertTrue(reason.contains("cannot safely recreate"))
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path),
+                "Rejected native effects must not create an importable result folder")
+        }
+        XCTAssertEqual(input, fixture())
+        XCTAssertEqual(try Data(contentsOf: voice), Data("voice source".utf8))
+    }
+
+    @MainActor func testSerializedVerificationUsesSelectedSourceEvidenceAndRejectsChangedEffectsOrDestination() async throws {
+        let prepared = try serializationFixture()
         let fullMedia = try await MediaContentSnapshot.capture([voice, neighbor])
         let selectedMedia = try fullMedia.restricting(to: [voice])
         let currentVoice = try await MediaContentSnapshot.capture([voice])

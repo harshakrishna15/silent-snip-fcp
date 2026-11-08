@@ -26,6 +26,12 @@ public enum ReviewWire {
               data.count <= maximumBytes else { throw ReviewTransportError.invalidPayload }
         let command = try JSONDecoder().decode(ReviewCommand.self, from: data)
         guard command.version == version else { throw ReviewTransportError.invalidPayload }
+        if command.automaticPreview != nil {
+            guard command.command == .recalculate,
+                  command.automaticPreview != true || (command.localPreview == true && command.verifySettings == true) else {
+                throw ReviewTransportError.invalidPayload
+            }
+        }
         switch command.command {
         case .recalculate:
             guard command.expectedRevision.map({ $0 >= 0 }) == true, command.view != nil,
@@ -100,17 +106,19 @@ public struct ReviewCommand: Codable, Equatable, Sendable {
     public let settingsSequence: Int?
     public let verifySettings: Bool?
     public let localPreview: Bool?
+    /// Recalculate only a native settings snapshot; never capture or apply.
+    public let automaticPreview: Bool?
 
     public init(request: UUID, command: Kind, cutID: String? = nil, included: Bool? = nil,
                 expectedRevision: Int? = nil, view: UUID? = nil, applyGesture: UUID? = nil,
                 settings: ReviewWireSettings? = nil, output: String? = nil,
                 settingsEdit: UUID? = nil, settingsSequence: Int? = nil, verifySettings: Bool? = nil,
-                localPreview: Bool? = nil) {
+                localPreview: Bool? = nil, automaticPreview: Bool? = nil) {
         version = ReviewWire.version; self.request = request; self.command = command
         self.cutID = cutID; self.included = included
         self.expectedRevision = expectedRevision
         self.view = view; self.applyGesture = applyGesture
-        self.localPreview = localPreview
+        self.localPreview = localPreview; self.automaticPreview = automaticPreview
         self.settings = settings; self.output = output; self.settingsEdit = settingsEdit; self.settingsSequence = settingsSequence
         self.verifySettings = verifySettings
     }
@@ -152,6 +160,11 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     public let output: String?
     public let provisional: Bool?
     public let canUpdateCuts: Bool?
+    public let automaticPreviewAvailable: Bool?
+    /// A declined automatic edit leaves accepted settings/cuts unchanged. The
+    /// UUID/sequence is acknowledged separately, even at the same revision.
+    public let rejectedSettingsEdit: UUID?
+    public let rejectedSettingsSequence: Int?
     public let usesAudioSnapshot: Bool?
     public let targetClipName: String?
     /// A Workflow-origin operation keeps its native action identity on every
@@ -164,7 +177,8 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
                 summary: String? = nil, cuts: [ReviewCutResponse] = [], canApply: Bool = false,
                 canChangeSelection: Bool = false, canCancel: Bool = false, canHighlight: Bool = false, previewVisible: Bool? = nil, canRetryVerification: Bool? = nil,
                 settingsEdit: UUID? = nil, settings: ReviewWireSettings? = nil, output: String? = nil, provisional: Bool? = nil,
-                canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil, targetClipName: String? = nil, workflowGesture: UUID? = nil) {
+                canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil, targetClipName: String? = nil, workflowGesture: UUID? = nil,
+                automaticPreviewAvailable: Bool? = nil, rejectedSettingsEdit: UUID? = nil, rejectedSettingsSequence: Int? = nil) {
         version = ReviewWire.version; self.request = request; self.revision = revision
         self.state = state; self.message = message; self.progress = progress
         self.summary = summary; self.cuts = cuts
@@ -174,12 +188,16 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
         self.canRetryVerification = canRetryVerification
         self.settingsEdit = settingsEdit; self.settings = settings; self.output = output; self.provisional = provisional
         self.canUpdateCuts = canUpdateCuts; self.usesAudioSnapshot = usesAudioSnapshot
+        self.automaticPreviewAvailable = automaticPreviewAvailable
+        self.rejectedSettingsEdit = rejectedSettingsEdit; self.rejectedSettingsSequence = rejectedSettingsSequence
         self.targetClipName = targetClipName; self.workflowGesture = workflowGesture
     }
 }
 
-/// One immutable, validated wire payload per revision. Status retries reuse its
-/// bytes; the local helper still receives the original typed response.
+/// One bounded review or declined-edit acknowledgment. Accepted mutations
+/// advance revisions; a declined automatic draft can be acknowledged at the
+/// existing revision without changing accepted settings or cuts. Polls reuse
+/// the current publication's bytes and the helper receives its typed response.
 public struct ReviewPublication: Sendable {
     public let response: ReviewResponse
     public let object: String
@@ -326,5 +344,5 @@ enum WorkflowAvailability {
 
 public enum ReviewTransportError: LocalizedError {
     case invalidPayload
-    public var errorDescription: String? { "Silent Snip received an invalid review message. Analyze again." }
+    public var errorDescription: String? { "Silent Snip received an invalid review message. Analyze the clip again." }
 }

@@ -136,6 +136,88 @@ final class ShareDestinationTests: XCTestCase {
         }
     }
 
+    @MainActor func testLateCanceledRenderIsRegisteredAfterCompletionAndRestart() async throws {
+        for restart in [false, true] {
+            let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+                .appendingPathComponent("StorageShareTests-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let manager = ShareDestinationManager(rootURL: root.appendingPathComponent("Share Inbox"))
+            var pending: ShareDestinationAsset?
+            let started = expectation(description: "Native export dispatched")
+            let capture = Task { @MainActor in
+                try await manager.captureMedia(projectName: "Canceled") {
+                    pending = try manager.createAsset(name: "Canceled")
+                    started.fulfill()
+                }
+            }
+            await fulfillment(of: [started], timeout: 1)
+            capture.cancel()
+            do { _ = try await capture.value; XCTFail("The canceled waiter must stop") }
+            catch is CancellationError { }
+            XCTAssertFalse(manager.hasActiveRequest)
+            let asset = try XCTUnwrap(pending)
+            let receiver = restart ? ShareDestinationManager(rootURL: manager.rootURL) : manager
+            var deliveries = 0
+            receiver.onReceive = { _ in deliveries += 1 }
+            let xml = try write("Canceled.fcpxml", in: asset.directoryURL)
+            let audio = try write("Canceled.wav", in: asset.directoryURL)
+            let unknown = try write("Unknown.wav", in: asset.directoryURL, contents: "Unregistered file")
+            let source = try write("Original.wav", in: root, contents: "Original media")
+
+            XCTAssertTrue(receiver.handleOpen(urls: [xml]))
+            XCTAssertFalse(receiver.hasActiveRequest, "Partial exports must not enter the cleanup queue")
+            XCTAssertEqual(StorageCleanup(root: root).clean(manual: true).removedFiles, 0)
+            XCTAssertEqual(try String(contentsOf: audio), "fixture")
+
+            XCTAssertTrue(receiver.handleOpen(urls: [audio]))
+            XCTAssertTrue(receiver.hasActiveRequest, "Shutdown and maintenance must wait for queued registration")
+            await receiver.waitForCleanupRegistrations()
+            XCTAssertFalse(receiver.hasActiveRequest)
+            XCTAssertEqual(deliveries, 0, "Late completion must never start a different analysis")
+            let manual = try receiver.createAsset(name: "User Export")
+            let manualXML = try write("User Export.fcpxml", in: manual.directoryURL)
+            let manualAudio = try write("User Export.wav", in: manual.directoryURL)
+            XCTAssertTrue(receiver.handleOpen(urls: [manualXML, manualAudio]))
+            XCTAssertEqual(deliveries, 1)
+
+            let report = StorageCleanup(root: root).clean(manual: true)
+            XCTAssertEqual(report.removedFiles, 1, "Only the completed request-owned render becomes disposable")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: audio.path))
+            for file in [xml, unknown, source, manualXML, manualAudio] {
+                XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "Preserve \(file.lastPathComponent)")
+            }
+            XCTAssertEqual(try String(contentsOf: source), "Original media")
+        }
+    }
+
+    @MainActor func testConsecutiveLateRendersSerializeCleanupRegistration() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("StorageShareTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = ShareDestinationManager(rootURL: root.appendingPathComponent("Share Inbox"))
+        var pending: [ShareDestinationAsset] = []
+        for name in ["First", "Second"] {
+            do {
+                _ = try await manager.captureMedia(projectName: name) {
+                    pending.append(try manager.createAsset(name: name))
+                    throw CancellationError()
+                }
+                XCTFail("Expected cancellation")
+            } catch is CancellationError { }
+        }
+        var xmls: [URL] = []
+        for asset in pending {
+            let xml = try write(asset.name + ".fcpxml", in: asset.directoryURL)
+            let audio = try write(asset.name + ".wav", in: asset.directoryURL)
+            xmls.append(xml)
+            XCTAssertTrue(manager.handleOpen(urls: [xml, audio]))
+        }
+        await manager.waitForCleanupRegistrations()
+        XCTAssertFalse(manager.hasActiveRequest)
+        XCTAssertEqual(StorageCleanup(root: root).clean(manual: true).removedFiles, 2)
+        for xml in xmls { XCTAssertEqual(try String(contentsOf: xml), "fixture") }
+    }
+
     @MainActor private func manager() throws -> ShareDestinationManager {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SilentSnipShareTests-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

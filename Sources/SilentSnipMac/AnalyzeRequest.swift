@@ -59,7 +59,7 @@ public struct AnalyzeRequest: Equatable, Sendable {
 
     public enum RequestError: LocalizedError {
         case invalidURL
-        public var errorDescription: String? { "The Silent Snip analysis request is invalid. Analyze again from Window → Extensions → Silent Snip." }
+        public var errorDescription: String? { "Silent Snip could not start analysis. In Final Cut Pro, choose Window → Extensions → Silent Snip, then analyze the clip again." }
     }
 }
 

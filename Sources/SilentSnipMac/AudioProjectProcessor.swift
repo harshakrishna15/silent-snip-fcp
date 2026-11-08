@@ -58,7 +58,7 @@ public enum AudioProjectProcessingError: Error, LocalizedError, Equatable {
         case .outputExists:
             return "The output directory already exists. Choose a new directory; existing results are never overwritten."
         case .invalidDestinationLibrary:
-            return "The destination must be an existing local Final Cut library (.fcpbundle)."
+            return "The destination must be an existing local Final Cut Pro library (.fcpbundle)."
         case .invalidSelection:
             return "Selected ranges must match distinct eligible cuts from this analysis."
         case .changedProject:
