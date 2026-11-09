@@ -148,16 +148,16 @@ final class WorkflowDirectAudioRenderHintTests: XCTestCase {
         XCTAssertTrue(saved)
         let file = directory.appendingPathComponent(DirectAudioRenderHintStore.fileName)
         let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        XCTAssertEqual(record["version"] as? Int, 2)
-        let fields = try XCTUnwrap(record["hint"] as? [String: Any])
+        XCTAssertEqual(record["version"] as? Int, 3)
+        let fields = try XCTUnwrap((record["hints"] as? [[String: Any]])?.first)
         XCTAssertEqual(Set(fields.keys), ["selection", "sourceURLs", "scope", "workflowIdentity"])
         let identity = try XCTUnwrap(fields["workflowIdentity"] as? [String: Any])
         XCTAssertEqual(Set(identity.keys), ["libraryURL", "projectUID", "projectName"])
-        let consumed = await DirectAudioRenderHintStore(root: directory).consume()
+        let consumed = try await DirectAudioRenderHintStore(root: directory).consume(matching: snapshot(), workflowOrigin: origin())
         let recovered = try XCTUnwrap(consumed)
         XCTAssertEqual(recovered, candidate)
         XCTAssertNotNil(try recovered.prepareSourceRead(matching: snapshot(), workflowOrigin: origin()))
-        let repeated = await DirectAudioRenderHintStore(root: directory).consume()
+        let repeated = try await DirectAudioRenderHintStore(root: directory).consume(matching: snapshot(), workflowOrigin: origin())
         XCTAssertNil(repeated)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
@@ -166,22 +166,45 @@ final class WorkflowDirectAudioRenderHintTests: XCTestCase {
         let store = DirectAudioRenderHintStore(root: directory)
         let file = directory.appendingPathComponent(DirectAudioRenderHintStore.fileName)
         let current = try origin()
-        let saved = await store.save(try hint(current))
-        XCTAssertTrue(saved)
-        var record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        record["version"] = 1
+        let encoded = try JSONEncoder().encode(hint(current))
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var record: [String: Any] = ["version": 1, "hint": fields]
         try JSONSerialization.data(withJSONObject: record).write(to: file)
-        let smuggled = await store.consume()
+        let smuggled = try await store.consume(matching: snapshot(), workflowOrigin: current)
         XCTAssertNil(smuggled)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
-        var fields = try XCTUnwrap(record["hint"] as? [String: Any])
         fields.removeValue(forKey: "workflowIdentity")
         record["hint"] = fields
         try JSONSerialization.data(withJSONObject: record).write(to: file)
-        let consumed = await store.consume()
+        let mismatched = try await store.consume(matching: snapshot(), workflowOrigin: current)
+        XCTAssertNil(mismatched)
+        let consumed = try await store.consume(matching: snapshot())
         let legacy = try XCTUnwrap(consumed)
         XCTAssertTrue(legacy.matches(try snapshot()))
         XCTAssertNil(try legacy.prepareSourceRead(matching: snapshot(), workflowOrigin: current))
+    }
+
+    func testVersionTwoHintSurvivesMigrationWhenSwitchingToSameNamedProject() async throws {
+        let store = DirectAudioRenderHintStore(root: directory)
+        let file = directory.appendingPathComponent(DirectAudioRenderHintStore.fileName)
+        let firstOrigin = try origin()
+        let first = try hint(firstOrigin)
+        let fields = try JSONSerialization.jsonObject(with: JSONEncoder().encode(first))
+        try JSONSerialization.data(withJSONObject: ["version": 2, "hint": fields]).write(to: file)
+
+        // Identical project names and AX selections still belong to distinct UIDs.
+        let secondOrigin = try origin(uid: "other-project")
+        let second = try hint(secondOrigin)
+        let initialMiss = await store.consume(matching: second.selection, workflowOrigin: secondOrigin)
+        XCTAssertNil(initialMiss)
+        let saved = await store.save(second)
+        XCTAssertTrue(saved)
+        let freshFirstOrigin = try origin()
+        let recoveredFirst = await store.consume(matching: first.selection, workflowOrigin: freshFirstOrigin)
+        let recoveredSecond = await store.consume(matching: second.selection, workflowOrigin: secondOrigin)
+        XCTAssertEqual(recoveredFirst, first)
+        XCTAssertEqual(recoveredSecond, second)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
 
     func testMalformedPersistedWorkflowIdentitiesAreConsumedWithoutSeedingCapture() async throws {
@@ -190,7 +213,7 @@ final class WorkflowDirectAudioRenderHintTests: XCTestCase {
         let saved = await store.save(try hint(origin()))
         XCTAssertTrue(saved)
         let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        let fields = try XCTUnwrap(record["hint"] as? [String: Any])
+        let fields = try XCTUnwrap((record["hints"] as? [[String: Any]])?.first)
         let identity = try XCTUnwrap(fields["workflowIdentity"] as? [String: Any])
         let alias = directory.appendingPathComponent("Alias.fcpbundle")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: library)
@@ -199,9 +222,9 @@ final class WorkflowDirectAudioRenderHintTests: XCTestCase {
                              ("projectName", "Different AX project")] {
             var invalidIdentity = identity; invalidIdentity[key] = value
             var invalidFields = fields; invalidFields["workflowIdentity"] = invalidIdentity
-            var invalidRecord = record; invalidRecord["hint"] = invalidFields
+            var invalidRecord = record; invalidRecord["hints"] = [invalidFields]
             try JSONSerialization.data(withJSONObject: invalidRecord).write(to: file)
-            let consumed = await store.consume()
+            let consumed = try await store.consume(matching: snapshot(), workflowOrigin: origin())
             XCTAssertNil(consumed)
             XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         }
@@ -228,7 +251,7 @@ final class WorkflowDirectAudioRenderHintTests: XCTestCase {
         let store = DirectAudioRenderHintStore(root: directory)
         let saved = await store.save(try hint(current))
         XCTAssertTrue(saved)
-        let consumed = await store.consume()
+        let consumed = try await store.consume(matching: snapshot(), workflowOrigin: current)
         let candidate = try XCTUnwrap(consumed)
         let prepared = try XCTUnwrap(candidate.prepareSourceRead(matching: snapshot(), workflowOrigin: current))
         let receiptURL = directory.appendingPathComponent("Owned-Render.wav")
@@ -250,7 +273,7 @@ final class WorkflowDirectAudioRenderHintTests: XCTestCase {
         XCTAssertEqual(cleanups, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: receiptURL.path))
         XCTAssertEqual(try Data(contentsOf: source), Data("original source".utf8))
-        let replayed = await DirectAudioRenderHintStore(root: directory).consume()
+        let replayed = try await DirectAudioRenderHintStore(root: directory).consume(matching: snapshot(), workflowOrigin: current)
         XCTAssertNil(replayed)
     }
 }

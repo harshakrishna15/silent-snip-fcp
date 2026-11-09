@@ -21,7 +21,7 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
 
     private var file: URL { root.appendingPathComponent(DirectAudioRenderHintStore.fileName) }
 
-    private func selection(project: String = "Original") throws -> FinalCutSelectionSnapshot {
+    private func selection(project: String = "Original", clip: String = "Interview") throws -> FinalCutSelectionSnapshot {
         func node(_ role: String, _ description: String, _ value: String,
                   selected: Bool? = nil, children: [AccessibilityNode] = []) -> AccessibilityNode {
             .init(role: role, identifier: nil, title: nil, description: description,
@@ -29,8 +29,8 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         }
         return try FinalCutSelectionSnapshot(projectName: project,
             timeline: node("AXLayoutArea", "Project Timeline", "", children: [
-                node("AXLayoutItem", "Audio-Clip:Interview", "00:00:05:00", selected: true, children: [
-                    node("AXTextField", "Title", "Interview"),
+                node("AXLayoutItem", "Audio-Clip:\(clip)", "00:00:05:00", selected: true, children: [
+                    node("AXTextField", "Title", clip),
                     node("AXHandle", "Leading Edge", "02:00:00:00"),
                     node("AXHandle", "Trailing Edge", "02:00:05:00")])]))
     }
@@ -55,13 +55,13 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         let stored = await DirectAudioRenderHintStore(root: root).save(originalHint)
         XCTAssertTrue(stored)
         let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        let fields = try XCTUnwrap(record["hint"] as? [String: Any])
+        let fields = try XCTUnwrap((record["hints"] as? [[String: Any]])?.first)
         XCTAssertEqual(Set(fields.keys), ["selection", "sourceURLs", "scope"])
         let old = try await MediaContentSnapshot.capture([source])
 
         // A new instance models a helper restart. It must hash current bytes;
         // the persisted record has no audio/hash/effect-state authorization.
-        let consumed = await DirectAudioRenderHintStore(root: root).consume()
+        let consumed = await DirectAudioRenderHintStore(root: root).consume(matching: try selection())
         let recovered = try XCTUnwrap(consumed)
         XCTAssertEqual(recovered, originalHint)
         try Data("changed source bytes".utf8).write(to: source)
@@ -78,12 +78,103 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
     func testConsumedFailedHintCannotLoopOnTheNextAnalyze() async throws {
         let store = DirectAudioRenderHintStore(root: root)
         let saved = await store.save(try hint())
-        let first = await DirectAudioRenderHintStore(root: root).consume()
-        let second = await DirectAudioRenderHintStore(root: root).consume()
+        let first = await DirectAudioRenderHintStore(root: root).consume(matching: try selection())
+        let second = await DirectAudioRenderHintStore(root: root).consume(matching: try selection())
         XCTAssertTrue(saved)
         XCTAssertNotNil(first)
         XCTAssertNil(second)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testAlternatingProjectsAndClipsKeepEachUnrelatedRouteAcrossRestarts() async throws {
+        let first = try hint()
+        let second = try DirectAudioRenderHint(selection: selection(project: "Other project"),
+            sourceURLs: [source], scope: .projectSlice)
+        let third = try DirectAudioRenderHint(selection: selection(clip: "Outro"),
+            sourceURLs: [source], scope: .selectedRange)
+        let store = DirectAudioRenderHintStore(root: root)
+        for hint in [first, second, third] {
+            let saved = await store.save(hint)
+            XCTAssertTrue(saved)
+        }
+
+        let unknown = await store.consume(matching: try selection(clip: "Unknown"))
+        XCTAssertNil(unknown)
+        for hint in [second, first, third] {
+            let relaunched = DirectAudioRenderHintStore(root: root)
+            let consumed = await relaunched.consume(matching: hint.selection)
+            let replayed = await relaunched.consume(matching: hint.selection)
+            XCTAssertEqual(consumed, hint)
+            XCTAssertNil(replayed)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testCapacityEvictsOldestAndSavingSameSelectionReplacesItsScope() async throws {
+        let store = DirectAudioRenderHintStore(root: root)
+        let hints = try (0...DirectAudioRenderHintStore.maximumHints).map { index in
+            try DirectAudioRenderHint(selection: selection(project: "Project \(index)"),
+                sourceURLs: [source], scope: .fullProjectTarget)
+        }
+        for hint in hints {
+            let saved = await store.save(hint)
+            XCTAssertTrue(saved)
+        }
+        let evicted = await store.consume(matching: hints[0].selection)
+        XCTAssertNil(evicted)
+        let updated = DirectAudioRenderHint(selection: hints[1].selection, sourceURLs: [source], scope: .selectedRange)
+        let refreshed = await store.save(updated)
+        XCTAssertTrue(refreshed)
+        let consumed = await store.consume(matching: updated.selection)
+        let replayed = await store.consume(matching: updated.selection)
+        let nextOldest = await store.consume(matching: hints[2].selection)
+        XCTAssertEqual(consumed, updated)
+        XCTAssertNil(replayed)
+        XCTAssertEqual(nextOldest, hints[2], "Refreshing an existing key must not evict another hint")
+    }
+
+    func testInterruptedStagingWriteDoesNotBlockConsumptionOfMultipleHints() async throws {
+        let store = DirectAudioRenderHintStore(root: root)
+        let first = try hint()
+        let second = try DirectAudioRenderHint(selection: selection(clip: "Outro"),
+            sourceURLs: [source], scope: .selectedRange)
+        let savedFirst = await store.save(first)
+        let savedSecond = await store.save(second)
+        XCTAssertTrue(savedFirst)
+        XCTAssertTrue(savedSecond)
+
+        let staging = root.appendingPathComponent(DirectAudioRenderHintStore.stagingFileName)
+        let legacyStaging = root.appendingPathComponent(".Analysis Routing Hint.tmp")
+        let partialWrite = Data("{\"version\":".utf8)
+        try partialWrite.write(to: staging)
+        try partialWrite.write(to: legacyStaging)
+
+        // Consuming the first route rewrites the file with the second still present.
+        let consumed = await store.consume(matching: first.selection)
+        let replayed = await store.consume(matching: first.selection)
+        let remaining = await store.consume(matching: second.selection)
+        XCTAssertEqual(consumed, first)
+        XCTAssertNil(replayed)
+        XCTAssertEqual(remaining, second)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertEqual(try Data(contentsOf: legacyStaging), partialWrite)
+        await store.clear()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyStaging.path))
+    }
+
+    func testStagingRecoveryLeavesSymbolicAndHardLinksUntouched() async throws {
+        let store = DirectAudioRenderHintStore(root: root)
+        let candidate = try hint()
+        let staging = root.appendingPathComponent(DirectAudioRenderHintStore.stagingFileName)
+        for hardLink in [false, true] {
+            if hardLink { try FileManager.default.linkItem(at: source, to: staging) }
+            else { try FileManager.default.createSymbolicLink(at: staging, withDestinationURL: source) }
+            let saved = await store.save(candidate)
+            XCTAssertFalse(saved)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path))
+            XCTAssertEqual(try Data(contentsOf: source), Data("original source".utf8))
+            try FileManager.default.removeItem(at: staging)
+        }
     }
 
     func testReadableHintThatCannotBeConsumedIsAnOptionalCacheMiss() async throws {
@@ -91,6 +182,10 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         let store = DirectAudioRenderHintStore(root: root)
         let saved = await store.save(try hint())
         XCTAssertTrue(saved)
+        let unrelated = try DirectAudioRenderHint(selection: selection(clip: "Outro"),
+            sourceURLs: [source], scope: .fullProjectTarget)
+        let savedUnrelated = await store.save(unrelated)
+        XCTAssertTrue(savedUnrelated)
         let originalRecord = try Data(contentsOf: file)
         XCTAssertEqual(chmod(root.path, 0o500), 0)
         defer { _ = chmod(root.path, 0o700) }
@@ -98,8 +193,8 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
             throw XCTSkip("Current identity bypasses directory write permissions")
         }
 
-        let first = await store.consume()
-        let second = await DirectAudioRenderHintStore(root: root).consume()
+        let first = await store.consume(matching: try selection())
+        let second = await DirectAudioRenderHintStore(root: root).consume(matching: try selection())
         XCTAssertNil(first, "A hint must be removed before it may seed a speculative render")
         XCTAssertNil(second, "A non-consumable record must never seed repeat attempts")
         XCTAssertEqual(try Data(contentsOf: file), originalRecord)
@@ -139,16 +234,16 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         let saved = await store.save(try hint())
         XCTAssertTrue(saved)
         let valid = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        var unknown = valid; unknown["version"] = 3
+        var unknown = valid; unknown["version"] = 4
         var invalidScope = valid
-        var fields = try XCTUnwrap(invalidScope["hint"] as? [String: Any])
-        fields["scope"] = "assume-current-audio"; invalidScope["hint"] = fields
+        var fields = try XCTUnwrap((invalidScope["hints"] as? [[String: Any]])?.first)
+        fields["scope"] = "assume-current-audio"; invalidScope["hints"] = [fields]
         for data in [Data("{".utf8), Data("[]".utf8),
                      try JSONSerialization.data(withJSONObject: unknown),
                      try JSONSerialization.data(withJSONObject: invalidScope),
                      Data(repeating: 32, count: DirectAudioRenderHintStore.maximumBytes + 1)] {
             try data.write(to: file)
-            let consumed = await store.consume()
+            let consumed = await store.consume(matching: try selection())
             XCTAssertNil(consumed)
             XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         }
@@ -163,7 +258,7 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         let largeSize: Int64 = 256 * 1_024 * 1_024 + 1
         try handle.truncate(atOffset: UInt64(largeSize))
         try handle.close()
-        let consumed = await store.consume()
+        let consumed = await store.consume(matching: candidate.selection)
         let savedLarge = await store.save(candidate)
         XCTAssertNotNil(consumed, "Large originals no longer require a serialized source scan or size exclusion")
         XCTAssertTrue(savedLarge)
@@ -216,7 +311,7 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
             if hardLink { try FileManager.default.linkItem(at: source, to: file) }
             else { try FileManager.default.createSymbolicLink(at: file, withDestinationURL: source) }
             let saved = await store.save(candidate)
-            let consumed = await store.consume()
+            let consumed = await store.consume(matching: candidate.selection)
             XCTAssertFalse(saved)
             XCTAssertNil(consumed)
             await store.clear()
@@ -227,7 +322,7 @@ final class DirectAudioRenderHintStoreTests: XCTestCase {
         let alias = root.appendingPathComponent("Root Alias")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
         let saved = await DirectAudioRenderHintStore(root: alias).save(candidate)
-        let consumed = await DirectAudioRenderHintStore(root: alias).consume()
+        let consumed = await DirectAudioRenderHintStore(root: alias).consume(matching: candidate.selection)
         XCTAssertFalse(saved)
         XCTAssertNil(consumed)
         await DirectAudioRenderHintStore(root: alias).clear()

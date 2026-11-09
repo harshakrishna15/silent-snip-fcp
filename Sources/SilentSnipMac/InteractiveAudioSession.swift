@@ -12,7 +12,6 @@ import Foundation
     }
     private let preview = TimelineCutPreview()
     private let analysisCache = AnalysisCache()
-    private var directRenderHint: DirectAudioRenderHint?
     private let routingHintStore = DirectAudioRenderHintStore()
     private var routingHintMaintenance: Task<Void, Never>?
     public var onPreviewReady: ((UUID, ReviewAnalysisResult) -> Void)?
@@ -109,7 +108,6 @@ import Foundation
     /// Cached analysis is optional; existing review/recovery state stays intact.
     public func clearAnalysisCache() {
         analysisCache.discardForCleanup()
-        directRenderHint = nil
         let previous = routingHintMaintenance, store = routingHintStore
         routingHintMaintenance = Task {
             await previous?.value
@@ -132,7 +130,6 @@ import Foundation
         verifications.removeAll()
         recoveryOrigins.removeAll()
         analysisCache.clear()
-        directRenderHint = nil
     }
 
     public func analyze(_ request: AnalyzeRequest,
@@ -151,18 +148,11 @@ import Foundation
         timing.begin("capture")
         await routingHintMaintenance?.value
         try Task.checkCancellation()
-        let persistedHint = await timing.measure("capture.routingHintLookup") { await routingHintStore.consume() }
-        try Task.checkCancellation()
-        // Capture accepts Workflow hints only when their library/project
-        // identity matches this freshly authorized request and AX selection.
-        // Legacy selection-only hints remain exclusive to the AU entry path.
-        let renderHint = directRenderHint ?? persistedHint
-        directRenderHint = nil // A failed/stale hint must not loop on the next click.
         let capture: CapturedFinalCutProject
         do {
             capture = try await FinalCutProjectCapture.capture(to: directory,
                 controllerEffectUIDs: [AudioControllerSettings.effectUID],
-                timing: timing, directRenderHint: renderHint,
+                timing: timing, routingHintStore: routingHintStore,
                 workflowOrigin: request.workflowOrigin,
                 onSession: { if !Task.isCancelled { self.reviewSession = $0 } }) { progress($0, nil) }
         } catch {
@@ -389,13 +379,11 @@ import Foundation
             try Task.checkCancellation()
             if renderedInOriginal, key == nil, let selection = capture.session.reviewOwnership.active,
                let scope = try DirectAudioRender.scope(projectData: projectData, selection: capture.selection) {
-                directRenderHint = DirectAudioRenderHint(selection: selection,
+                let hint = DirectAudioRenderHint(selection: selection,
                     sourceURLs: capture.document.clips.filter(\.enabled).compactMap(\.mediaURL),
                     scope: scope, workflowIdentity: request.workflowOrigin.map { .init(origin: $0) })
-                if let directRenderHint {
-                    _ = await timing.measure("capture.routingHintStorage") { await routingHintStore.save(directRenderHint) }
-                    try Task.checkCancellation()
-                }
+                _ = await timing.measure("capture.routingHintStorage") { await routingHintStore.save(hint) }
+                try Task.checkCancellation()
             }
             outcome = "review"
             return ReviewAnalysisResult(analyzed: analyzed, dropFrame: capture.dropFrame,

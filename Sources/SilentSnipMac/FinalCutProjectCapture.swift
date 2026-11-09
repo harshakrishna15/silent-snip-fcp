@@ -38,7 +38,7 @@ import Foundation
 @MainActor public enum FinalCutProjectCapture {
     static func capture(to directory: URL, controllerEffectUIDs: Set<String> = [],
                                timing: AnalysisTiming? = nil,
-                               directRenderHint: DirectAudioRenderHint? = nil,
+                               routingHintStore: DirectAudioRenderHintStore? = nil,
                                workflowOrigin: WorkflowReviewOrigin? = nil,
                                onSession: (FinalCutAXSession) -> Void = { _ in },
                                progress: (String) -> Void = { _ in }) async throws -> CapturedFinalCutProject {
@@ -84,6 +84,16 @@ import Foundation
             if !transferred, let rendered { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: rendered) }
         }
         let xml: URL
+        // Only the freshly authorized AX selection may consume a hint. Other
+        // projects and clips keep their routes for a later manual Analyze.
+        let directRenderHint = await timing.measure("capture.routingHintLookup") {
+            await routingHintStore?.consume(matching: selected, workflowOrigin: workflowOrigin)
+        }
+        try Task.checkCancellation()
+        try session.assertCurrentProject()
+        guard try session.selectionSnapshot() == selected else {
+            throw FinalCutCaptureError.invalidSelection("The selected timeline clip changed while checking the analysis route.")
+        }
         let hintedRead: MediaContentSnapshot.ReadGuard?
         if let hint = directRenderHint {
             // Pin source identities BEFORE any render. Full hashes overlap the
@@ -93,6 +103,7 @@ import Foundation
             }
         } else { hintedRead = nil }
         if let hint = directRenderHint, let hintedRead {
+            timing.incrementCounter("capture.routingHint.combined")
             progress("Rendering fresh audio and project XML together…")
             let combined = try await timing.measure("capture.combinedExchange") {
                 try await DirectAudioRenderCapture.perform(prepared: hintedRead, render: {
@@ -114,6 +125,7 @@ import Foundation
             xml = destination.appendingPathComponent("Info.fcpxml")
             try Data(contentsOf: source).write(to: xml, options: .withoutOverwriting)
         } else {
+            timing.incrementCounter(directRenderHint == nil ? "capture.routingHint.miss" : "capture.routingHint.sourceUnavailable")
             xml = try await timing.measure("capture.xmlExchange") { try await session.exportProjectXML(to: destination, timing: timing, sharePurpose: .analyze) }
         }
         // The exporter has confirmed this unique output is complete. Until the
@@ -142,6 +154,7 @@ import Foundation
             // capture, but this full-project audio cannot represent the target.
             try ShareDestinationManager.shared.cleanupRenderedMedia(receipt: receipt)
             rendered = nil; media = nil
+            timing.incrementCounter("capture.routingHint.stale")
         }
         delivered = true
         transferred = true

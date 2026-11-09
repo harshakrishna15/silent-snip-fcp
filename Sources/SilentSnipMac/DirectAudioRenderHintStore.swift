@@ -1,16 +1,23 @@
 import Darwin
 import Foundation
 
-/// One small, disposable routing record across helper launches. It contains no
-/// audio, content hashes, effects, or permission to accept a render. Every use
-/// still hashes current sources and validates the newly delivered project XML.
+/// Bounded routing records across helper launches. They contain no audio,
+/// content hashes, effects, or permission to accept a render. Every use still
+/// hashes current sources and validates the newly delivered project XML.
 struct DirectAudioRenderHintStore: Sendable {
     static let fileName = "Analysis Routing Hint.json"
-    private static let temporaryName = ".Analysis Routing Hint.tmp"
+    static let stagingFileName = ".Analysis Routing Hints.v3.tmp"
+    private static let legacyStagingFileName = ".Analysis Routing Hint.tmp"
     static let maximumBytes = 65_536
+    static let maximumHints = 8
     let root: URL
 
     private struct Record: Codable {
+        let version: Int
+        let hints: [DirectAudioRenderHint]
+    }
+
+    private struct LegacyRecord: Decodable {
         let version: Int
         let hint: DirectAudioRenderHint
     }
@@ -20,35 +27,37 @@ struct DirectAudioRenderHintStore: Sendable {
             in: .userDomainMask)[0].appendingPathComponent("Silent Snip", isDirectory: true)).standardizedFileURL
     }
 
-    /// Consume before capture so a failed or stale speculative route cannot
-    /// recur indefinitely. A successful eligible Analyze writes a new record.
-    /// Reading/deleting this optional cache never starts a host operation.
-    func consume() async -> DirectAudioRenderHint? {
+    /// Consume only the current selection's hint before dispatch. Unrelated
+    /// selections remain available, while a failed route cannot replay itself.
+    func consume(matching selection: FinalCutSelectionSnapshot,
+                 workflowOrigin: WorkflowReviewOrigin? = nil) async -> DirectAudioRenderHint? {
         withDirectory(create: false) { directory in
             guard let file = openRegularFile(directory: directory) else { return nil }
             defer { close(file) }
-            var before = stat()
-            guard fstat(file, &before) == 0 else { return nil }
-            // Remove only the exact regular cache file that was opened, even
-            // when it is corrupt/oversized. Never follow or remove a substitute.
-            var removed = false
-            defer { if !removed { removeIfUnchanged(directory: directory, identity: before) } }
-            guard before.st_size > 0, before.st_size <= Self.maximumBytes else { return nil }
-            let handle = FileHandle(fileDescriptor: file, closeOnDealloc: false)
-            guard let data = try? handle.read(upToCount: Self.maximumBytes + 1),
-                  data.count == before.st_size else { return nil }
-            var after = stat()
-            guard fstat(file, &after) == 0, sameFileAndContents(before, after),
-                  let record = try? JSONDecoder().decode(Record.self, from: data),
-                  (record.version == 2 || (record.version == 1 && record.hint.workflowIdentity == nil)),
-                  record.hint.isValidRoutingHint,
-                  record.hint.sourceByteCount() != nil else { return nil }
-            // Failure to unlink must be an ordinary miss. Otherwise a readable
-            // but immutable/read-only record could retry a failed route on
-            // every launch, violating the consume-once boundary.
-            guard removeIfUnchanged(directory: directory, identity: before) else { return nil }
-            removed = true
-            return record.hint
+            var previous = stat()
+            guard !Task.isCancelled, fstat(file, &previous) == 0 else { return nil }
+            guard let hints = readHints(file, identity: previous) else {
+                removeIfUnchanged(directory: directory, identity: previous)
+                return nil
+            }
+            let valid = hints.filter(\.isValidRoutingHint)
+            func matches(_ hint: DirectAudioRenderHint) -> Bool {
+                hint.matches(selection, workflowOrigin: workflowOrigin)
+            }
+            let hint = valid.first(where: matches)
+            let remaining = valid.filter { !matches($0) }
+            if remaining.count != hints.count {
+                // A hint is usable only after its removal succeeds. Remove
+                // any duplicate match as well so it cannot replay the route.
+                if remaining.isEmpty {
+                    guard removeIfUnchanged(directory: directory, identity: previous) else { return nil }
+                } else {
+                    guard let data = encode(remaining),
+                          write(data, directory: directory, previous: previous) else { return nil }
+                }
+            }
+            guard let hint, hint.sourceByteCount() != nil else { return nil }
+            return hint
         }
     }
 
@@ -59,38 +68,82 @@ struct DirectAudioRenderHintStore: Sendable {
         let bounded = DirectAudioRenderHint(selection: hint.selection,
             sourceURLs: Array(Set(hint.sourceURLs)).sorted { $0.absoluteString < $1.absoluteString },
             scope: hint.scope, workflowIdentity: hint.workflowIdentity)
-        guard let data = try? JSONEncoder().encode(Record(version: 2, hint: bounded)),
-              data.count <= Self.maximumBytes else { return false }
         return withDirectory(create: true) { directory in
-            guard safeDestination(directory: directory) else { return false }
-            // A fixed O_EXCL staging name bounds crash leftovers to one file.
-            // A prior incomplete staging file disables storage until the user
-            // clears the cache; it never authorizes overwriting another file.
-            let temporary = Self.temporaryName
-            let file = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-            guard file >= 0 else { return false }
-            defer { close(file); _ = unlinkat(directory, temporary, 0) }
-            let handle = FileHandle(fileDescriptor: file, closeOnDealloc: false)
-            do { try handle.write(contentsOf: data) } catch { return false }
-            var info = stat()
-            guard !Task.isCancelled, fstat(file, &info) == 0, regularOwnedFile(info),
-                  info.st_size == data.count, safeDestination(directory: directory) else { return false }
-            return renameat(directory, temporary, directory, Self.fileName) == 0
+            var previous: stat?
+            var hints: [DirectAudioRenderHint] = []
+            if let file = openRegularFile(directory: directory) {
+                defer { close(file) }
+                var info = stat()
+                guard fstat(file, &info) == 0 else { return false }
+                previous = info
+                hints = readHints(file, identity: info) ?? []
+            }
+            hints.removeAll { $0.selection == bounded.selection && $0.workflowIdentity == bounded.workflowIdentity }
+            hints.insert(bounded, at: 0)
+            if hints.count > Self.maximumHints { hints.removeLast() }
+            while !hints.isEmpty {
+                if let data = encode(hints) { return write(data, directory: directory, previous: previous) }
+                hints.removeLast()
+            }
+            return false
         } ?? false
     }
 
-    /// Clear Cached Audio also removes this exact optional routing record.
+    /// Clear Cached Audio also removes this exact optional routing file.
     /// Original media, rendered audio, results and receipts are never inputs.
     func clear() async {
         _ = withDirectory(create: false) { directory -> Bool? in
-            for name in [Self.fileName, Self.temporaryName] {
-                guard let file = openRegularFile(directory: directory, name: name) else { continue }
-                var info = stat()
-                if fstat(file, &info) == 0 { _ = removeIfUnchanged(directory: directory, identity: info, name: name) }
-                close(file)
+            for name in [Self.fileName, Self.stagingFileName, Self.legacyStagingFileName] {
+                _ = removeRegularFile(directory: directory, name: name)
             }
             return true
         }
+    }
+
+    private func readHints(_ file: Int32, identity: stat) -> [DirectAudioRenderHint]? {
+        guard identity.st_size > 0, identity.st_size <= Self.maximumBytes else { return nil }
+        let handle = FileHandle(fileDescriptor: file, closeOnDealloc: false)
+        var after = stat()
+        guard let data = try? handle.read(upToCount: Self.maximumBytes + 1), data.count == identity.st_size,
+              fstat(file, &after) == 0, sameFileAndContents(identity, after) else { return nil }
+        let decoder = JSONDecoder()
+        if let record = try? decoder.decode(Record.self, from: data), record.version == 3,
+           !record.hints.isEmpty, record.hints.count <= Self.maximumHints {
+            return record.hints
+        }
+        guard let legacy = try? decoder.decode(LegacyRecord.self, from: data),
+              legacy.version == 2 || (legacy.version == 1 && legacy.hint.workflowIdentity == nil) else { return nil }
+        return [legacy.hint]
+    }
+
+    private func encode(_ hints: [DirectAudioRenderHint]) -> Data? {
+        guard let data = try? JSONEncoder().encode(Record(version: 3, hints: hints)),
+              data.count <= Self.maximumBytes else { return nil }
+        return data
+    }
+
+    private func write(_ data: Data, directory: Int32, previous: stat?) -> Bool {
+        // Only writers holding the directory lock use this staging name, so an
+        // exact owned file left here can be retired before one exclusive retry.
+        let temporary = Self.stagingFileName
+        let flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW
+        var file = openat(directory, temporary, flags, 0o600)
+        if file < 0, errno == EEXIST, removeRegularFile(directory: directory, name: temporary) {
+            file = openat(directory, temporary, flags, 0o600)
+        }
+        guard file >= 0 else { return false }
+        defer {
+            var info = stat()
+            if fstat(file, &info) == 0 { removeIfUnchanged(directory: directory, identity: info, name: temporary) }
+            close(file)
+        }
+        let handle = FileHandle(fileDescriptor: file, closeOnDealloc: false)
+        do { try handle.write(contentsOf: data) } catch { return false }
+        var info = stat()
+        guard !Task.isCancelled, fstat(file, &info) == 0, regularOwnedFile(info), info.st_size == data.count,
+              matchesFile(directory: directory, identity: info, name: temporary),
+              matchesFile(directory: directory, identity: previous) else { return false }
+        return renameat(directory, temporary, directory, Self.fileName) == 0
     }
 
     private func withDirectory<T>(create: Bool, _ body: (Int32) -> T?) -> T? {
@@ -107,7 +160,10 @@ struct DirectAudioRenderHintStore: Sendable {
         guard directory >= 0 else { return nil }
         defer { close(directory) }
         var info = stat()
-        guard fstat(directory, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid() else { return nil }
+        guard fstat(directory, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(),
+              flock(directory, LOCK_EX | LOCK_NB) == 0 else { return nil }
+        // Serialize read/modify/write against another helper process or a cache
+        // clear. A busy optional cache is a miss, so it cannot delay Analyze.
         return body(directory)
     }
 
@@ -124,10 +180,11 @@ struct DirectAudioRenderHintStore: Sendable {
         return file
     }
 
-    private func safeDestination(directory: Int32) -> Bool {
+    private func removeRegularFile(directory: Int32, name: String) -> Bool {
+        guard let file = openRegularFile(directory: directory, name: name) else { return false }
+        defer { close(file) }
         var info = stat()
-        if fstatat(directory, Self.fileName, &info, AT_SYMLINK_NOFOLLOW) != 0 { return errno == ENOENT }
-        return regularOwnedFile(info)
+        return fstat(file, &info) == 0 && removeIfUnchanged(directory: directory, identity: info, name: name)
     }
 
     private func sameFileAndContents(_ lhs: stat, _ rhs: stat) -> Bool {
@@ -136,10 +193,14 @@ struct DirectAudioRenderHintStore: Sendable {
             && lhs.st_ctimespec.tv_sec == rhs.st_ctimespec.tv_sec && lhs.st_ctimespec.tv_nsec == rhs.st_ctimespec.tv_nsec
     }
 
-    @discardableResult private func removeIfUnchanged(directory: Int32, identity: stat, name: String = Self.fileName) -> Bool {
+    private func matchesFile(directory: Int32, identity: stat?, name: String = Self.fileName) -> Bool {
         var current = stat()
-        guard fstatat(directory, name, &current, AT_SYMLINK_NOFOLLOW) == 0,
-              regularOwnedFile(current), sameFileAndContents(identity, current) else { return false }
-        return unlinkat(directory, name, 0) == 0
+        if fstatat(directory, name, &current, AT_SYMLINK_NOFOLLOW) != 0 { return errno == ENOENT && identity == nil }
+        guard let identity, regularOwnedFile(current) else { return false }
+        return sameFileAndContents(identity, current)
+    }
+
+    @discardableResult private func removeIfUnchanged(directory: Int32, identity: stat, name: String = Self.fileName) -> Bool {
+        matchesFile(directory: directory, identity: identity, name: name) && unlinkat(directory, name, 0) == 0
     }
 }
