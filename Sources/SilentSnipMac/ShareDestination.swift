@@ -32,6 +32,7 @@ public struct ShareDestinationReceipt {
 struct GuardedShareRender: Sendable {
     fileprivate let prepared: MediaContentSnapshot.ReadGuard
     fileprivate let snapshot: MediaContentSnapshot
+    fileprivate var rebound = false
 
     func read(at url: URL) throws -> (guardValue: MediaContentSnapshot.ReadGuard, digest: String) {
         guard prepared.originals == [url], prepared.canonicalURLs == [url], let digest = snapshot.hashes[url] else {
@@ -39,6 +40,13 @@ struct GuardedShareRender: Sendable {
         }
         try snapshot.requireExactGuard(prepared)
         return (prepared, digest)
+    }
+
+    fileprivate func rebinding(to fresh: MediaContentSnapshot.ReadGuard, at url: URL) async throws -> Self {
+        guard !rebound, let digest = snapshot.hashes[url] else { throw ProjectAnalysisError.changedRenderArtifact }
+        let checked = try await MediaContentSnapshot.capture(prepared: fresh)
+        guard checked.hashes[url] == digest else { throw ProjectAnalysisError.changedRenderArtifact }
+        return Self(prepared: fresh, snapshot: checked, rebound: true)
     }
 }
 
@@ -130,8 +138,19 @@ public enum ShareDestinationError: LocalizedError, Equatable {
             receipt.guardedRender = try await registration.value
             receipt.cleanupRegistration = nil
             if let evidence = receipt.guardedRender, let audio = receipt.mediaURLs.first {
-                _ = try evidence.read(at: audio)
+                do { _ = try evidence.read(at: audio) }
+                catch ProjectAnalysisError.changedRenderArtifact {
+                    guard let fresh = try evidence.prepared.completedRenderGuardAfterCTimeChange(at: audio) else {
+                        throw ProjectAnalysisError.changedRenderArtifact
+                    }
+                    try validateReceipt(receipt)
+                    let rebound = try await evidence.rebinding(to: fresh, at: audio)
+                    try validateReceipt(receipt)
+                    _ = try rebound.read(at: audio)
+                    receipt.guardedRender = rebound
+                }
             }
+            if receipt.guardedRender == nil { try validateReceipt(receipt) }
         }
         return receipt
     }
@@ -139,9 +158,10 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     /// Keep registration independent of a successful capture waiter. Native
     /// background exports can complete after Cancel, timeout or worker restart.
     /// Only the exact verified, completed request-owned media enter this queue.
-    private func registerCompletedRender(_ receipt: ShareDestinationReceipt) -> CleanupRegistration {
+    private func registerCompletedRender(_ receipt: ShareDestinationReceipt, asset: ShareDestinationAsset) -> CleanupRegistration {
         if let registration = cleanupRegistrations[receipt.id] { return registration }
         let id = receipt.id, urls = receipt.mediaURLs, storage = cleanupStorage
+        let deliveredIdentity = urls.first.flatMap { asset.fileIdentities[$0] }
         let previous = cleanupRegistrationTail?.task
         // Pin the completed file before yielding or waiting behind an older job.
         // A canceled delivery caller must still get the ordinary inventory scan.
@@ -152,11 +172,34 @@ public enum ShareDestinationError: LocalizedError, Equatable {
             if let preparation, let url = urls.first {
                 let prepared = try preparation.get()
                 guard prepared.canonicalURLs == [url] else { throw ProjectAnalysisError.changedRenderArtifact }
-                let snapshot: MediaContentSnapshot
+                var completedEvidence: GuardedShareRender?
+                var registered = false
                 do {
-                    snapshot = try await MediaContentSnapshot.capture(prepared: prepared)
+                    let snapshot = try await MediaContentSnapshot.capture(prepared: prepared)
+                    let evidence = GuardedShareRender(prepared: prepared, snapshot: snapshot)
+                    completedEvidence = evidence
+                    let read = try evidence.read(at: url)
+                    registered = (try? storage.register(url, expectedHash: read.digest)) != nil
+                    try prepared.validate()
+                    return evidence
                 } catch ProjectAnalysisError.changedRenderArtifact {
-                    throw ProjectAnalysisError.changedRenderArtifact
+                    // Host Open Document can attach metadata just after completion.
+                    // Require any already completed digest to match a new full read.
+                    // Without one, let the caller take its usual fresh read.
+                    guard let fresh = try prepared.completedRenderGuardAfterCTimeChange(at: url), let deliveredIdentity,
+                          try ShareDestinationFileIdentity(file: url) == deliveredIdentity else {
+                        throw ProjectAnalysisError.changedRenderArtifact
+                    }
+                    let rebound = try await completedEvidence?.rebinding(to: fresh, at: url)
+                    if !registered {
+                        let digest = try rebound?.read(at: url).digest
+                        _ = try? storage.register(url, expectedHash: digest)
+                    }
+                    guard try ShareDestinationFileIdentity(file: url) == deliveredIdentity else {
+                        throw ProjectAnalysisError.changedRenderArtifact
+                    }
+                    try rebound?.prepared.validate()
+                    return rebound
                 } catch {
                     // Preserve the existing inventory attempt on an I/O error.
                     // An unchanged guard permits the caller's usual fresh read.
@@ -165,11 +208,6 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                     try prepared.validate()
                     return nil
                 }
-                let evidence = GuardedShareRender(prepared: prepared, snapshot: snapshot)
-                let read = try evidence.read(at: url)
-                _ = try? storage.register(url, expectedHash: read.digest)
-                try prepared.validate()
-                return evidence
             }
             for url in urls { _ = try? storage.register(url) }
             return nil
@@ -347,7 +385,9 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                 asset.completed = true
                 try persist(asset)
                 record("open-complete", asset: asset, details: ["files": urls.map(\.path)])
-                if asset.requestOwned && asset.requiresMedia { receipt.cleanupRegistration = registerCompletedRender(receipt) }
+                if asset.requestOwned && asset.requiresMedia {
+                    receipt.cleanupRegistration = registerCompletedRender(receipt, asset: asset)
+                }
                 if asset.requestOwned || !asset.requiresMedia {
                     completeRequest(for: asset.id, with: .success(receipt))
                     // A canceled or restarted request must never start a different analysis.
@@ -600,7 +640,7 @@ extension NSApplication {
 
 /// Device/inode, length, and timestamps detect replacement or modification before
 /// removing a completed temporary render, without rereading large PCM files.
-fileprivate struct ShareDestinationFileIdentity: Equatable {
+fileprivate struct ShareDestinationFileIdentity: Equatable, Sendable {
     let device: UInt64
     let inode: UInt64
     let size: UInt64
@@ -620,5 +660,15 @@ fileprivate struct ShareDestinationFileIdentity: Equatable {
               let created = attributes[.creationDate] as? Date else { throw ShareDestinationError.invalidFile }
         self.device = device.uint64Value; self.inode = inode.uint64Value; self.size = size.uint64Value
         self.modified = modified; self.created = created
+    }
+}
+
+private extension MediaContentSnapshot.ReadGuard {
+    func completedRenderGuardAfterCTimeChange(at url: URL) throws -> Self? {
+        guard originals == [url], canonicalURLs == [url], let before = stamps[url] else { return nil }
+        let fresh = try MediaContentSnapshot.prepareRead([url])
+        guard fresh.canonicalURLs == [url], let after = fresh.stamps[url],
+              before != after, before.sameIdentitySizeAndModification(as: after) else { return nil }
+        return fresh
     }
 }

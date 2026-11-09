@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Darwin
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
@@ -259,6 +260,61 @@ final class ShareDestinationTests: XCTestCase {
                 try Data(contentsOf: audio).write(to: audio, options: .atomic)
             }
             XCTFail("A settled inventory read cannot authorize replacement audio at the same path")
+        } catch ProjectAnalysisError.changedRenderArtifact { }
+        XCTAssertFalse(manager.hasActiveRequest)
+    }
+
+    @MainActor func testCompletedRenderMetadataChangeRebindsMatchingDigestAndKeepsInventory() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("StorageShareTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = ShareDestinationManager(rootURL: root.appendingPathComponent("Share Inbox"))
+        let receipt = try await manager.captureMedia(projectName: "Processed") {
+            let asset = try manager.createAsset(name: "Processed")
+            let xml = try self.write("Processed.fcpxml", in: asset.directoryURL)
+            let audio = try self.write("Processed.wav", in: asset.directoryURL)
+            let before = try MediaContentSnapshot.FileStamp(audio)
+            XCTAssertTrue(manager.handleOpen(urls: [xml, audio]))
+            await manager.waitForCleanupRegistrations()
+            let result = Data([1]).withUnsafeBytes { bytes in
+                setxattr(audio.path, "com.silentsnip.test-share-metadata", bytes.baseAddress, bytes.count, 0, 0)
+            }
+            XCTAssertEqual(result, 0)
+            let after = try MediaContentSnapshot.FileStamp(audio)
+            XCTAssertTrue(before.sameIdentitySizeAndModification(as: after))
+            XCTAssertNotEqual(before, after)
+        }
+        try manager.validateReceipt(receipt)
+        let audio = try XCTUnwrap(receipt.mediaURLs.first)
+        let read = try XCTUnwrap(receipt.guardedRender).read(at: audio)
+        XCTAssertEqual(read.digest, try MediaContentSnapshot.contentHash(at: audio))
+        XCTAssertEqual(read.guardValue.stamps[audio], try MediaContentSnapshot.FileStamp(audio))
+        XCTAssertEqual(StorageCleanup(root: root).clean(manual: true).removedFiles, 1)
+    }
+
+    @MainActor func testCompletedRenderOverwriteWithRestoredMTimeRejectsDespiteSameIdentity() async throws {
+        let manager = try manager()
+        do {
+            _ = try await manager.captureMedia(projectName: "Processed") {
+                let asset = try manager.createAsset(name: "Processed")
+                let xml = try self.write("Processed.fcpxml", in: asset.directoryURL)
+                let audio = try self.write("Processed.wav", in: asset.directoryURL)
+                let before = try MediaContentSnapshot.FileStamp(audio)
+                XCTAssertTrue(manager.handleOpen(urls: [xml, audio]))
+                await manager.waitForCleanupRegistrations()
+                let writer = try FileHandle(forWritingTo: audio)
+                try writer.write(contentsOf: Data([0]))
+                try writer.close()
+                var attributes = stat()
+                XCTAssertEqual(lstat(audio.path, &attributes), 0)
+                var times = [attributes.st_atimespec,
+                    timespec(tv_sec: before.modifiedSeconds, tv_nsec: before.modifiedNanoseconds)]
+                XCTAssertEqual(utimensat(AT_FDCWD, audio.path, &times, 0), 0)
+                let after = try MediaContentSnapshot.FileStamp(audio)
+                XCTAssertTrue(before.sameIdentitySizeAndModification(as: after))
+                XCTAssertNotEqual(before, after)
+            }
+            XCTFail("The completed digest must reject changed bytes with restored mtime")
         } catch ProjectAnalysisError.changedRenderArtifact { }
         XCTAssertFalse(manager.hasActiveRequest)
     }
