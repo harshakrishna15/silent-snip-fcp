@@ -267,6 +267,7 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic) NSUInteger detachCount;
 @property (nonatomic) NSUInteger retryCount;
 @property (nonatomic) BOOL failApplyActivationSynchronously;
+@property (nonatomic) BOOL rejectCutSynchronously;
 @property (nonatomic) NSUInteger applyCommandCount;
 @property (nonatomic) BOOL fakeCanUpdate;
 @property (nonatomic) BOOL fakeDirty;
@@ -394,7 +395,13 @@ static void unexpectedWindowBoundary(void) {
     self.fakeCanChangeSelection = NO;
     return YES;
 }
-- (BOOL)setCut:(NSString *)cutID included:(BOOL)included { return self.fakeCanChangeSelection; }
+- (BOOL)setCut:(NSString *)cutID included:(BOOL)included {
+    if (!self.fakeCanChangeSelection || self.rejectCutSynchronously) return NO;
+    self.fakeCanChangeSelection = NO;
+    self.fakeCanApply = NO;
+    self.testUpdate(self.lastResponse);
+    return YES;
+}
 - (BOOL)selectAll:(BOOL)included { return self.fakeCanChangeSelection; }
 - (BOOL)retryVerification {
     if (!self.fakeCanRetry || self.fakeBusy) return NO;
@@ -932,6 +939,64 @@ static SSFakeWorkflowReviewClient *beginReview(SSTestWorkflowViewController *con
     check(client != nil && controller.reviewClient == client, @"Analyze uses the overridable transport factory");
     [client deliver:reviewResponse(@"review", @"Review the selected silence") busy:NO canApply:YES];
     return client;
+}
+
+static void inclusionAcknowledgmentsKeepExistingCutControls(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    SSWorkflowCutRow *row = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.firstObject;
+    NSView *rowParent = row.superview;
+    NSMenuItem *menuItem = controller.navigateMenu.itemArray.lastObject;
+    NSString *accessibilityID = row.accessibilityIdentifier;
+    NSString *accessibilityLabel = row.accessibilityLabel;
+    check(rowParent && row.cell.state == NSControlStateValueOn && accessibilityID.length && accessibilityLabel.length,
+          @"The initial native checkbox is attached, included and labelled");
+
+    row.state = NSControlStateValueOff;
+    [controller toggleCut:row];
+    check(row.state == NSControlStateValueOff && !row.enabled && controller.cutList.arrangedSubviews.firstObject == row,
+          @"A pending equal snapshot retains the user's optimistic toggle on the same disabled checkbox");
+    [client deliver:reviewResponse(@"review", @"Inclusion did not change") busy:NO canApply:YES];
+    check(row.state == NSControlStateValueOn && row.enabled && controller.cutList.arrangedSubviews.firstObject == row,
+          @"An equal snapshot that unlocks selection restores the worker's acknowledged value");
+
+    client.rejectCutSynchronously = YES;
+    row.state = NSControlStateValueOff;
+    [controller toggleCut:row];
+    check(row.state == NSControlStateValueOn && row.enabled, @"Synchronous rejection immediately restores the checkbox");
+    client.rejectCutSynchronously = NO;
+
+    NSMutableDictionary *response = [reviewResponse(@"review", @"Cut inclusion acknowledged") mutableCopy];
+    NSMutableDictionary *cut = [response[@"cuts"][0] mutableCopy];
+    cut[@"included"] = @NO;
+    response[@"cuts"] = @[[cut copy]];
+    [client deliver:response busy:NO canApply:YES];
+    check(controller.cutList.arrangedSubviews.firstObject == row && row.superview == rowParent &&
+          controller.navigateMenu.itemArray.lastObject == menuItem,
+          @"An inclusion acknowledgment keeps the attached checkbox and its exact menu item");
+    check(row.cell.state == NSControlStateValueOff && [row.accessibilityLabel isEqual:accessibilityLabel] &&
+          [row.accessibilityIdentifier isEqual:accessibilityID] && row.target == controller && row.action == @selector(toggleCut:),
+          @"The native checkbox stores the acknowledged state and keeps its accessibility identity and action");
+
+    NSArray<NSArray<NSString *> *> *displayEdits = @[@[@"start", @"1.500"], @[@"reason", @"A newly protected range"], @[@"id", @"new-cut"]];
+    for (NSArray<NSString *> *edit in displayEdits) {
+        SSWorkflowCutRow *priorRow = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.firstObject;
+        NSMenuItem *priorItem = controller.navigateMenu.itemArray.lastObject;
+        cut[edit[0]] = edit[1];
+        response[@"cuts"] = @[[cut copy]];
+        [client deliver:response busy:NO canApply:YES];
+        check(controller.cutList.arrangedSubviews.firstObject != priorRow && controller.navigateMenu.itemArray.lastObject != priorItem,
+              @"Changed timing, reason, or identity rebuilds the row and menu item");
+    }
+    SSWorkflowCutRow *updated = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.firstObject;
+    check([updated.startValue isEqual:@"1.500"] && [updated.accessibilityHelp containsString:@"A newly protected range"] &&
+          [updated.accessibilityIdentifier isEqual:@"silentsnip.workflow.cut.new-cut"] &&
+          [controller.navigateMenu.itemArray.lastObject.representedObject isEqual:@"new-cut"],
+          @"Replacement rows and menu entries expose the current reviewed details");
+    closeController(controller);
+    groupCount += 1;
 }
 
 static void analyzeDispatchPinsPayloadAndGesture(void) {
@@ -3229,6 +3294,7 @@ int main(void) {
         windowLeaseTracksVisibleVerifiedHostWithoutProjectWork();
         analyzeDispatchPinsPayloadAndGesture();
         applyRequiresReviewAndFreshGesture();
+        inclusionAcknowledgmentsKeepExistingCutControls();
         sdkNavigationRequiresExactProjectWindowAndReturnedTime();
         navigationSettlementRefreshesDeferredProjectChanges();
         retainedUpdatesNavigationAndRecovery();

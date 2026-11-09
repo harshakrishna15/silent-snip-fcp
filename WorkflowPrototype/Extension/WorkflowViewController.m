@@ -1433,11 +1433,16 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 
 - (void)updateReviewControls {
+    [self updateReviewControlsRefreshingSelection:NO];
+}
+
+- (void)updateReviewControlsRefreshingSelection:(BOOL)refreshSelection {
     BOOL currentRanges = !self.automaticUpdatePending && !self.reviewClient.updatingCuts;
+    BOOL canChangeSelection = self.reviewClient.canChangeSelection;
     BOOL changed = SSWorkflowSetControlEnabled(self.applyButton, currentRanges && self.reviewClient.canApply);
     changed |= SSWorkflowSetControlEnabled(self.cancelButton, self.reviewClient.canCancel);
-    changed |= SSWorkflowSetControlEnabled(self.allButton, currentRanges && self.reviewClient.canChangeSelection);
-    changed |= SSWorkflowSetControlEnabled(self.noneButton, currentRanges && self.reviewClient.canChangeSelection);
+    changed |= SSWorkflowSetControlEnabled(self.allButton, currentRanges && canChangeSelection);
+    changed |= SSWorkflowSetControlEnabled(self.noneButton, currentRanges && canChangeSelection);
     changed |= SSWorkflowSetControlEnabled(self.navigateMenu, currentRanges && self.reviewClient.canHighlight);
     BOOL previousRetryHidden = self.retryButton.hidden;
     BOOL previousApplyHidden = self.applyButton.hidden;
@@ -1456,8 +1461,14 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     else [self.progressIndicator stopAnimation:nil];
     for (NSButton *row in self.cutList.arrangedSubviews) {
         NSUInteger index = (NSUInteger)row.tag;
-        changed |= SSWorkflowSetControlEnabled(row, self.reviewClient.canChangeSelection && index < self.reviewCuts.count &&
-            [self.reviewCuts[index][@"eligible"] boolValue]);
+        NSDictionary *cut = index < self.reviewCuts.count ? self.reviewCuts[index] : nil;
+        // An equal snapshot can be published while the worker is still handling
+        // the click. Keep the optimistic state until a fresh snapshot or unlock.
+        if (cut && (refreshSelection || canChangeSelection)) {
+            NSControlStateValue state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+            if (row.state != state) row.state = state;
+        }
+        changed |= SSWorkflowSetControlEnabled(row, canChangeSelection && [cut[@"eligible"] boolValue]);
     }
     [self updateActionAppearance];
     [self updateDocumentFrame];
@@ -1536,6 +1547,22 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     [self setStatusMessage:message requiresAttention:[state isEqual:@"review"] && (snapshot || message.length > 180)];
 }
 
+- (BOOL)canReuseCutRowsForCuts:(NSArray<NSDictionary *> *)cuts {
+    NSArray<NSView *> *rows = self.cutList.arrangedSubviews;
+    if (cuts.count != self.reviewCuts.count || rows.count != cuts.count ||
+        self.navigateMenu.numberOfItems != (NSInteger)cuts.count + 1) return NO;
+    NSArray<NSString *> *displayedFields = @[@"id", @"start", @"end", @"duration", @"eligible", @"reason"];
+    for (NSUInteger index = 0; index < cuts.count; ++index) {
+        if (![rows[index] isKindOfClass:SSWorkflowCutRow.class] || ((SSWorkflowCutRow *)rows[index]).tag != (NSInteger)index) return NO;
+        NSDictionary *previous = self.reviewCuts[index];
+        NSDictionary *current = cuts[index];
+        for (NSString *field in displayedFields) {
+            if (previous[field] != current[field] && ![previous[field] isEqual:current[field]]) return NO;
+        }
+    }
+    return YES;
+}
+
 - (void)receiveReview:(NSDictionary *)response {
     NSString *state = response[@"state"];
     BOOL terminal = [@[@"completed", @"complete", @"failed", @"cancelled", @"unavailable"] containsObject:state];
@@ -1574,8 +1601,10 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     }
     BOOL deferRanges = self.automaticUpdatePending && !terminal;
     NSArray *cuts = deferRanges || [state isEqual:@"navigating"] ? self.reviewCuts : (response[@"cuts"] ?: @[]);
-    if (![cuts isEqual:self.reviewCuts]) {
-        self.reviewCuts = cuts;
+    BOOL cutsChanged = ![cuts isEqual:self.reviewCuts];
+    BOOL rebuildRows = cutsChanged && ![self canReuseCutRowsForCuts:cuts];
+    if (cutsChanged) self.reviewCuts = cuts;
+    if (rebuildRows) {
         [self.navigateMenu removeAllItems];
         [self.navigateMenu addItemWithTitle:@"Go to Cut"];
         for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
@@ -1628,7 +1657,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     }
     [self setControlsEnabled:self.settingsLoaded && (!self.reviewClient.busy || self.reviewClient.updatingCuts)];
     self.analyzeButton.title = @"Analyze Again";
-    [self updateReviewControls];
+    [self updateReviewControlsRefreshingSelection:cutsChanged && !rebuildRows];
     if (terminal) {
         self.completionMessage = [@[@"completed", @"complete"] containsObject:state] &&
             ![response[@"canRetryVerification"] boolValue] ? ([response[@"verificationOnly"] boolValue] ? @"Result verified." : @"Cuts applied.") : response[@"message"];
@@ -1906,7 +1935,10 @@ static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
 - (void)toggleCut:(NSButton *)sender {
     NSUInteger index = (NSUInteger)sender.tag;
     if (!self.reviewClient.canChangeSelection || index >= self.reviewCuts.count) return;
-    [self.reviewClient setCut:self.reviewCuts[index][@"id"] included:sender.state == NSControlStateValueOn];
+    NSDictionary *cut = self.reviewCuts[index];
+    if (![self.reviewClient setCut:cut[@"id"] included:sender.state == NSControlStateValueOn]) {
+        sender.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
     [self updateReviewControls];
 }
 - (void)selectAllCuts:(id)sender { [self.reviewClient selectAll:YES]; [self updateReviewControls]; }
