@@ -27,6 +27,13 @@ static BOOL SSText(id value, NSUInteger maximum, BOOL empty) {
         [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= maximum &&
         [value rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound;
 }
+static BOOL SSNavigationTime(id value) {
+    if (![value isKindOfClass:NSDictionary.class]) return NO;
+    NSNumber *numerator = value[@"numerator"], *denominator = value[@"denominator"];
+    if (![numerator isKindOfClass:NSNumber.class] || ![denominator isKindOfClass:NSNumber.class]) return NO;
+    long long scale = denominator.longLongValue;
+    return SSInteger(numerator, numerator.longLongValue) && SSInteger(denominator, scale) && scale > 0 && scale <= INT32_MAX;
+}
 static BOOL SSDisplayText(id value, NSUInteger maximum) {
     return [value isKindOfClass:NSString.class] && [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= maximum;
 }
@@ -95,6 +102,10 @@ static NSString *SSResponseName(NSString *request) {
 @property (nonatomic, copy) NSString *rejectedAutomaticSettingsEdit;
 @property (nonatomic, strong) NSNumber *rejectedAutomaticSettingsSequence;
 @property (nonatomic, copy) NSNumber *navigationRevision;
+@property (nonatomic, copy) NSDictionary *pendingNativeNavigation;
+@property (nonatomic, copy) NSDictionary *navigationAcknowledgment;
+@property (nonatomic, copy) BOOL (^nativeMove)(NSDictionary *);
+@property (nonatomic) NSTimeInterval nativeNavigationDeadline;
 @end
 
 @implementation SSWorkflowReviewClient
@@ -107,7 +118,8 @@ static NSString *SSResponseName(NSString *request) {
 - (BOOL)busy {
     if (!self.requestID || self.locallyFailed || self.connection.timedOut) return NO;
     return self.activationPending || self.capabilityNonce != nil || self.connection.awaitingResponse || self.connection.operationBusy ||
-        self.connection.applying || self.connection.pendingRetry != nil || self.connection.pendingSettings != nil || self.navigationRevision != nil || self.cancelRequested;
+        self.connection.applying || self.connection.pendingRetry != nil || self.connection.pendingSettings != nil ||
+        self.navigationRevision != nil || self.pendingNativeNavigation != nil || self.cancelRequested;
 }
 - (BOOL)canApply {
     if (self.settingsDirty || self.recoveryOnly || !self.requestID || self.busy || self.connection.timedOut || self.locallyFailed || self.cancelRequested ||
@@ -152,6 +164,12 @@ static NSString *SSResponseName(NSString *request) {
 }
 - (BOOL)canHighlight {
     return !self.settingsDirty && !self.recoveryOnly && self.canChangeSelection && [self.response[@"canHighlight"] isEqual:@YES];
+}
+- (BOOL)supportsNativeNavigation { return [self.response[@"canNavigateWithSDK"] isEqual:@YES]; }
+- (void)clearNativeNavigation {
+    self.pendingNativeNavigation = nil;
+    self.nativeMove = nil;
+    self.nativeNavigationDeadline = 0;
 }
 - (BOOL)canCancel {
     if (self.recoveryPending && self.analysisDispatched) return NO;
@@ -374,6 +392,8 @@ static NSString *SSResponseName(NSString *request) {
     self.pendingCancel = nil;
     [self clearAutomaticUpdate];
     self.navigationRevision = nil;
+    [self clearNativeNavigation];
+    self.navigationAcknowledgment = nil;
     self.capabilityNonce = nil;
     self.activationPending = NO;
     self.activationToken += 1;
@@ -520,8 +540,17 @@ static NSString *SSResponseName(NSString *request) {
     if (![states containsObject:value[@"state"]]) return NO;
     for (NSString *key in @[@"canApply", @"canChangeSelection", @"canCancel", @"canHighlight"])
         if (!SSBoolean(value[key])) return NO;
-    for (NSString *key in @[@"canRetryVerification", @"previewVisible", @"provisional", @"canUpdateCuts", @"usesAudioSnapshot", @"automaticPreviewAvailable"])
+    for (NSString *key in @[@"canRetryVerification", @"previewVisible", @"provisional", @"canUpdateCuts", @"usesAudioSnapshot", @"automaticPreviewAvailable", @"canNavigateWithSDK"])
         if (value[key] && !SSBoolean(value[key])) return NO;
+    id permit = value[@"navigationPermit"];
+    if (permit) {
+        if (![permit isKindOfClass:NSDictionary.class] || ![value[@"state"] isEqual:@"navigating"] ||
+            ![value[@"canNavigateWithSDK"] isEqual:@YES] || !SSUUID(permit[@"view"]) || !SSUUID(permit[@"gesture"]) ||
+            !SSText(permit[@"cutID"], 200, NO) || ![permit[@"expiresUptime"] isKindOfClass:NSNumber.class] ||
+            SSBoolean(permit[@"expiresUptime"]) || !isfinite([permit[@"expiresUptime"] doubleValue])) return NO;
+        for (NSString *key in @[@"time", @"sequenceStart", @"sequenceDuration", @"frameDuration"])
+            if (!SSNavigationTime(permit[key])) return NO;
+    }
     for (NSString *key in @[@"summary", @"targetClipName"])
         if (value[key] && !SSDisplayText(value[key], 16384)) return NO;
     if (value[@"settingsEdit"] && !SSUUID(value[@"settingsEdit"])) return NO;
@@ -615,6 +644,20 @@ static NSString *SSResponseName(NSString *request) {
         [self clearAutomaticUpdate];
     }
     if (self.navigationRevision && [accepted[@"revision"] compare:self.navigationRevision] == NSOrderedDescending) self.navigationRevision = nil;
+    NSDictionary *navigation = self.pendingNativeNavigation;
+    NSDictionary *permit = accepted[@"navigationPermit"];
+    BOOL (^move)(NSDictionary *) = nil;
+    if (navigation && [accepted[@"revision"] compare:navigation[@"expectedRevision"]] == NSOrderedDescending) {
+        if ([permit[@"view"] isEqual:self.viewID] && [permit[@"gesture"] isEqual:navigation[@"navigationGesture"]] &&
+            [permit[@"cutID"] isEqual:navigation[@"cutID"]] &&
+            [accepted[@"revision"] longLongValue] - [navigation[@"expectedRevision"] longLongValue] == 1) move = self.nativeMove;
+        // Consume before publishing or invoking the SDK. Heartbeats can carry
+        // the same permit but can never execute the move again.
+        [self clearNativeNavigation];
+    }
+    if (self.navigationAcknowledgment &&
+        [accepted[@"revision"] compare:self.navigationAcknowledgment[@"expectedRevision"]] == NSOrderedDescending)
+        self.navigationAcknowledgment = nil;
     if (!self.activationPending) self.localMessage = nil;
     if (self.connection.applying && ([accepted[@"state"] isEqual:@"applying"] || SilentSnipReviewStateIsTerminal(accepted[@"state"]))) {
         self.connection.applyAcknowledged = YES;
@@ -626,6 +669,8 @@ static NSString *SSResponseName(NSString *request) {
         self.cancelRequested = NO;
         self.pendingCancel = nil;
         [self clearAutomaticUpdate];
+        [self clearNativeNavigation];
+        self.navigationAcknowledgment = nil;
         [self.timer invalidate]; self.timer = nil;
     }
     NSUInteger generation = self.generation;
@@ -637,6 +682,18 @@ static NSString *SSResponseName(NSString *request) {
             @"localPreview": @YES, @"expectedRevision": accepted[@"revision"], @"view": self.viewID,
             @"settingsSequence": @(self.settingsSequence + 1)} : nil;
     [self publish];
+    if (move && generation == self.generation && [request isEqual:self.requestID] &&
+        [accepted[@"revision"] isEqual:self.connection.revision] && !self.cancelRequested && !self.locallyFailed) {
+        BOOL moved = [self activationUptime] <= [permit[@"expiresUptime"] doubleValue] &&
+            [self hostIsAlreadyFrontmost] && !self.settingsDirty && move(permit);
+        if (generation == self.generation && [request isEqual:self.requestID] && !self.cancelRequested && !self.locallyFailed &&
+            [accepted[@"revision"] isEqual:self.connection.revision]) {
+            self.navigationAcknowledgment = @{@"version": @1, @"request": request, @"command": @"navigationFinished",
+                @"cutID": permit[@"cutID"], @"expectedRevision": accepted[@"revision"], @"view": self.viewID,
+                @"navigationGesture": permit[@"gesture"], @"navigationSucceeded": @(moved)};
+            [self send:self.navigationAcknowledgment name:SSCommandName];
+        }
+    }
     if (hide && generation == self.generation && [request isEqual:self.requestID] &&
         self.settingsDirty && !self.cancelRequested && !self.locallyFailed)
         [self send:hide name:SSCommandName];
@@ -652,6 +709,11 @@ static NSString *SSResponseName(NSString *request) {
     }
     if ([self.connection hasTimedOutAt:[self now]]) { [self fail:@"Silent Snip stopped responding. Check Final Cut Pro before starting another task."]; return; }
     if (self.recoveryPending) return;
+    if (self.pendingNativeNavigation && [self activationUptime] >= self.nativeNavigationDeadline) {
+        [self clearNativeNavigation];
+        self.localMessage = @"Final Cut Pro did not confirm the playhead move.";
+        [self publish];
+    }
     if (self.pendingCancel) {
         // Cancellation is idempotent and bound to this exact request. A lost
         // notification must not leave a live review permanently locked while
@@ -662,6 +724,7 @@ static NSString *SSResponseName(NSString *request) {
         if (generation != self.generation || self.pendingCancel != command || self.locallyFailed) return;
     }
     for (NSDictionary *command in self.connection.commandsToRetry) [self send:command name:SSCommandName];
+    if (self.navigationAcknowledgment) [self send:self.navigationAcknowledgment name:SSCommandName];
     [self send:@{@"version": @1, @"request": self.requestID, @"command": @"status"} name:SSCommandName];
 }
 - (BOOL)selection:(NSDictionary *)fields {
@@ -797,6 +860,22 @@ static NSString *SSResponseName(NSString *request) {
     }];
     return YES;
 }
+- (BOOL)navigateCut:(NSString *)cutID gesture:(NSString *)gesture move:(BOOL (^)(NSDictionary *))move {
+    if (!self.canHighlight || !self.supportsNativeNavigation || !SSUUID(gesture) || !move || ![self hostIsAlreadyFrontmost]) return NO;
+    BOOL known = NO;
+    for (NSDictionary *cut in self.response[@"cuts"]) if ([cut[@"id"] isEqual:cutID]) known = YES;
+    if (!known) return NO;
+    NSDictionary *command = @{@"version": @1, @"request": self.requestID, @"command": @"prepareNavigation",
+        @"cutID": cutID, @"expectedRevision": self.connection.revision, @"view": self.viewID, @"navigationGesture": gesture};
+    self.pendingNativeNavigation = command;
+    self.nativeMove = move;
+    self.nativeNavigationDeadline = [self activationUptime] + 3;
+    NSUInteger generation = self.generation;
+    [self publish];
+    if (generation == self.generation && self.pendingNativeNavigation == command && !self.cancelRequested &&
+        !self.locallyFailed && !self.settingsDirty) [self send:command name:SSCommandName];
+    return YES;
+}
 - (BOOL)sendApplyWithGesture:(NSString *)gesture {
     if (!SSUUID(gesture) || !self.canApply) return NO;
     NSNumber *revision = self.connection.revision;
@@ -867,6 +946,8 @@ static NSString *SSResponseName(NSString *request) {
     self.rejectedAutomaticSettingsEdit = nil;
     self.rejectedAutomaticSettingsSequence = nil;
     self.navigationRevision = nil;
+    [self clearNativeNavigation];
+    self.navigationAcknowledgment = nil;
     self.capabilityNonce = nil;
     if (!self.analysisDispatched) {
         self.generation += 1;
@@ -897,6 +978,8 @@ static NSString *SSResponseName(NSString *request) {
     [self clearAutomaticUpdate];
     self.rejectedAutomaticSettingsEdit = nil; self.rejectedAutomaticSettingsSequence = nil;
     self.navigationRevision = nil; self.recoveryGesture = nil;
+    [self clearNativeNavigation];
+    self.navigationAcknowledgment = nil;
     self.activationPending = NO; self.activationToken += 1; self.localMessage = nil;
 }
 - (void)dealloc {

@@ -46,6 +46,15 @@ import Foundation
         !restoringControllerSettings && reviewSession?.canAuthorizePreview(view: view, edit: edit) == true
     }
 
+    public func canAuthorizeNativeNavigation(_ command: ReviewCommand) -> Bool {
+        guard !restoringControllerSettings, let view = command.view, let gesture = command.navigationGesture,
+              reviewRequestID == command.request, let context = contexts[command.request],
+              let session = reviewSession, session === context.capture.session,
+              let selected = session.reviewOwnership.active,
+              (try? selected.resolve(in: context.capture.document).1) == context.capture.target else { return false }
+        return session.canAuthorizeWorkflowNavigation(view: view, gesture: gesture)
+    }
+
     public func canAuthorizeRecalculation(_ command: ReviewCommand) -> Bool {
         guard command.localPreview == true, let view = command.view, let edit = command.settingsEdit else { return false }
         guard command.automaticPreview == true else { return canAuthorizePreview(view: view, edit: edit) }
@@ -1022,6 +1031,35 @@ import Foundation
             try? failure.saveStatus()
             throw failure
         }
+    }
+
+    public func verifyNativeNavigation(_ request: AnalyzeRequest, result: ReviewAnalysisResult, cutID: String) async throws {
+        guard let context = contexts[request.id], let origin = request.workflowOrigin,
+              context.capture.session.workflowOrigin?.view == origin.view,
+              let cut = result.analyzed.review.cuts.first(where: { $0.id == cutID }) else { throw ReviewError.staleProject }
+        let document = context.capture.document
+        let absolute = try document.projectTimecodeStart.adding(cut.range.start)
+        let session = context.capture.session
+        let timing = AnalysisTiming(request: request.id)
+        timing.recordCounters(["share.exchanges": 0, "navigation.sdkAcknowledgments": 1])
+        timing.begin("verifySDKPlayhead")
+        var outcome = "failed"
+        defer { timing.save(to: context.directory.appendingPathComponent("Navigation-Timing.json"),
+            outcome: Task.isCancelled ? "cancelled" : outcome) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        repeat {
+            try validateReviewSelection(context.capture)
+            guard session.currentSheet() == nil else {
+                throw FinalCutCaptureError.unavailable("A Final Cut Pro dialog is blocking playhead verification.")
+            }
+            if session.timelinePlayheadMatches(absolute, frameDuration: document.frameDuration) {
+                try validateReviewSelection(context.capture)
+                outcome = "navigated"
+                return
+            }
+            try await Task.sleep(for: .milliseconds(40))
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        throw FinalCutCaptureError.unavailable("Final Cut Pro did not confirm the playhead at the selected cut.")
     }
 
     public func highlight(_ request: AnalyzeRequest, result: ReviewAnalysisResult, cutID: String) async throws {

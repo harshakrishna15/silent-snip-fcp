@@ -94,6 +94,17 @@ extension FinalCutAXSession {
         try await waitUntil(timeout: 2, context: "timeline focus") { (try? hasTimelineFocus()) == true }
     }
 
+    func timelinePlayheadMatches(_ time: RationalTime, frameDuration: RationalTime) -> Bool {
+        guard (try? refreshTimeline()) != nil,
+              let items = attribute(timeline, kAXChildrenAttribute) as? [AXUIElement], items.count <= 10_000 else { return false }
+        let playheads = items.filter {
+            string($0, kAXRoleAttribute) == kAXValueIndicatorRole && string($0, kAXDescriptionAttribute) == "Playhead"
+        }
+        guard playheads.count == 1, let value = string(playheads[0], kAXValueAttribute),
+              let actual = try? FinalCutTimecode.time(value, frameDuration: frameDuration) else { return false }
+        return actual == time
+    }
+
     /// Final Cut's numeric timecode editor is not an AXTextField on current
     /// hosts. Clear the exact clip selection first so duration entry cannot
     /// trim it, then require the native numeric controls and pending LCD value
@@ -144,6 +155,7 @@ extension FinalCutAXSession {
         var clearedSelection = false
         var opened = false
         var observedEntry = false
+        var confirmed = false
         try await FinalCutOwnedInput.perform(operation: {
             try assertInputFocus()
             guard try selectionSnapshot() == expected else { throw AudioControllerSettingsError.targetChanged }
@@ -178,14 +190,9 @@ extension FinalCutAXSession {
                 throw FinalCutCaptureError.unavailable("The pending timecode in Final Cut Pro did not match the selected cut. No timecode was confirmed.")
             }
             try key(code: 36)
+            confirmed = true
             try await waitUntil(timeout: 2, context: "the requested timeline playhead time") {
-                guard !numericEntryOpen(), emptySelection() else { return false }
-                let playheads = children(timeline).filter {
-                    string($0, kAXRoleAttribute) == kAXValueIndicatorRole && string($0, kAXDescriptionAttribute) == "Playhead"
-                }
-                guard playheads.count == 1, let value = string(playheads[0], kAXValueAttribute),
-                      let actual = try? FinalCutTimecode.time(value, frameDuration: document.frameDuration) else { return false }
-                return actual == absolute
+                !numericEntryOpen() && emptySelection() && timelinePlayheadMatches(absolute, frameDuration: document.frameDuration)
             }
             try await selectTimelineClip(target, document: document, restoring: expected, scrollToVisible: false)
         }, cleanup: {
@@ -204,7 +211,7 @@ extension FinalCutAXSession {
                     try await Task.sleep(for: .milliseconds(150))
                 }
             }
-            if opened, (try? self.assertInputFocus()) != nil, self.currentSheet() == nil,
+            if opened, !confirmed, (try? self.assertInputFocus()) != nil, self.currentSheet() == nil,
                (try? self.hasTimelineFocus()) == true, emptySelection(), numericEntryOpen() {
                 try self.key(code: 53)
                 try await self.waitUntil(timeout: 2, context: "playhead numeric entry to close") { !numericEntryOpen() }

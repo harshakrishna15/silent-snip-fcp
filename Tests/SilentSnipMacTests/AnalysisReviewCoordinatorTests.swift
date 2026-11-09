@@ -817,6 +817,52 @@ import XCTest
         XCTAssertTrue(try XCTUnwrap(responses.last).canApply)
     }
 
+    func testSDKNavigationPublishesOnePermitAndVerifiesOnlyMatchingAcknowledgment() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: fixture.directory.appendingPathComponent("Navigation.fcpbundle"),
+            projectUID: "navigation-project", projectName: "Navigation project")
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove, workflowOrigin: origin)
+        let gesture = UUID()
+        var response: ReviewResponse?, verifications: [String] = []
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            applyOperation: { _, _, _ in XCTFail("Must not apply while navigating") }, authorizeApply: { _ in true },
+            highlightOperation: { _, _, _ in XCTFail("The SDK request must never invoke legacy input") },
+            authorizeNativeNavigation: { $0.navigationGesture == gesture },
+            verifyNativeNavigation: { _, _, cutID in verifications.append(cutID) },
+            emit: { response = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request)
+        try await waitUntil { response?.state == "review" }
+        let review = try XCTUnwrap(response)
+        XCTAssertEqual(review.canNavigateWithSDK, true)
+        let cut = try XCTUnwrap(fixture.result.analyzed.review.cuts.first)
+        let prepare = ReviewCommand(request: request.id, command: .prepareNavigation, cutID: cut.id,
+            expectedRevision: review.revision, view: origin.view, navigationGesture: gesture)
+        coordinator.handle(prepare)
+        let navigating = try XCTUnwrap(response)
+        let permit = try XCTUnwrap(navigating.navigationPermit)
+        XCTAssertEqual(navigating.state, "navigating")
+        XCTAssertFalse(navigating.canApply)
+        XCTAssertEqual(permit.gesture, gesture)
+        XCTAssertEqual(permit.view, origin.view)
+        XCTAssertEqual(permit.time, try fixture.result.analyzed.document.projectTimecodeStart.adding(cut.range.start))
+        coordinator.handle(prepare)
+        coordinator.handle(.init(request: request.id, command: .status))
+        XCTAssertEqual(response, navigating, "A repeated preparation/status never issues a second permit")
+        coordinator.handle(.init(request: request.id, command: .navigationFinished, cutID: cut.id,
+            expectedRevision: navigating.revision, view: UUID(), navigationGesture: gesture, navigationSucceeded: true))
+        XCTAssertTrue(verifications.isEmpty)
+        let acknowledgment = ReviewCommand(request: request.id, command: .navigationFinished, cutID: cut.id,
+            expectedRevision: navigating.revision, view: origin.view, navigationGesture: gesture, navigationSucceeded: true)
+        coordinator.handle(acknowledgment)
+        coordinator.handle(acknowledgment)
+        try await waitUntil { response?.state == "review" }
+        XCTAssertEqual(verifications, [cut.id])
+        XCTAssertEqual(response?.cuts, review.cuts)
+        XCTAssertNil(response?.navigationPermit)
+    }
+
     func testJumpKeepsPreviewVisibleUntilNavigationFinishes() async throws {
         let fixture = try makeFixture(); defer { fixture.remove() }
         let request = try makeRequest()

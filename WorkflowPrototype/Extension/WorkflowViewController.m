@@ -749,6 +749,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.cutList.translatesAutoresizingMaskIntoConstraints = YES;
     self.cutList.autoresizingMask = NSViewWidthSizable;
     self.reviewScroll = [NSScrollView new];
+    self.reviewScroll.accessibilityIdentifier = @"silentsnip.workflow.cut-list";
     self.reviewScroll.drawsBackground = YES;
     self.reviewScroll.backgroundColor = SSWorkflowGray(0.105);
     self.reviewScroll.hasVerticalScroller = NO;
@@ -1113,7 +1114,10 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 
 - (NSDictionary *)observedProjectContext {
-    FCPXSequence *sequence = self.timeline.activeSequence;
+    return [self projectContextForSequence:self.timeline.activeSequence];
+}
+
+- (NSDictionary *)projectContextForSequence:(FCPXSequence *)sequence {
     if (!sequence || sequence.objectType != kFCPXObjectType_Sequence) return nil;
     // Proxy classes have no linkable class symbols. Discriminate each public
     // objectType before a C cast; require the complete documented ancestry.
@@ -1248,6 +1252,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
     self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
     self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
+    self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
     [self.navigateMenu removeAllItems];
     [self.navigateMenu addItemWithTitle:@"Go to Cut"];
     [self updateReviewControls];
@@ -1557,12 +1562,15 @@ static NSColor *SSWorkflowGray(CGFloat value) {
             self.automaticUpdateRejectedGeneration = self.automaticUpdateGeneration;
         }
     }
+    BOOL wasNavigating = [self.reviewResponse[@"state"] isEqual:@"navigating"];
     self.reviewResponse = response;
     if (!self.reviewClient.busy) {
         self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
+        self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
+        if (wasNavigating) [self refreshPlayhead];
     }
     BOOL deferRanges = self.automaticUpdatePending && !terminal;
-    NSArray *cuts = deferRanges ? self.reviewCuts : (response[@"cuts"] ?: @[]);
+    NSArray *cuts = deferRanges || [state isEqual:@"navigating"] ? self.reviewCuts : (response[@"cuts"] ?: @[]);
     if (![cuts isEqual:self.reviewCuts]) {
         self.reviewCuts = cuts;
         [self.navigateMenu removeAllItems];
@@ -1683,9 +1691,64 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     [self updateReviewControls];
 }
 
+static CMTime SSNavigationTimeFromWire(NSDictionary *time) {
+    return CMTimeMake([time[@"numerator"] longLongValue], [time[@"denominator"] intValue]);
+}
+
+static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
+    return CMTIME_IS_NUMERIC(actual) && CMTIME_IS_NUMERIC(expected) &&
+        actual.epoch == expected.epoch && CMTimeCompare(actual, expected) == 0;
+}
+
+- (BOOL)ownsNavigationWindow:(NSWindow *)window {
+    return self.viewVisible && [self hasVerifiedWindowHost] && window && self.view.window == window &&
+        window.isVisible && window.isKeyWindow && !self.view.hiddenOrHasHiddenAncestor;
+}
+
+- (BOOL)movePlayheadForPermit:(NSDictionary *)permit context:(NSDictionary *)context window:(NSWindow *)window {
+    FCPXTimeline *timeline = self.timeline;
+    FCPXSequence *sequence = timeline.activeSequence;
+    if (![self projectContext:[self projectContextForSequence:sequence] hasSameIdentityAs:context]) return NO;
+    CMTime start = SSNavigationTimeFromWire(permit[@"sequenceStart"]);
+    CMTime duration = SSNavigationTimeFromWire(permit[@"sequenceDuration"]);
+    CMTime frame = SSNavigationTimeFromWire(permit[@"frameDuration"]);
+    CMTime target = SSNavigationTimeFromWire(permit[@"time"]);
+    CMTime end = CMTimeAdd(start, duration);
+    if (!SSExactNavigationTime(sequence.startTime, start) || !SSExactNavigationTime(sequence.duration, duration) ||
+        !SSExactNavigationTime(sequence.frameDuration, frame) || !CMTIME_IS_NUMERIC(target) || !CMTIME_IS_NUMERIC(end) ||
+        CMTimeCompare(target, start) < 0 || CMTimeCompare(target, end) >= 0 || self.timeline != timeline ||
+        ![self projectContext:[self observedProjectContext] hasSameIdentityAs:context] ||
+        ![self ownsNavigationWindow:window]) return NO;
+    // Only this explicit, consumed permit sends a native command. An invalid
+    // or different result is reported to the worker without another attempt.
+    CMTime actual = [timeline movePlayheadTo:target];
+    return SSExactNavigationTime(actual, target) && self.timeline == timeline &&
+        [self projectContext:[self observedProjectContext] hasSameIdentityAs:context];
+}
+
 - (void)goToCut:(NSMenuItem *)sender {
-    if (!self.reviewClient.canHighlight || ![self observedProjectMatchesSettings]) return;
-    [self.reviewClient highlightCut:sender.representedObject];
+    if (!self.reviewClient.canHighlight || !self.viewVisible || self.automaticUpdatePending) return;
+    NSDictionary *context = [self observedProjectContext];
+    if (![self projectContext:context hasSameIdentityAs:@{@"projectUID": self.projectUID ?: @"",
+        @"libraryURL": self.libraryURL ?: NSNull.null}]) return;
+    if (self.reviewClient.supportsNativeNavigation && [self.timeline respondsToSelector:@selector(movePlayheadTo:)]) {
+        __weak NSWindow *window = self.view.window;
+        if (![self ownsNavigationWindow:window]) return;
+        NSString *gesture = NSUUID.UUID.UUIDString;
+        self.navigateMenu.accessibilityIdentifier = [@"silentsnip.workflow.navigate.requested." stringByAppendingString:gesture];
+        self.navigateMenu.enabled = NO;
+        NSUInteger generation = self.reviewGeneration;
+        NSUInteger contextGeneration = self.contextGeneration;
+        __weak SSWorkflowViewController *weakSelf = self;
+        if (![self.reviewClient navigateCut:sender.representedObject gesture:gesture move:^BOOL(NSDictionary *permit) {
+            SSWorkflowViewController *owner = weakSelf;
+            return owner && owner.viewVisible && owner.reviewGeneration == generation &&
+                owner.contextGeneration == contextGeneration && !owner.automaticUpdatePending &&
+                [owner movePlayheadForPermit:permit context:context window:window];
+        }]) self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
+    } else {
+        [self.reviewClient highlightCut:sender.representedObject];
+    }
     [self setControlsEnabled:self.settingsLoaded && (!self.reviewClient.busy || self.reviewClient.updatingCuts)];
     [self updateReviewControls];
 }

@@ -18,6 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL automaticPreviewAvailable;
 @property (nonatomic, readonly) BOOL updatingCuts;
 @property (nonatomic, readonly) BOOL canHighlight;
+@property (nonatomic, readonly) BOOL supportsNativeNavigation;
 /// Editing invalidates Apply/navigation and hides the stale timeline overlay,
 /// retaining reusable measurements for an eligible snapshot refresh. New edits
 /// during a refresh remain dirty until their own acknowledged result arrives.
@@ -29,6 +30,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Retained for compatibility with earlier explicitly invoked frontends.
 - (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture;
 - (BOOL)highlightCut:(NSString *)cutID;
+/// The move block is called at most once, with the current worker's permit.
+- (BOOL)navigateCut:(NSString *)cutID gesture:(NSString *)gesture move:(BOOL (^)(NSDictionary *permit))move;
 /// Explicit read-only recovery; accepts only Silent Snip.fcpxml. This client
 /// never gains Apply authority from an adopted verification result.
 - (BOOL)verifyExistingResultURL:(NSURL *)resultURL

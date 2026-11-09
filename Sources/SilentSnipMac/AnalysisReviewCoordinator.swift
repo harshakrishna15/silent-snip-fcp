@@ -44,6 +44,7 @@ public struct ReviewAnalysisResult: Sendable {
         var verifySettings = false
         var previewSuspended = false
         var targetClipName: String?
+        var navigationPermit: ReviewNavigationPermit?
         init(_ request: AnalyzeRequest) { self.request = request }
     }
 
@@ -55,6 +56,8 @@ public struct ReviewAnalysisResult: Sendable {
     private let recordLocalPreview: (UUID, Double, Bool) -> Void
     private let authorizeRecalculation: @MainActor (ReviewCommand) -> Bool
     private let highlightOperation: HighlightOperation?
+    private let authorizeNativeNavigation: (@MainActor (ReviewCommand) -> Bool)?
+    private let verifyNativeNavigation: HighlightOperation?
     private let verificationOperation: VerificationOperation?
     private let canRetryVerification: (UUID) -> Bool
     private let emit: (ReviewPublication) throws -> Void
@@ -71,6 +74,8 @@ public struct ReviewAnalysisResult: Sendable {
                 localPreviewOperation: ApplyOperation? = nil,
                 recordLocalPreview: @escaping (UUID, Double, Bool) -> Void = { _, _, _ in },
                 highlightOperation: HighlightOperation? = nil,
+                authorizeNativeNavigation: (@MainActor (ReviewCommand) -> Bool)? = nil,
+                verifyNativeNavigation: HighlightOperation? = nil,
                 verificationOperation: VerificationOperation? = nil,
                 canRetryVerification: @escaping (UUID) -> Bool = { _ in false },
                 emit: @escaping (ReviewPublication) throws -> Void,
@@ -84,6 +89,8 @@ public struct ReviewAnalysisResult: Sendable {
         self.recalculationOperation = recalculationOperation; self.authorizeRecalculation = authorizeRecalculation
         self.localPreviewOperation = localPreviewOperation; self.recordLocalPreview = recordLocalPreview
         self.highlightOperation = highlightOperation
+        self.authorizeNativeNavigation = authorizeNativeNavigation
+        self.verifyNativeNavigation = verifyNativeNavigation
         self.verificationOperation = verificationOperation
         self.canRetryVerification = canRetryVerification
         self.emit = emit
@@ -183,6 +190,7 @@ public struct ReviewAnalysisResult: Sendable {
         // or poison its revision. A lost owner is handled by the view's timeout.
         guard let job = jobs[command.request] else { return }
         if command.command == .status { resend(job); return }
+        if command.command == .navigationFinished { finishNativeNavigation(job, command: command); return }
         if command.command == .recalculate { recalculate(job, command: command); return }
         if command.command == .preview, command.localPreview == true, command.included == false {
             guard active == command.request, !job.cancelled, !job.applyStarted else { return }
@@ -253,7 +261,10 @@ public struct ReviewAnalysisResult: Sendable {
             case .highlight:
                 guard let id = command.cutID else { return }
                 guard result.analyzed.review.cuts.contains(where: { $0.id == id }) else { throw ReviewError.unknownCut }
-                beginHighlight(job, result: result, cutID: id)
+                if let highlightOperation { beginHighlight(job, result: result, cutID: id, operation: highlightOperation) }
+                return
+            case .prepareNavigation:
+                try prepareNativeNavigation(job, result: result, command: command)
                 return
             case .apply:
                 guard !job.previewSuspended else { resend(job); return }
@@ -272,7 +283,7 @@ public struct ReviewAnalysisResult: Sendable {
                 }
                 beginApply(job, result: result)
                 return
-            case .status, .cancel, .retryVerification, .recalculate: return
+            case .status, .cancel, .retryVerification, .recalculate, .navigationFinished: return
             }
             job.result = result
             job.message = self.reviewMessage(result)
@@ -396,36 +407,83 @@ public struct ReviewAnalysisResult: Sendable {
         }
     }
 
-    private func beginHighlight(_ job: Job, result: ReviewAnalysisResult, cutID: String) {
-        guard let highlightOperation else { return }
+    private func prepareNativeNavigation(_ job: Job, result: ReviewAnalysisResult, command: ReviewCommand) throws {
+        guard let view = command.view, view == job.request.workflowOrigin?.view,
+              let gesture = command.navigationGesture, command.expectedRevision == job.revision,
+              let id = command.cutID, let cut = result.analyzed.review.cuts.first(where: { $0.id == id }),
+              verifyNativeNavigation != nil, authorizeNativeNavigation?(command) == true else {
+            throw FinalCutCaptureError.unavailable("The selected clip or review changed. Select the original clip before moving to a cut.")
+        }
+        let document = result.analyzed.document
+        let target = try document.projectTimecodeStart.adding(cut.range.start)
+        let duration = try document.projectRange.checkedDuration()
+        guard cut.range.start >= .zero, cut.range.start < duration,
+              [target, document.projectTimecodeStart, duration, document.frameDuration].allSatisfy({ $0.denominator <= Int64(Int32.max) }) else {
+            throw FinalCutCaptureError.unavailable("This cut’s time cannot be passed to Final Cut Pro.")
+        }
+        let permit = ReviewNavigationPermit(view: view, gesture: gesture, cutID: id,
+            expiresUptime: ProcessInfo.processInfo.systemUptime + 2, time: target,
+            sequenceStart: document.projectTimecodeStart, sequenceDuration: duration, frameDuration: document.frameDuration)
+        job.state = .navigating
+        job.message = "Moving to the selected cut…"
+        job.progress = nil
+        job.navigationPermit = permit
+        job.task = Task { [weak self, weak job] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, let job, job.navigationPermit == permit else { return }
+            job.navigationPermit = nil
+            self.finishHighlight(job, error: FinalCutCaptureError.unavailable("Final Cut Pro did not confirm the playhead move."))
+        }
+        publish(job)
+    }
+
+    private func finishNativeNavigation(_ job: Job, command: ReviewCommand) {
+        guard active == command.request, !job.cancelled, job.state == .navigating,
+              let permit = job.navigationPermit, permit.gesture == command.navigationGesture,
+              permit.view == command.view, permit.cutID == command.cutID, job.revision == command.expectedRevision,
+              let succeeded = command.navigationSucceeded, let result = job.result,
+              let verifyNativeNavigation else { resend(job); return }
+        job.navigationPermit = nil
+        job.task?.cancel()
+        guard succeeded, ProcessInfo.processInfo.systemUptime <= permit.expiresUptime else {
+            finishHighlight(job, error: FinalCutCaptureError.unavailable("Final Cut Pro did not confirm the playhead move. Check the project before trying again."))
+            return
+        }
+        beginHighlight(job, result: result, cutID: permit.cutID, operation: verifyNativeNavigation, publishStart: false)
+    }
+
+    private func beginHighlight(_ job: Job, result: ReviewAnalysisResult, cutID: String,
+                                operation: @escaping HighlightOperation, publishStart: Bool = true) {
         job.state = .navigating
         job.message = "Moving to the selected cut…"
         job.progress = nil
         job.task = Task { [weak self, weak job] in
             guard let self, let job else { return }
             do {
-                try await highlightOperation(job.request, result, cutID)
+                try await operation(job.request, result, cutID)
                 try Task.checkCancellation()
-                job.message = "Playhead moved to the selected cut’s start."
+                finishHighlight(job, error: nil)
             } catch {
-                job.message = error.localizedDescription
-                if error is XMLProjectBaselineError || Self.invalidatesReview(error) {
-                    job.result = nil
-                    job.state = .failed
-                }
+                finishHighlight(job, error: error)
             }
-            job.task = nil
-            if job.cancelled {
-                job.state = .cancelled; job.result = nil
-                if active == job.request.id { active = nil }
-            } else if job.result == nil {
-                job.state = .failed
-                if active == job.request.id { active = nil }
-            } else { job.state = .review }
-            publish(job)
-            prune()
         }
+        if publishStart { publish(job) }
+    }
+
+    private func finishHighlight(_ job: Job, error: Error?) {
+        job.task = nil
+        job.message = error?.localizedDescription ?? "Playhead moved to the selected cut’s start."
+        if let error, error is XMLProjectBaselineError || Self.invalidatesReview(error) { job.result = nil }
+        if job.cancelled {
+            job.state = .cancelled; job.result = nil
+            job.message = "Review canceled. No timeline edits were made."
+            if active == job.request.id { active = nil }
+        } else if job.result == nil {
+            job.state = .failed
+            if active == job.request.id { active = nil }
+        } else { job.state = .review }
         publish(job)
+        prune()
     }
 
     private static func invalidatesReview(_ error: Error) -> Bool {
@@ -607,12 +665,15 @@ public struct ReviewAnalysisResult: Sendable {
 
     private func makeResponse(_ job: Job, rejectedEdit: UUID? = nil,
                               rejectedSequence: Int? = nil) throws -> ReviewResponse {
+        let sdkNavigation = job.request.workflowOrigin != nil && authorizeNativeNavigation != nil && verifyNativeNavigation != nil
         guard let result = job.result, job.state == .review || job.state == .analyzing || job.state == .recalculating else {
             return ReviewResponse(request: job.request.id, revision: job.revision,
                 state: job.state.rawValue, message: job.message, progress: job.progress,
                 canCancel: job.state.canCancel,
                 canRetryVerification: verificationOperation != nil && job.state.canRetryVerification && canRetryVerification(job.request.id),
-                settingsEdit: job.settingsEdit, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture)
+                settingsEdit: job.settingsEdit, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture,
+                canNavigateWithSDK: sdkNavigation ? true : nil,
+                navigationPermit: job.state == .navigating ? job.navigationPermit : nil)
         }
         let analysis = result.analyzed
         let review = analysis.review
@@ -637,7 +698,7 @@ public struct ReviewAnalysisResult: Sendable {
         return ReviewResponse(request: job.request.id, revision: job.revision, state: job.state.rawValue,
             message: job.message, progress: job.state == .recalculating ? job.progress : 1, summary: summary, cuts: cuts,
             canApply: accepted && ready && applyOperation != nil && Self.applyUnavailableReason(result) == nil,
-            canChangeSelection: accepted && ready, canCancel: true, canHighlight: accepted && ready && highlightOperation != nil, previewVisible: !job.previewSuspended,
+            canChangeSelection: accepted && ready, canCancel: true, canHighlight: accepted && ready && (highlightOperation != nil || sdkNavigation), previewVisible: !job.previewSuspended,
             settingsEdit: job.settingsEdit,
             settings: ReviewWireSettings(threshold: job.request.settings.thresholdDBFS, minimum: job.request.settings.minimumSilenceDuration,
                 before: job.request.settings.beforeSpeechPadding, after: job.request.settings.afterSpeechPadding),
@@ -645,7 +706,8 @@ public struct ReviewAnalysisResult: Sendable {
             canUpdateCuts: ready && result.canUpdateCuts && localPreviewOperation != nil,
             usesAudioSnapshot: result.usesAudioSnapshot, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture,
             automaticPreviewAvailable: job.request.workflowOrigin != nil && result.canUpdateCuts && localPreviewOperation != nil,
-            rejectedSettingsEdit: rejectedEdit, rejectedSettingsSequence: rejectedSequence)
+            rejectedSettingsEdit: rejectedEdit, rejectedSettingsSequence: rejectedSequence,
+            canNavigateWithSDK: sdkNavigation ? true : nil)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {

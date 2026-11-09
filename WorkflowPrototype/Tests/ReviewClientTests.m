@@ -716,6 +716,47 @@ static NSDictionary *lastCommand(SSOfflineClient *c, NSString *kind) {
         if ([post[@"packet"][@"command"] isEqual:kind]) return post[@"packet"];
     return nil;
 }
+static void sdkNavigationConsumesOnlyOneCurrentPermit(void) {
+    SSOfflineClient *c = client(); start(c, settings()); frontmostHost(c);
+    NSString *gesture = NSUUID.UUID.UUIDString;
+    __block NSUInteger moves = 0;
+    BOOL (^move)(NSDictionary *) = ^BOOL(NSDictionary *permit) { moves += 1; return YES; };
+    deliver(c, snapshotResponse(c, 1));
+    require(![c navigateCut:@"cut-1" gesture:gesture move:move], @"An older worker does not permit SDK navigation");
+    NSMutableDictionary *ready = snapshotResponse(c, 2); ready[@"canNavigateWithSDK"] = @YES; deliver(c, ready);
+    NSUInteger activations = c.activationRequests;
+    require([c navigateCut:@"cut-1" gesture:gesture move:move] && c.busy && !c.canApply,
+        @"SDK navigation starts once and locks review during authorization");
+    NSDictionary *prepare = lastCommand(c, @"prepareNavigation");
+    require([prepare[@"navigationGesture"] isEqual:gesture] && [prepare[@"expectedRevision"] isEqual:@2] &&
+        [prepare[@"cutID"] isEqual:@"cut-1"] && c.activationRequests == activations,
+        @"Preparation binds the exact view, gesture, cut and revision without activation");
+    [c poll]; require(commandCount(c, @"prepareNavigation") == 1, @"Polling never resends a move request");
+    NSMutableDictionary *permit = [@{@"gesture":gesture, @"view":prepare[@"view"], @"cutID":@"cut-1",
+        @"expiresUptime":@(c.fakeUptime + 2), @"time":@{@"numerator":@1001, @"denominator":@30000},
+        @"sequenceStart":@{@"numerator":@0, @"denominator":@1}, @"sequenceDuration":@{@"numerator":@2, @"denominator":@1},
+        @"frameDuration":@{@"numerator":@1001, @"denominator":@30000}} mutableCopy];
+    NSMutableDictionary *approved = response(c, 3, @"navigating", YES);
+    approved[@"canNavigateWithSDK"] = @YES; approved[@"navigationPermit"] = permit;
+    NSDictionary *target = permit[@"time"];
+    permit[@"time"] = @{@"numerator":@1001, @"denominator":@0}; deliver(c, approved);
+    require(moves == 0 && commandCount(c, @"navigationFinished") == 0, @"Invalid CMTime scale never reaches the move callback");
+    permit[@"time"] = target; deliver(c, approved); deliver(c, approved);
+    require(moves == 1 && [lastCommand(c, @"navigationFinished")[@"navigationSucceeded"] isEqual:@YES] && c.busy,
+        @"One accepted permit makes one move and waits for read-only confirmation");
+    [c poll];
+    require(moves == 1 && commandCount(c, @"highlight") == 0 && commandCount(c, @"navigationFinished") == 2,
+        @"Only the read-only acknowledgment may be retried");
+    ready = snapshotResponse(c, 4); ready[@"canNavigateWithSDK"] = @YES; deliver(c, ready);
+    require(!c.busy && c.canApply, @"Confirmation restores the current review");
+    gesture = NSUUID.UUID.UUIDString;
+    require([c navigateCut:@"cut-1" gesture:gesture move:move], @"A new user click can start a different gesture");
+    permit[@"gesture"] = gesture; permit[@"expiresUptime"] = @(c.fakeUptime - 1); approved[@"revision"] = @5;
+    deliver(c, approved); deliver(c, approved);
+    require(moves == 1 && [lastCommand(c, @"navigationFinished")[@"navigationSucceeded"] isEqual:@NO],
+        @"An expired permit is consumed without a move or legacy fallback");
+    finish(c); groups += 1;
+}
 static NSMutableDictionary *rejectedAutomaticResponse(SSOfflineClient *c, NSInteger revision,
                                                        NSString *edit, NSNumber *sequence) {
     NSMutableDictionary *value = automaticResponse(c, revision, @"review", settings(), nil);
@@ -989,6 +1030,7 @@ int main(void) {
         retryActivationNeverCreatesAnEdit(); publicActivationPolicyRequiresExactForeground();
         synchronousUIDetachCannotDispatch();
         updateCutsRetainsAndAcknowledgesSnapshot(); updateAndNavigationActivationRemainRevisionBound();
+        sdkNavigationConsumesOnlyOneCurrentPermit();
         automaticCapabilityAndForeground(); automaticAcknowledgmentRequiresLatestDraft(); automaticDeclineReleasesLatestDraft();
         malformedAutomaticDeclinesCannotAcknowledge(); automaticSettingsWaitForSelectionAcknowledgment(); automaticEchoMismatchCannotEnableApply();
         automaticDispatchRespectsReentrantChanges(); automaticTimeoutAndTerminalAreConsumed(); explicitRecoveryAdoptsOnlyReadOnlyResult();

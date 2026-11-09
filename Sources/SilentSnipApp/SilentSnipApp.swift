@@ -47,6 +47,10 @@ import SilentSnipMac
             try await withPrototype(request: request.id) {
                 try await interactive.highlight(request, result: result, cutID: cutID)
             }
+        }, authorizeNativeNavigation: { [unowned self] command in
+            interactive.canAuthorizeNativeNavigation(command)
+        }, verifyNativeNavigation: { [unowned self] request, result, cutID in
+            try await interactive.verifyNativeNavigation(request, result: result, cutID: cutID)
         }, verificationOperation: { [unowned self] request, progress in
             await waitForStorageCleanup()
             try await withPrototype(request: request.id) {

@@ -210,6 +210,40 @@ extension FinalCutAXSession {
         canAuthorizeWorkflowAction(view: view, gesture: edit, action: "update")
     }
 
+    func canAuthorizeWorkflowNavigation(view: UUID, gesture: UUID) -> Bool {
+        let connection = workflowConnection(view: view)
+        guard connection.failure == nil, let window = connection.window, let expected = reviewOwnership.active else { return false }
+        let identifier = "silentsnip.workflow.navigate.requested.\(gesture.uuidString)"
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        var queue = [window]
+        var cursor = 0
+        var marker: AXUIElement?
+        while cursor < queue.count {
+            guard !Task.isCancelled, queue.count <= 600, ProcessInfo.processInfo.systemUptime < deadline else { return false }
+            let element = queue[cursor]
+            cursor += 1
+            let values = FinalCutAXAttributes.read(element, names: [kAXRoleAttribute, kAXIdentifierAttribute])
+            let id = values[kAXIdentifierAttribute] as? String
+            let role = values[kAXRoleAttribute] as? String
+            if id == identifier {
+                guard [kAXPopUpButtonRole, kAXMenuButtonRole].contains(role ?? ""),
+                      (attribute(element, kAXEnabledAttribute) as? NSNumber)?.boolValue == false,
+                      marker.map({ CFEqual($0, element) }) != false else { return false }
+                marker = element
+            }
+            // The cut rows cannot own the navigation control, and their
+            // number should not affect this authorization scan.
+            if id != "silentsnip.workflow.cut-list" {
+                let descendants = children(element)
+                guard descendants.count <= 600 - queue.count else { return false }
+                queue.append(contentsOf: descendants)
+            }
+        }
+        return marker != nil && (try? selectionSnapshot()) == expected && currentSheet() == nil &&
+            NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier &&
+            Self.elementAttribute(root, kAXFocusedWindowAttribute).map { CFEqual($0, window) } == true
+    }
+
     /// Setting edits may settle while the user has returned to this same
     /// timeline. Automatic refresh observes only; it never activates a host or
     /// exports, and another window/app cannot authorize the pending snapshot.

@@ -41,10 +41,12 @@ static void unexpectedBoundary(void) {
 - (BOOL)canCancel { unexpectedBoundary(); return NO; }
 - (BOOL)canUpdateCuts { unexpectedBoundary(); return NO; }
 - (BOOL)canHighlight { unexpectedBoundary(); return NO; }
+- (BOOL)supportsNativeNavigation { unexpectedBoundary(); return NO; }
 - (void)markSettingsDirty { unexpectedBoundary(); }
 - (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
 - (BOOL)automaticallyUpdateCutsWithSettings:(NSDictionary *)settings edit:(NSString *)edit { unexpectedBoundary(); return NO; }
 - (BOOL)highlightCut:(NSString *)cutID { unexpectedBoundary(); return NO; }
+- (BOOL)navigateCut:(NSString *)cutID gesture:(NSString *)gesture move:(BOOL (^)(NSDictionary *))move { unexpectedBoundary(); return NO; }
 - (BOOL)verifyExistingResultURL:(NSURL *)resultURL libraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID
                   projectName:(NSString *)projectName gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
 - (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName settings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }

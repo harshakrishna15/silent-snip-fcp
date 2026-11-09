@@ -26,6 +26,11 @@ public enum ReviewWire {
               data.count <= maximumBytes else { throw ReviewTransportError.invalidPayload }
         let command = try JSONDecoder().decode(ReviewCommand.self, from: data)
         guard command.version == version else { throw ReviewTransportError.invalidPayload }
+        if command.navigationGesture != nil || command.navigationSucceeded != nil {
+            guard command.command == .prepareNavigation || command.command == .navigationFinished else {
+                throw ReviewTransportError.invalidPayload
+            }
+        }
         if command.automaticPreview != nil {
             guard command.command == .recalculate,
                   command.automaticPreview != true || (command.localPreview == true && command.verifySettings == true) else {
@@ -52,10 +57,16 @@ public enum ReviewWire {
             guard command.included != nil, command.expectedRevision.map({ $0 >= 0 }) == true else {
                 throw ReviewTransportError.invalidPayload
             }
-        case .highlight:
+        case .highlight, .prepareNavigation, .navigationFinished:
             guard let id = command.cutID, !id.isEmpty, id.utf8.count <= 200,
                   command.expectedRevision.map({ $0 >= 0 }) == true else {
                 throw ReviewTransportError.invalidPayload
+            }
+            if command.command != .highlight {
+                guard command.view != nil, command.navigationGesture != nil,
+                      (command.navigationSucceeded != nil) == (command.command == .navigationFinished) else {
+                    throw ReviewTransportError.invalidPayload
+                }
             }
         case .selectAll, .deselectAll:
             guard command.expectedRevision.map({ $0 >= 0 }) == true else { throw ReviewTransportError.invalidPayload }
@@ -88,6 +99,7 @@ public struct ReviewWireSettings: Codable, Equatable, Sendable {
 public struct ReviewCommand: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case status, cancel, include, selectAll, deselectAll, highlight, apply, retryVerification, preview, recalculate
+        case prepareNavigation, navigationFinished
     }
     public let version: Int
     public let request: UUID
@@ -108,12 +120,15 @@ public struct ReviewCommand: Codable, Equatable, Sendable {
     public let localPreview: Bool?
     /// Recalculate only a native settings snapshot; never capture or apply.
     public let automaticPreview: Bool?
+    public let navigationGesture: UUID?
+    public let navigationSucceeded: Bool?
 
     public init(request: UUID, command: Kind, cutID: String? = nil, included: Bool? = nil,
                 expectedRevision: Int? = nil, view: UUID? = nil, applyGesture: UUID? = nil,
                 settings: ReviewWireSettings? = nil, output: String? = nil,
                 settingsEdit: UUID? = nil, settingsSequence: Int? = nil, verifySettings: Bool? = nil,
-                localPreview: Bool? = nil, automaticPreview: Bool? = nil) {
+                localPreview: Bool? = nil, automaticPreview: Bool? = nil,
+                navigationGesture: UUID? = nil, navigationSucceeded: Bool? = nil) {
         version = ReviewWire.version; self.request = request; self.command = command
         self.cutID = cutID; self.included = included
         self.expectedRevision = expectedRevision
@@ -121,7 +136,21 @@ public struct ReviewCommand: Codable, Equatable, Sendable {
         self.localPreview = localPreview; self.automaticPreview = automaticPreview
         self.settings = settings; self.output = output; self.settingsEdit = settingsEdit; self.settingsSequence = settingsSequence
         self.verifySettings = verifySettings
+        self.navigationGesture = navigationGesture; self.navigationSucceeded = navigationSucceeded
     }
+}
+
+/// Exact times for one Workflow SDK move. The revision and request come from
+/// its enclosing response. The view consumes this gesture before moving.
+public struct ReviewNavigationPermit: Codable, Equatable, Sendable {
+    let view: UUID
+    let gesture: UUID
+    let cutID: String
+    let expiresUptime: Double
+    let time: RationalTime
+    let sequenceStart: RationalTime
+    let sequenceDuration: RationalTime
+    let frameDuration: RationalTime
 }
 
 public struct ReviewCutResponse: Codable, Equatable, Sendable {
@@ -171,6 +200,8 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     /// publication. Recovery reuses a saved request ID, so revisions alone do
     /// not distinguish late packets from its previous Apply/verification.
     public let workflowGesture: UUID?
+    public let canNavigateWithSDK: Bool?
+    public let navigationPermit: ReviewNavigationPermit?
 
     public init(request: UUID, revision: Int, state: String, message: String,
                 progress: Double? = nil,
@@ -178,7 +209,8 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
                 canChangeSelection: Bool = false, canCancel: Bool = false, canHighlight: Bool = false, previewVisible: Bool? = nil, canRetryVerification: Bool? = nil,
                 settingsEdit: UUID? = nil, settings: ReviewWireSettings? = nil, output: String? = nil, provisional: Bool? = nil,
                 canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil, targetClipName: String? = nil, workflowGesture: UUID? = nil,
-                automaticPreviewAvailable: Bool? = nil, rejectedSettingsEdit: UUID? = nil, rejectedSettingsSequence: Int? = nil) {
+                automaticPreviewAvailable: Bool? = nil, rejectedSettingsEdit: UUID? = nil, rejectedSettingsSequence: Int? = nil,
+                canNavigateWithSDK: Bool? = nil, navigationPermit: ReviewNavigationPermit? = nil) {
         version = ReviewWire.version; self.request = request; self.revision = revision
         self.state = state; self.message = message; self.progress = progress
         self.summary = summary; self.cuts = cuts
@@ -191,6 +223,7 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
         self.automaticPreviewAvailable = automaticPreviewAvailable
         self.rejectedSettingsEdit = rejectedSettingsEdit; self.rejectedSettingsSequence = rejectedSettingsSequence
         self.targetClipName = targetClipName; self.workflowGesture = workflowGesture
+        self.canNavigateWithSDK = canNavigateWithSDK; self.navigationPermit = navigationPermit
     }
 }
 

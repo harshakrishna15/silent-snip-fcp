@@ -67,6 +67,8 @@
 @property (nonatomic, copy) NSString *name;
 @property (nonatomic, copy) NSURL *url;
 @property (nonatomic) CMTime startTime;
+@property (nonatomic) CMTime duration;
+@property (nonatomic) CMTime frameDuration;
 @end
 @implementation SSProxy
 @end
@@ -78,11 +80,19 @@
 @property (nonatomic) NSUInteger addCount;
 @property (nonatomic) NSUInteger removeCount;
 @property (nonatomic) NSUInteger activeSequenceReadCount;
+@property (nonatomic) NSUInteger moveCount;
+@property (nonatomic) BOOL usesFixedMoveResult;
+@property (nonatomic) CMTime fixedMoveResult;
 - (void)notifySequenceChanged;
 @end
 @implementation SSTimeline
 - (FCPXSequence *)activeSequence { self.activeSequenceReadCount += 1; return (FCPXSequence *)self.sequence; }
 - (CMTime)playheadTime { return self.currentPlayhead; }
+- (CMTime)movePlayheadTo:(CMTime)time {
+    self.moveCount += 1;
+    self.currentPlayhead = self.usesFixedMoveResult ? self.fixedMoveResult : time;
+    return self.currentPlayhead;
+}
 - (void)addTimelineObserver:(NSObject<FCPXTimelineObserver> *)observer {
     self.observer = observer;
     self.addCount += 1;
@@ -186,10 +196,12 @@ static void unexpectedReviewBoundary(void) {
 - (BOOL)automaticPreviewAvailable { unexpectedReviewBoundary(); return NO; }
 - (BOOL)updatingCuts { unexpectedReviewBoundary(); return NO; }
 - (BOOL)canHighlight { unexpectedReviewBoundary(); return NO; }
+- (BOOL)supportsNativeNavigation { unexpectedReviewBoundary(); return NO; }
 - (void)markSettingsDirty { unexpectedReviewBoundary(); }
 - (BOOL)updateCutsWithSettings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
 - (BOOL)automaticallyUpdateCutsWithSettings:(NSDictionary *)settings edit:(NSString *)edit { unexpectedReviewBoundary(); return NO; }
 - (BOOL)highlightCut:(NSString *)cutID { unexpectedReviewBoundary(); return NO; }
+- (BOOL)navigateCut:(NSString *)cutID gesture:(NSString *)gesture move:(BOOL (^)(NSDictionary *))move { unexpectedReviewBoundary(); return NO; }
 - (BOOL)verifyExistingResultURL:(NSURL *)url libraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID
                    projectName:(NSString *)projectName gesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
 - (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName
@@ -269,6 +281,9 @@ static void unexpectedWindowBoundary(void) {
 - (void)acknowledgeAutomaticUpdate;
 @property (nonatomic, copy) NSDictionary *verifyPayload;
 @property (nonatomic, copy) NSString *highlightedCut;
+@property (nonatomic) BOOL fakeNativeNavigation;
+@property (nonatomic, copy) BOOL (^nativeMove)(NSDictionary *permit);
+@property (nonatomic, copy) NSString *nativeNavigationMarker;
 - (void)deliver:(NSDictionary *)response busy:(BOOL)busy canApply:(BOOL)canApply;
 @end
 @implementation SSFakeWorkflowReviewClient
@@ -289,6 +304,7 @@ static void unexpectedWindowBoundary(void) {
 }
 - (BOOL)updatingCuts { return self.fakeUpdatingCuts; }
 - (BOOL)canHighlight { return self.fakeCanChangeSelection && !self.fakeDirty && !self.fakeBusy; }
+- (BOOL)supportsNativeNavigation { return self.fakeNativeNavigation; }
 - (void)markSettingsDirty {
     self.fakeDirty = YES; self.dirtyCount += 1;
     self.fakeCanApply = NO; self.fakeCanChangeSelection = NO;
@@ -336,6 +352,12 @@ static void unexpectedWindowBoundary(void) {
     self.testUpdate(response);
 }
 - (BOOL)highlightCut:(NSString *)cutID { self.highlightedCut = cutID; self.fakeBusy = YES; return YES; }
+- (BOOL)navigateCut:(NSString *)cutID gesture:(NSString *)gesture move:(BOOL (^)(NSDictionary *))move {
+    self.nativeMove = move;
+    if (!self.owner.navigateMenu.enabled) self.nativeNavigationMarker = self.owner.navigateMenu.accessibilityIdentifier;
+    self.fakeBusy = YES;
+    return YES;
+}
 - (BOOL)verifyExistingResultURL:(NSURL *)url libraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID
                    projectName:(NSString *)projectName gesture:(NSString *)gesture {
     self.verifyPayload = @{@"url":url, @"libraryURL":libraryURL, @"projectUID":projectUID,
@@ -429,8 +451,10 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic, strong) NSMutableArray<SSFakeWorkflowWindowClient *> *windowClients;
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *verificationCompletions;
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *automaticUpdateCompletions;
+@property (nonatomic) BOOL fakeOwnsNavigationWindow;
 @end
 @implementation SSTestWorkflowViewController
+- (BOOL)ownsNavigationWindow:(NSWindow *)window { return self.fakeOwnsNavigationWindow; }
 - (SSWorkflowContentView *)newContentViewWithFrame:(NSRect)frame {
     return [[SSTestWorkflowContentView alloc] initWithFrame:frame];
 }
@@ -977,6 +1001,52 @@ static void applyRequiresReviewAndFreshGesture(void) {
           @"Applying locks analysis, settings, and cut-selection actions");
     [controller applyCuts:controller.applyButton];
     check(client.applyGestures.count == 1, @"A second Apply action cannot duplicate an in-flight edit");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static NSDictionary *navigationTime(CMTime time) {
+    return @{@"numerator": @(time.value), @"denominator": @(time.timescale)};
+}
+
+static void sdkNavigationRequiresExactProjectWindowAndReturnedTime(void) {
+    SSProxy *source = sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Same name");
+    source.startTime = CMTimeMake(107892LL * 1001, 30000);
+    source.duration = CMTimeMake(3600LL * 1001, 30000);
+    source.frameDuration = CMTimeMake(1001, 30000);
+    CMTime target = CMTimeMake((107892LL + 1800) * 1001, 30000);
+    NSDictionary *permit = @{@"time":navigationTime(target), @"sequenceStart":navigationTime(source.startTime),
+        @"sequenceDuration":navigationTime(source.duration), @"frameDuration":navigationTime(source.frameDuration)};
+    SSHost *current = host(source);
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    client.fakeNativeNavigation = YES;
+    controller.fakeOwnsNavigationWindow = YES;
+    [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+    check(client.nativeMove && [client.nativeNavigationMarker hasPrefix:@"silentsnip.workflow.navigate.requested."] &&
+          !controller.navigateMenu.enabled && !client.highlightedCut,
+          @"SDK navigation exposes its disabled marker and skips the old keyboard request");
+    check(client.nativeMove(permit) && current.testTimeline.moveCount == 1 && CMTimeCompare(current.testTimeline.currentPlayhead, target) == 0,
+          @"The SDK receives the exact fractional frame at a nonzero project origin");
+    [client deliver:reviewResponse(@"review", @"Navigation done") busy:NO canApply:YES];
+    [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+    controller.fakeOwnsNavigationWindow = NO;
+    check(!client.nativeMove(permit) && current.testTimeline.moveCount == 1,
+          @"Losing the key Workflow window after the gesture denies SDK movement");
+    [client deliver:reviewResponse(@"review", @"Navigation denied") busy:NO canApply:YES];
+    controller.fakeOwnsNavigationWindow = YES;
+    [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+    current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-A.fcpbundle", @"Same name");
+    check(!client.nativeMove(permit) && current.testTimeline.moveCount == 1,
+          @"An unannounced same-name project change cannot use the earlier permit");
+    current.testTimeline.sequence = source;
+    [client deliver:reviewResponse(@"review", @"Navigation denied") busy:NO canApply:YES];
+    [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+    current.testTimeline.usesFixedMoveResult = YES;
+    current.testTimeline.fixedMoveResult = CMTimeAdd(target, CMTimeMake(1, 60000));
+    check(!client.nativeMove(permit) && current.testTimeline.moveCount == 2 && !client.highlightedCut,
+          @"A subframe SDK result fails the acknowledgment after one move and no legacy retry");
     closeController(controller);
     groupCount += 1;
 }
@@ -3122,6 +3192,7 @@ int main(void) {
         windowLeaseTracksVisibleVerifiedHostWithoutProjectWork();
         analyzeDispatchPinsPayloadAndGesture();
         applyRequiresReviewAndFreshGesture();
+        sdkNavigationRequiresExactProjectWindowAndReturnedTime();
         retainedUpdatesNavigationAndRecovery();
         automaticDraftsCoalesceWithoutNewAnalysis();
         textEditingDefersSDKContextUntilDebounce();

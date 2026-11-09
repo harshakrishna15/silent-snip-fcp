@@ -153,6 +153,20 @@ final class ReviewTransportTests: XCTestCase {
         XCTAssertThrowsError(try ReviewWire.decodeCommand(ReviewWire.encode(stale)))
     }
 
+    func testSDKNavigationPacketsRequireViewRevisionAndGestureAndSeparateOutcomes() throws {
+        let request = UUID(), view = UUID(), gesture = UUID()
+        let prepare = ReviewCommand(request: request, command: .prepareNavigation, cutID: "cut", expectedRevision: 2,
+            view: view, navigationGesture: gesture)
+        let done = ReviewCommand(request: request, command: .navigationFinished, cutID: "cut", expectedRevision: 3,
+            view: view, navigationGesture: gesture, navigationSucceeded: false)
+        for command in [prepare, done] { XCTAssertEqual(try ReviewWire.decodeCommand(ReviewWire.encode(command)), command) }
+        for command in [
+            ReviewCommand(request: request, command: .prepareNavigation, cutID: "cut", expectedRevision: 2, view: view),
+            ReviewCommand(request: request, command: .navigationFinished, cutID: "cut", expectedRevision: 3, view: view, navigationGesture: gesture),
+            ReviewCommand(request: request, command: .highlight, cutID: "cut", expectedRevision: 2, view: view, navigationGesture: gesture)
+        ] { XCTAssertThrowsError(try ReviewWire.decodeCommand(ReviewWire.encode(command))) }
+    }
+
     func testMalformedOrOversizedMessagesCannotBecomeCommands() {
         let request = UUID().uuidString
         let objects: [Any] = [
