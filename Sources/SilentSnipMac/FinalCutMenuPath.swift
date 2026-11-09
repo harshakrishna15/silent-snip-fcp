@@ -21,7 +21,7 @@ final class FinalCutMenuPath<Element> {
     private(set) var counters = ["menuPath.searches": 0, "menuPath.cacheHits": 0,
         "menuPath.invalidations": 0, "menuPath.pathChecks": 0, "menuPath.visitedNodes": 0,
         "menuPath.attributeBatches": 0, "menuPath.attributeNames": 0,
-        "menuPath.ownerChecks": 0, "menuPath.actionReads": 0]
+        "menuPath.ownerChecks": 0, "menuPath.actionReads": 0, "menuPath.rebuiltMounts": 0]
 
     init(titles: [String], read: @escaping (Element, [String]) -> [String: Any],
          owned: @escaping (Element) -> Bool, actions: @escaping (Element) -> [String]?,
@@ -45,7 +45,10 @@ final class FinalCutMenuPath<Element> {
             }
             invalidate()
         }
-        return discover(in: menuBar, through: titles.count - 1, shortcut: true, shouldContinue: shouldContinue)
+        guard let discovery = discover(in: menuBar, through: titles.count - 1,
+            shortcut: true, shouldContinue: shouldContinue) else { return nil }
+        hierarchy = discovery.route
+        return discovery.item
     }
 
     /// Before an ordinary menu input, all retained parent-child edges and named
@@ -55,32 +58,32 @@ final class FinalCutMenuPath<Element> {
     func input(in menuBar: Element, index: Int, container: Element,
                shouldContinue: () -> Bool) -> Item? {
         guard validTitles, titles.indices.contains(index), shouldContinue() else { return nil }
-        // Some hosts materialize descendants only after File/Share opens.
-        // A failed closed-menu shortcut lookup must not disable the ordinary
-        // route: discover only the currently needed prefix in that case.
-        let hadRetainedCommand = (hierarchy?.count ?? 0) >= (index + 1) * 2
-        if !hadRetainedCommand,
-           discover(in: menuBar, through: index, shortcut: false, shouldContinue: shouldContinue) == nil { return nil }
-        guard let previous = hierarchy, let previousBar = previous.first, equals(previousBar, menuBar) else { return nil }
+        // Preserve the already-checked prefix even when the closed menu did
+        // not expose descendants and this level must be discovered afresh.
+        let previous = hierarchy ?? []
+        guard previous.count >= index * 2,
+              previous.first.map({ equals($0, menuBar) }) != false else { return nil }
+        func discoverInput() -> [Element]? {
+            guard let fresh = discover(in: menuBar, through: index, shortcut: false, shouldContinue: shouldContinue),
+                  equals(fresh.item.container, container),
+                  (0..<(index * 2)).allSatisfy({ equals(previous[$0], fresh.route[$0]) }) else { return nil }
+            return fresh.route
+        }
         func mountedInput(_ path: [Element]) -> Item? {
             counters["menuPath.pathChecks", default: 0] += 1
             return mounted(path, menuBar: menuBar, index: index, expectedContainer: container,
                 shortcut: false, uniqueAncestors: false, requireEnabled: true, shouldContinue: shouldContinue)
         }
-        var target = mountedInput(previous)
+        guard var route = previous.count >= (index + 1) * 2 ? previous : discoverInput() else { return nil }
+        var target = mountedInput(route)
         if target == nil {
             invalidate()
-            // Opening a menu can replace its closed AX children. Rebuild once
-            // before dispatching this command, keeping every already-pressed
-            // ancestor and requiring the exact submenu just observed onscreen.
-            guard hadRetainedCommand, index > 0,
-                  let fresh = discover(in: menuBar, through: index, shortcut: false, shouldContinue: shouldContinue),
-                  let current = hierarchy, equals(fresh.container, container),
-                  (0..<index).allSatisfy({ equals(previous[$0 * 2 + 1], current[$0 * 2 + 1]) }) else {
-                hierarchy = nil
-                return nil
-            }
-            target = mountedInput(current)
+            // The first mount can go stale even after a fresh discovery. Allow
+            // one read-only rebuild of this level, before any action lookup.
+            guard index > 0, let fresh = discoverInput() else { return nil }
+            route = fresh
+            target = mountedInput(route)
+            if target != nil { counters["menuPath.rebuiltMounts", default: 0] += 1 }
         }
         guard var result = target else { return nil }
         counters["menuPath.actionReads", default: 0] += 1
@@ -89,6 +92,7 @@ final class FinalCutMenuPath<Element> {
               FinalCutControlAction.preferred(from: available) != nil,
               shouldContinue() else { return nil }
         result.actions = available
+        hierarchy = route
         counters["menuPath.cacheHits", default: 0] += 1
         return result
     }
@@ -154,7 +158,7 @@ final class FinalCutMenuPath<Element> {
     }
 
     private func discover(in menuBar: Element, through lastIndex: Int, shortcut: Bool,
-                          shouldContinue: () -> Bool) -> Item? {
+                          shouldContinue: () -> Bool) -> (item: Item, route: [Element])? {
         counters["menuPath.searches", default: 0] += 1
         var route = [menuBar], container = menuBar
         for index in 0...lastIndex {
@@ -165,8 +169,7 @@ final class FinalCutMenuPath<Element> {
             route.append(item)
             if index == lastIndex {
                 guard shouldContinue() else { return nil }
-                hierarchy = route
-                return Item(element: item, container: container, values: value)
+                return (Item(element: item, container: container, values: value), route)
             }
             guard value[kAXEnabledAttribute] as? Bool == true,
                   let menu = submenu(of: item, value: value, shouldContinue: shouldContinue),

@@ -19,9 +19,12 @@ final class FinalCutMenuPathTests: XCTestCase {
         var advertised: [String]? = [kAXPressAction, kAXPickAction]
         var requests: [(Int, [String])] = []
         var actionRequests = [Int]()
+        var afterRead: ((Int, [String]) -> Void)?
         lazy var route = Route(titles: ["File", "Share", "Silent Snip…"], read: { [unowned self] id, names in
             self.requests.append((id, names))
-            return names.reduce(into: [:]) { if let value = self.nodes[id]?[$1] { $0[$1] = value } }
+            let values: [String: Any] = names.reduce(into: [:]) { if let value = self.nodes[id]?[$1] { $0[$1] = value } }
+            self.afterRead?(id, names)
+            return values
         }, owned: { [unowned self] in !self.unowned.contains($0) }, actions: { [unowned self] id in
             self.actionRequests.append(id)
             return self.advertised
@@ -144,6 +147,41 @@ final class FinalCutMenuPathTests: XCTestCase {
         host.nodes[3]?[kAXChildrenAttribute] = [4]
         XCTAssertEqual(try XCTUnwrap(host.input()).element, 5)
         XCTAssertEqual(host.actionRequests, [1, 3, 5])
+    }
+
+    func testFreshPrefixExtensionCannotSubstituteTheAlreadyPressedFileItem() {
+        let host = Host()
+        host.nodes[1]?[kAXChildrenAttribute] = [Int]()
+        XCTAssertNil(host.command())
+        XCTAssertEqual(host.input(0, container: 0)?.element, 1)
+
+        host.nodes[1]?[kAXChildrenAttribute] = [2]
+        host.nodes[10] = host.nodes[1]
+        host.nodes[0]?[kAXChildrenAttribute] = [10, 9]
+
+        XCTAssertNil(host.input(1, container: 2))
+        XCTAssertEqual(host.actionRequests, [1])
+    }
+
+    func testFreshShareMountCanRebuildOnceBeforeActionLookup() {
+        for changesAgain in [false, true] {
+            let host = Host()
+            host.nodes[1]?[kAXChildrenAttribute] = [Int]()
+            XCTAssertNil(host.command())
+            XCTAssertEqual(host.input(0, container: 0)?.element, 1)
+            host.nodes[1]?[kAXChildrenAttribute] = [2]
+            host.nodes[7] = host.nodes[3]
+            host.afterRead = { [unowned host] id, names in
+                guard names.contains(kAXEnabledAttribute) else { return }
+                if id == 3 { host.nodes[2]?[kAXChildrenAttribute] = [7] }
+                else if id == 7 && changesAgain { host.nodes[2]?[kAXChildrenAttribute] = [3] }
+            }
+
+            XCTAssertEqual(host.input(1, container: 2)?.element, changesAgain ? nil : 7)
+            XCTAssertEqual(host.actionRequests, changesAgain ? [1] : [1, 7])
+            XCTAssertEqual(host.route.counters["menuPath.searches"], 4)
+            XCTAssertEqual(host.route.counters["menuPath.rebuiltMounts"], changesAgain ? 0 : 1)
+        }
     }
 
     func testOpeningShareCanReplaceItsClosedMenuBeforeFinalDispatch() throws {
