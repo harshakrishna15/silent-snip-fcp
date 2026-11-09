@@ -147,9 +147,10 @@ extension FinalCutAXSession {
               try xml.nodes(forXPath: "//project/sequence//filter-audio//keyframeAnimation").isEmpty else {
             throw EditedProjectWriterError.unsupported("bulk native effect transfer currently requires a static effect chain on the original whole-project clip")
         }
+        let resources = try xml.nodes(forXPath: "/fcpxml/resources/effect").compactMap { $0 as? XMLElement }
         let names = try filters.map { filter -> String in
             let ref = filter.attribute(forName: "ref")?.stringValue
-            let resource = try xml.nodes(forXPath: "/fcpxml/resources/effect").compactMap { $0 as? XMLElement }.first {
+            let resource = resources.first {
                 $0.attribute(forName: "id")?.stringValue == ref
             }
             guard let name = filter.attribute(forName: "nameOverride")?.stringValue ?? filter.attribute(forName: "name")?.stringValue ?? resource?.attribute(forName: "name")?.stringValue,
@@ -158,15 +159,23 @@ extension FinalCutAXSession {
             return name
         }
         try await prepareBulkTimelineInput(timing: timing)
-        try await prepareReplacementBrowser(XMLReplacementTarget(projectData: originalData))
-        let namesBeforeImport = try bulkBrowserNames()
+        let sourceIdentity = try XMLReplacementTarget(projectData: originalData)
+        let namesBeforeImport = try await timing.measure("apply.bulkSourceBrowser") {
+            if let mounted = try bulkMountedBrowserNames(sourceIdentity) {
+                timing.incrementCounter("apply.bulkSourceBrowser.revealSkipped")
+                return mounted
+            }
+            try await prepareReplacementBrowser(sourceIdentity)
+            return try bulkBrowserNames()
+        }
         guard namesBeforeImport.filter({ $0 == projectName }).count == 1,
               !outputName.isEmpty, outputName != projectName, !namesBeforeImport.contains(outputName) else {
             throw EditedProjectWriterError.unsupported("a project with this result name already exists; no effects were copied or pasted")
         }
-        try await focusTimeline()
         try await clearTimelineRanges()
-        try await bulkSelect(layout: plan.initial, plan: plan)
+        try await timing.measure("apply.bulkSourceSelection") {
+            try await bulkSelect(layout: plan.initial, plan: plan, timing: timing)
+        }
         let stamp = NSPasteboard.general.changeCount
         try await timing.measure("apply.nativeEffectsCopy") {
             let shortcut = try await BulkNativeCommandInvocation.perform(shortcut: {
@@ -226,10 +235,17 @@ extension FinalCutAXSession {
             // window. This safe phase boundary moves only that owned handoff
             // back to the already pinned project, before any recipient input.
             try await prepareBulkTimelineInput(timing: timing)
-            try await prepareReplacementBrowser(identity)
-            try await focusTimeline()
+            try await timing.measure("apply.bulkRecipientBrowser") {
+                if try bulkMountedBrowserNames(identity) != nil {
+                    timing.incrementCounter("apply.bulkRecipientBrowser.revealSkipped")
+                } else {
+                    try await prepareReplacementBrowser(identity)
+                }
+            }
             try await clearTimelineRanges()
-            try await bulkSelect(layout: plan.final, plan: plan)
+            try await timing.measure("apply.bulkRecipientSelection") {
+                try await bulkSelect(layout: plan.final, plan: plan, timing: timing)
+            }
             guard NSPasteboard.general.changeCount == token.clipboardStamp else { throw FinalCutCaptureError.changedProject }
             try await prepareBulkTimelineInput(timing: timing)
             try bulkAssertSelected(layout: plan.final, plan: plan)
@@ -250,7 +266,7 @@ extension FinalCutAXSession {
             guard NSPasteboard.general.changeCount == token.clipboardStamp else { throw FinalCutCaptureError.changedProject }
             journal.stage = "effects paste requested"
             try journal.save(directory: directory)
-            try await timing.measure("apply.nativeEffectsPaste") {
+            try timing.measure("apply.nativeEffectsPaste") {
                 try self.bulkPressPaste(ready, willDispatch: {
                     // This write follows the final focus/control/action checks
                     // and must succeed before AX receives the mutation.
@@ -352,6 +368,25 @@ extension FinalCutAXSession {
         try assertInputFocus()
     }
 
+    /// Copy and Paste Attributes act on the pinned timeline. When the browser
+    /// already proves its exact event and the unique project, there is no need
+    /// to reveal the project or move selection and focus through the browser.
+    private func bulkMountedBrowserNames(_ target: XMLReplacementTarget) throws -> [String]? {
+        try assertInputFocus()
+        guard projectName == target.projectName, currentSheet() == nil else {
+            throw FinalCutCaptureError.changedProject
+        }
+        guard (try? assertReplacementEvent(target)) != nil,
+              let names = try? bulkBrowserNames(),
+              names.filter({ $0 == target.projectName }).count == 1,
+              (try? assertReplacementEvent(target)) != nil else {
+            try Task.checkCancellation()
+            return nil
+        }
+        try assertInputFocus()
+        return names
+    }
+
     /// A complete mounted snapshot of the exact source event, including its
     /// footer count. A filtered, virtualized or partially loaded browser cannot
     /// establish that an older same-name result is absent.
@@ -402,14 +437,28 @@ extension FinalCutAXSession {
         try assertInputFocus()
         try refreshTimeline()
         guard let raw = attribute(timeline, kAXChildrenAttribute) as? [AXUIElement], raw.count <= 10_000 else { throw FinalCutCaptureError.changedProject }
+        func text(_ value: Any?) -> String? { (value as? String) ?? (value as? NSNumber)?.stringValue }
+        let clipDescription = "Audio-Clip:" + plan.target.name
         var items: [BulkItem] = []
-        for element in raw where string(element, kAXRoleAttribute) == kAXLayoutItemRole {
-            guard string(element, kAXDescriptionAttribute) != "Range Selection",
-                  string(element, kAXDescriptionAttribute) == "Audio-Clip:" + plan.target.name,
-                  let duration = string(element, kAXValueAttribute), !duration.contains(";"),
-                  let selected = (attribute(element, kAXSelectedAttribute) as? NSNumber)?.boolValue else { throw FinalCutCaptureError.changedProject }
-            let positions = children(element).filter { string($0, kAXRoleAttribute) == "AXHandle" && string($0, kAXDescriptionAttribute) == "Item" }
-            guard positions.count == 1, let position = string(positions[0], kAXValueAttribute) else { throw FinalCutCaptureError.changedProject }
+        for element in raw {
+            try Task.checkCancellation()
+            let values = FinalCutAXAttributes.read(element, names: [kAXRoleAttribute, kAXDescriptionAttribute,
+                kAXValueAttribute, kAXSelectedAttribute, kAXChildrenAttribute])
+            guard values[kAXRoleAttribute] as? String == kAXLayoutItemRole else { continue }
+            guard text(values[kAXDescriptionAttribute]) == clipDescription,
+                  let duration = text(values[kAXValueAttribute]), !duration.contains(";"),
+                  let selected = (values[kAXSelectedAttribute] as? NSNumber)?.boolValue,
+                  let children = values[kAXChildrenAttribute] as? [AXUIElement] else {
+                throw FinalCutCaptureError.changedProject
+            }
+            var positions: [String?] = []
+            for child in children {
+                let handle = FinalCutAXAttributes.read(child, names: [kAXRoleAttribute, kAXDescriptionAttribute, kAXValueAttribute])
+                if handle[kAXRoleAttribute] as? String == "AXHandle", text(handle[kAXDescriptionAttribute]) == "Item" {
+                    positions.append(text(handle[kAXValueAttribute]))
+                }
+            }
+            guard positions.count == 1, let position = positions[0] else { throw FinalCutCaptureError.changedProject }
             let start = try FinalCutTimecode.time(position, frameDuration: plan.frameDuration).subtracting(plan.projectTimecodeStart)
             let length = try FinalCutTimecode.time(duration, frameDuration: plan.frameDuration)
             items.append(.init(element: element, range: .init(start: start, end: try start.adding(length)), selected: selected))
@@ -418,7 +467,10 @@ extension FinalCutAXSession {
     }
 
     private func bulkAssertSelected(layout: NativeSourceEditPlan.Layout, plan: NativeSourceEditPlan) throws {
-        let items = try bulkItems(plan: plan)
+        try bulkVerifySelection(bulkItems(plan: plan), layout: layout)
+    }
+
+    private func bulkVerifySelection(_ items: [BulkItem], layout: NativeSourceEditPlan.Layout) throws {
         try BulkEffectTransferPolicy.validateSelection(expected: layout.segments.map(\.timelineRange), actual: items.map(\.range), selected: items.map(\.selected))
         if let aggregate = attribute(timeline, kAXSelectedChildrenAttribute) as? [AXUIElement] {
             // All mounted clip occurrences have already supplied individual
@@ -428,10 +480,15 @@ extension FinalCutAXSession {
         }
     }
 
-    private func bulkSelect(layout: NativeSourceEditPlan.Layout, plan: NativeSourceEditPlan) async throws {
+    private func bulkSelect(layout: NativeSourceEditPlan.Layout, plan: NativeSourceEditPlan, timing: AnalysisTiming) async throws {
         let items = try bulkItems(plan: plan)
+        if (try? bulkVerifySelection(items, layout: layout)) != nil {
+            timing.incrementCounter("apply.bulkSelection.alreadyExact")
+            return
+        }
         guard items.map(\.range) == layout.segments.map(\.timelineRange),
               AXUIElementSetAttributeValue(timeline, kAXSelectedChildrenAttribute as CFString, items.map(\.element) as CFArray) == .success else { throw FinalCutCaptureError.changedProject }
+        timing.incrementCounter("apply.bulkSelection.axSets")
         try await waitUntil(timeout: 3, context: "all exact retained audio clips") { (try? self.bulkAssertSelected(layout: layout, plan: plan)) != nil }
     }
 
