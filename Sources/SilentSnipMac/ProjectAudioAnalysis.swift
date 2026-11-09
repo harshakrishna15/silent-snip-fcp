@@ -22,6 +22,7 @@ public struct DialogueRenderContext: Sendable {
     public let sourceRange: TimeRange?
     let isolatedTargetID: String?
     let projectSlice: Bool
+    private let nativeRenderGuard: MediaContentSnapshot.ReadGuard?
 
     /// Use the same exact controller allowlist for export, analysis, and subsequent
     /// baseline checks. Callers must obtain these UIDs from a verified effect export.
@@ -59,7 +60,7 @@ public struct DialogueRenderContext: Sendable {
                  projectRange: TimeRange, renderedRoles: Set<String>, audioURL: URL,
                  controllerEffectUIDs: Set<String>, allowOmittedPrivateSettings: Bool,
                  sourceRange: TimeRange?, audioSHA256: String, isolatedTargetID: String? = nil, projectSlice: Bool = false,
-                 workflowOrigin: WorkflowReviewOrigin? = nil) {
+                 workflowOrigin: WorkflowReviewOrigin? = nil, nativeRenderGuard: MediaContentSnapshot.ReadGuard? = nil) {
         self.workflowOrigin = workflowOrigin
         self.projectSlice = projectSlice
         self.isolatedTargetID = isolatedTargetID
@@ -73,35 +74,63 @@ public struct DialogueRenderContext: Sendable {
         self.controllerEffectUIDs = controllerEffectUIDs
         self.audioURL = audioURL
         self.audioSHA256 = audioSHA256
+        self.nativeRenderGuard = nativeRenderGuard
     }
 
     static func capturedIsolated(document: TimelineDocument, target: TimelineClip, audioURL: URL,
                                  workflowOrigin: WorkflowReviewOrigin? = nil) throws -> Self {
         let canonical = try MediaContentSnapshot.canonical(audioURL)
-        return Self(projectFingerprint: document.fingerprint, projectUID: document.projectUID,
-            projectName: document.projectName, projectRange: document.projectRange, renderedRoles: [],
-            audioURL: canonical, controllerEffectUIDs: [AudioControllerSettings.effectUID],
-            allowOmittedPrivateSettings: true, sourceRange: nil,
-            audioSHA256: try MediaContentSnapshot.contentHash(at: canonical), isolatedTargetID: target.id,
-            workflowOrigin: workflowOrigin)
+        return capturedRender(document: document, target: target, canonical: canonical,
+            digest: try MediaContentSnapshot.contentHash(at: canonical), projectSlice: false, workflowOrigin: workflowOrigin)
     }
 
     /// Call only after the fresh XML passes DirectAudioRender's scope proof.
     static func capturedProjectSlice(document: TimelineDocument, target: TimelineClip, audioURL: URL,
                                      workflowOrigin: WorkflowReviewOrigin? = nil) throws -> Self {
         let canonical = try MediaContentSnapshot.canonical(audioURL)
+        return capturedRender(document: document, target: target, canonical: canonical,
+            digest: try MediaContentSnapshot.contentHash(at: canonical), projectSlice: true, workflowOrigin: workflowOrigin)
+    }
+
+    /// Call after verifying a fresh native Share receipt and its render scope.
+    /// Pin the artifact before hashing so this full read is also the pre-decode
+    /// evidence. Keep the same guard through the full post-decode comparison.
+    static func capturedNativeRender(document: TimelineDocument, target: TimelineClip, audioURL: URL,
+                                     projectSlice: Bool = false, workflowOrigin: WorkflowReviewOrigin? = nil) async throws -> Self {
+        let prepared = try MediaContentSnapshot.prepareRead([audioURL])
+        let snapshot = try await MediaContentSnapshot.capture(prepared: prepared)
+        guard let canonical = prepared.canonicalURLs.first, let digest = snapshot.hashes[canonical] else {
+            throw ProjectAnalysisError.invalidRenderArtifact
+        }
+        return capturedRender(document: document, target: target, canonical: canonical, digest: digest,
+            projectSlice: projectSlice, workflowOrigin: workflowOrigin, nativeRenderGuard: prepared)
+    }
+
+    private static func capturedRender(document: TimelineDocument, target: TimelineClip, canonical: URL, digest: String,
+                                       projectSlice: Bool, workflowOrigin: WorkflowReviewOrigin?,
+                                       nativeRenderGuard: MediaContentSnapshot.ReadGuard? = nil) -> Self {
         return Self(projectFingerprint: document.fingerprint, projectUID: document.projectUID,
             projectName: document.projectName, projectRange: document.projectRange, renderedRoles: [],
             audioURL: canonical, controllerEffectUIDs: [AudioControllerSettings.effectUID],
             allowOmittedPrivateSettings: true, sourceRange: nil,
-            audioSHA256: try MediaContentSnapshot.contentHash(at: canonical), isolatedTargetID: target.id, projectSlice: true,
-            workflowOrigin: workflowOrigin)
+            audioSHA256: digest, isolatedTargetID: target.id, projectSlice: projectSlice,
+            workflowOrigin: workflowOrigin, nativeRenderGuard: nativeRenderGuard)
     }
 
-    fileprivate func validateArtifact(at url: URL) async throws {
-        guard url.isFileURL else { throw ProjectAnalysisError.invalidRenderArtifact }
-        let canonicalURL = url.standardizedFileURL.resolvingSymlinksInPath()
-        guard canonicalURL == audioURL, try await MediaContentSnapshot.capture([canonicalURL]).hashes[canonicalURL] == audioSHA256 else {
+    fileprivate func validateArtifact(at url: URL, beforeMeasurement: Bool = false) async throws {
+        let canonicalURL = try MediaContentSnapshot.canonical(url)
+        guard canonicalURL == audioURL else { throw ProjectAnalysisError.changedRenderArtifact }
+        let snapshot: MediaContentSnapshot
+        if let nativeRenderGuard {
+            if beforeMeasurement {
+                try nativeRenderGuard.validate()
+                return
+            }
+            snapshot = try await MediaContentSnapshot.capture(prepared: nativeRenderGuard)
+        } else {
+            snapshot = try await MediaContentSnapshot.capture([canonicalURL])
+        }
+        guard snapshot.hashes[canonicalURL] == audioSHA256 else {
             throw ProjectAnalysisError.changedRenderArtifact
         }
     }
@@ -232,7 +261,7 @@ public enum ProjectAudioAnalysis {
                 throw ProjectAnalysisError.changedRenderArtifact
             }
         } else {
-            try await renderContext.validateArtifact(at: dialogueAudio)
+            try await renderContext.validateArtifact(at: dialogueAudio, beforeMeasurement: true)
         }
         let audio: DialogueAudio
         if renderContext.projectSlice {

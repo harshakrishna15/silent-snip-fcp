@@ -26,11 +26,14 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         let target = try document.selectedTarget(fixture.selection)
         let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(), libraryURL: library,
             projectUID: "audio-project", projectName: "Audio-only")
+        let guarded = try await DialogueRenderContext.capturedNativeRender(document: document, target: target,
+            audioURL: fixture.audio, projectSlice: true, workflowOrigin: origin)
         for context in [
             try DialogueRenderContext.capturedIsolated(document: document, target: target,
                 audioURL: fixture.audio, workflowOrigin: origin),
             try DialogueRenderContext.capturedProjectSlice(document: document, target: target,
-                audioURL: fixture.audio, workflowOrigin: origin)
+                audioURL: fixture.audio, workflowOrigin: origin),
+            guarded
         ] {
             let result = try await ProjectAudioAnalysis.analyze(projectData: data, selection: fixture.selection,
                 dialogueAudio: fixture.audio, renderContext: context, settings: .defaults, jobID: UUID(), capturedMedia: nil)
@@ -54,6 +57,32 @@ final class ProjectAudioAnalysisTests: XCTestCase {
                 dialogueAudio: fixture.audio, renderContext: wrongContext, settings: .defaults, jobID: UUID(), capturedMedia: nil)
             XCTFail("An absent AU cannot make the SDK project identity optional")
         } catch { }
+    }
+
+    func testFreshNativeRenderRejectsReplacementWithIdenticalBytesAfterDecode() async throws {
+        let fixture = try fixture()
+        let library = directory.appendingPathComponent("Fixture.fcpbundle")
+        let data = Data(try String(contentsOf: fixture.xml).replacingOccurrences(of: "<library><event>",
+            with: "<library location=\"\(library.absoluteString)\"><event name=\"Fixture\" uid=\"BBBB0000-0000-4000-8000-000000000001\">").utf8)
+        let document = try TimelineParser.parse(data: data,
+            exclusions: .init(controllerEffectUIDs: [AudioControllerSettings.effectUID]))
+        let target = try document.selectedTarget(fixture.selection)
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(), libraryURL: library,
+            projectUID: "audio-project", projectName: "Audio-only")
+        let audio = fixture.audio
+        let context = try await DialogueRenderContext.capturedNativeRender(document: document, target: target,
+            audioURL: audio, workflowOrigin: origin)
+        let bytes = try Data(contentsOf: audio)
+        do {
+            _ = try await ProjectAudioAnalysis.analyze(projectData: data, selection: fixture.selection,
+                dialogueAudio: audio, renderContext: context, settings: .defaults, jobID: UUID(), capturedMedia: nil,
+                validating: {
+                    do { try bytes.write(to: audio, options: .atomic) }
+                    catch { XCTFail("Could not replace the measured test render: \(error)") }
+                })
+            XCTFail("Identical bytes at the same path must not authorize a replacement artifact")
+        } catch ProjectAnalysisError.changedRenderArtifact { }
+        XCTAssertEqual(try MediaContentSnapshot.contentHash(at: audio), context.audioSHA256)
     }
 
     func testWorkflowCapturedSourceAnalyzesExactNoAUTrimWithoutRenderedAudio() async throws {

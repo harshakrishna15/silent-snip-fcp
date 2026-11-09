@@ -260,13 +260,10 @@ import Foundation
                             throw AudioControllerSettingsError.targetChanged
                         }
                         audioURL = receipt.mediaURLs[0]
-                        if renderScope == .projectSlice {
-                            boundContext = try DialogueRenderContext.capturedProjectSlice(document: capture.document,
-                                target: capture.target, audioURL: audioURL, workflowOrigin: request.workflowOrigin)
-                        } else {
-                            boundContext = try DialogueRenderContext.capturedIsolated(document: capture.document,
-                                target: capture.target, audioURL: audioURL, workflowOrigin: request.workflowOrigin)
-                        }
+                        boundContext = try await DialogueRenderContext.capturedNativeRender(document: capture.document,
+                            target: capture.target, audioURL: audioURL, projectSlice: renderScope == .projectSlice,
+                            workflowOrigin: request.workflowOrigin)
+                        try ShareDestinationManager.shared.validateReceipt(receipt)
                         renderedInOriginal = true
                     } else {
                         timing.begin("renderPreparation")
@@ -299,8 +296,9 @@ import Foundation
                             try isolated.destination.verifyDestination(deliveredData)
                             cleanup = (isolated, deliveredData)
                             audioURL = receipt.mediaURLs[0]
-                            boundContext = try DialogueRenderContext.capturedIsolated(document: capture.document, target: capture.target,
-                                audioURL: audioURL, workflowOrigin: request.workflowOrigin)
+                            boundContext = try await DialogueRenderContext.capturedNativeRender(document: capture.document,
+                                target: capture.target, audioURL: audioURL, workflowOrigin: request.workflowOrigin)
+                            try ShareDestinationManager.shared.validateReceipt(receipt)
                             timing.begin("returnToOriginal")
                             _ = try await isolatedSession.returnToPreviousProject(named: capture.projectName)
                         } catch {
@@ -570,8 +568,8 @@ import Foundation
                    try DirectAudioRender.isEligible(projectData: finalData, selection: capture.selection) {
                     // With exactly one audible source, the full mix is also the
                     // selected Dialogue render. Its file zero is project zero.
-                    let bound = try DialogueRenderContext.capturedProjectSlice(document: final,
-                        target: target, audioURL: fullMix, workflowOrigin: request.workflowOrigin)
+                    let bound = try await DialogueRenderContext.capturedNativeRender(document: final,
+                        target: target, audioURL: fullMix, projectSlice: true, workflowOrigin: request.workflowOrigin)
                     fresh = try await ProjectAudioAnalysis.analyze(projectData: finalData,
                         selection: capture.selection, dialogueAudio: fullMix, renderContext: bound,
                         settings: request.settings, jobID: request.id, capturedMedia: nil)
@@ -853,9 +851,9 @@ import Foundation
         }
         guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
         let audio = receipt.mediaURLs[0]
-        let bound = try scope == .projectSlice
-            ? DialogueRenderContext.capturedProjectSlice(document: document, target: target, audioURL: audio, workflowOrigin: request.workflowOrigin)
-            : DialogueRenderContext.capturedIsolated(document: document, target: target, audioURL: audio, workflowOrigin: request.workflowOrigin)
+        let bound = try await DialogueRenderContext.capturedNativeRender(document: document, target: target, audioURL: audio,
+            projectSlice: scope == .projectSlice, workflowOrigin: request.workflowOrigin)
+        try ShareDestinationManager.shared.validateReceipt(receipt)
         return try await ProjectAudioAnalysis.analyze(projectData: projectData, selection: capture.selection,
             dialogueAudio: audio, renderContext: bound, settings: request.settings,
             jobID: request.id, capturedMedia: nil)
