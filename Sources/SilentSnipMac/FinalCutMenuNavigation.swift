@@ -305,10 +305,11 @@ extension FinalCutAXSession {
         _ = AXUIElementPerformAction(item, kAXCancelAction as CFString)
     }
 
-    private func menuItemIsOnScreen(_ item: AXUIElement, menu: AXUIElement, owner: AXUIElement) -> Bool {
+    private func menuItemIsOnScreen(_ item: AXUIElement, menu: AXUIElement, owner: AXUIElement,
+                                    at preparedPoint: CGPoint? = nil) -> Bool {
         guard children(owner).contains(where: { CFEqual($0, menu) }),
               children(menu).contains(where: { CFEqual($0, item) }),
-              let point = controlCenter(item) else { return false }
+              let point = preparedPoint ?? controlCenter(item) else { return false }
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(root, Float(point.x), Float(point.y), &hit) == .success,
               let hit else { return false }
@@ -389,6 +390,14 @@ extension FinalCutAXSession {
         }
         if try FinalCutMenuProjectTransition.openedOrAssertOriginal(
             opened: projectOpened, assertOriginal: assertInputFocus) { return }
+        // The AX action can finish while events are prepared or focus is checked.
+        // Hit-test the saved event point before posting to avoid the window underneath.
+        guard FinalCutMenuActivationReadiness.canClickPreparedPoint(point, sheetOpen: currentSheet() != nil,
+                exactHit: { menuItemIsOnScreen(item, menu: menu, owner: owner, at: $0) }) else {
+            if currentSheet() != nil || !menuIsOpen() { return }
+            throw FinalCutCaptureError.unavailable("\(operationStage): The selected menu item could not be verified at its activation point.")
+        }
+        try Task.checkCancellation()
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
         try await waitForMenu(timeout: 3) {
@@ -418,6 +427,10 @@ enum FinalCutMenuActivationReadiness {
     /// that a successful AX action has finished dispatching its command.
     static func isReady(completed: Bool, exactlySelected: @autoclosure () -> Bool, elapsed: TimeInterval) -> Bool {
         completed || (elapsed >= 0.2 && exactlySelected())
+    }
+
+    static func canClickPreparedPoint(_ point: CGPoint, sheetOpen: Bool, exactHit: (CGPoint) -> Bool) -> Bool {
+        !sheetOpen && exactHit(point)
     }
 }
 

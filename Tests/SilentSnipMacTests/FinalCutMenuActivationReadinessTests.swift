@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 @testable import SilentSnipMac
 
@@ -67,6 +68,23 @@ final class FinalCutMenuActivationReadinessTests: XCTestCase {
     func testElapsedTimeAloneNeverAuthorizesActivationOfAnUnselectedItem() {
         XCTAssertFalse(FinalCutMenuActivationReadiness.isReady(completed: false, exactlySelected: false, elapsed: 0.2))
         XCTAssertFalse(FinalCutMenuActivationReadiness.isReady(completed: false, exactlySelected: false, elapsed: 2))
+    }
+
+    func testPreparedClickRequiresTheItemAtTheActualEventPoint() {
+        let prepared = CGPoint(x: 12, y: 36)
+        let moved = CGPoint(x: 12, y: 52)
+        XCTAssertTrue(FinalCutMenuActivationReadiness.isReady(completed: false, exactlySelected: true, elapsed: 0.2))
+        XCTAssertFalse(FinalCutMenuActivationReadiness.canClickPreparedPoint(prepared, sheetOpen: false) { $0 == moved })
+        XCTAssertTrue(FinalCutMenuActivationReadiness.canClickPreparedPoint(prepared, sheetOpen: false) { $0 == prepared })
+    }
+
+    func testSheetOpeningAfterReadinessSuppressesThePreparedClick() {
+        let prepared = CGPoint(x: 12, y: 36)
+        XCTAssertTrue(FinalCutMenuActivationReadiness.isReady(completed: false, exactlySelected: true, elapsed: 0.2))
+        XCTAssertFalse(FinalCutMenuActivationReadiness.canClickPreparedPoint(prepared, sheetOpen: true) { _ in
+            XCTFail("A newly opened sheet should stop fallback before hit-testing")
+            return true
+        })
     }
 
     func testScrollingSubmenuCanAdvanceWithOffscreenTargetAndVisibleSibling() {
