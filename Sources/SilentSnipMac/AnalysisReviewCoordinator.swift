@@ -66,6 +66,7 @@ public struct ReviewAnalysisResult: Sendable {
     private var jobs: [UUID: Job] = [:]
     private var order: [UUID] = []
     private var active: UUID?
+    private static let maximumReviewCuts = 1_000
 
     public init(operation: @escaping Operation, applyOperation: ApplyOperation? = nil,
                 authorizeApply: @escaping @MainActor (ReviewCommand) -> Bool = { _ in false },
@@ -324,6 +325,7 @@ public struct ReviewAnalysisResult: Sendable {
         guard authorizeRecalculation(command) else { rejectAutomaticPreview(job, command: command); return }
         do {
             _ = try result.analyzed.recalculate(settings: settings)
+            guard result.analyzed.review.cuts.count <= Self.maximumReviewCuts else { throw CoordinatorError.tooManyCuts }
             if local { result.usesAudioSnapshot = true }
             job.request = AnalyzeRequest(id: job.request.id, settings: settings, outputMode: output,
                 workflowOrigin: job.request.workflowOrigin)
@@ -334,6 +336,10 @@ public struct ReviewAnalysisResult: Sendable {
             job.message = local ? "Updating cuts from the last analyzed audio…" : verify ? "Preview updated. Checking the current project before enabling Apply…"
                 : "Preview updated. Finish editing a field to verify the project and enable Apply."
             publish(job)
+            // A failed publication clears the candidate. Do not schedule a
+            // task that could restore a terminal job from the discarded copy.
+            guard active == job.request.id, job.state == .recalculating, job.settingsEdit == edit,
+                  job.result != nil else { return }
             if local {
                 // Retained-audio updates never dispatch a Share. Their own
                 // operation checks the current review selection; Apply later
@@ -677,7 +683,7 @@ public struct ReviewAnalysisResult: Sendable {
         }
         let analysis = result.analyzed
         let review = analysis.review
-        guard review.cuts.count <= 1_000 else { throw CoordinatorError.tooManyCuts }
+        guard review.cuts.count <= Self.maximumReviewCuts else { throw CoordinatorError.tooManyCuts }
         let cuts = try review.cuts.map { cut in
             ReviewCutResponse(id: cut.id,
                 start: try timecode(cut.range.start, analysis: analysis, dropFrame: result.dropFrame),

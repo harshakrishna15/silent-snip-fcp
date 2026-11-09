@@ -161,6 +161,77 @@ import XCTest
         XCTAssertEqual(latest?.revision, initial.revision)
     }
 
+    func testAutomaticPreviewRejectsTooManyCutsAndKeepsAcceptedReview() async throws {
+        let fixture = try makeFixture(duration: 202, levelAtWindow: { index in
+            let shortQuiet = index < 20_000 && index % 20 >= 10
+            return shortQuiet || (20_050..<20_150).contains(index) ? 0 : 0.25
+        })
+        defer { fixture.remove() }
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: fixture.directory.appendingPathComponent("Automatic.fcpbundle"),
+            projectUID: "automatic-project", projectName: "Automatic project")
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove, workflowOrigin: origin)
+        var latest: ReviewResponse?, updates = 0
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
+            ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        }, authorizeRecalculation: { _ in true }, localPreviewOperation: { _, _, _ in updates += 1 },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let initial = try XCTUnwrap(latest), rejected = UUID()
+        XCTAssertEqual(initial.cuts.count, 1)
+        let crowded = ReviewWireSettings(threshold: -40, minimum: 0.05, before: 0, after: 0)
+        var recalc = fixture.result.analyzed
+        try recalc.recalculate(settings: crowded.analysisSettings())
+        XCTAssertEqual(recalc.review.cuts.count, 1_001)
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: initial.revision,
+            view: origin.view, settings: crowded, output: "remove", settingsEdit: rejected, settingsSequence: 1,
+            verifySettings: true, localPreview: true, automaticPreview: true))
+        let declined = try XCTUnwrap(latest)
+        XCTAssertEqual(declined.state, "review")
+        XCTAssertEqual(declined.rejectedSettingsEdit, rejected)
+        XCTAssertEqual(declined.revision, initial.revision)
+        XCTAssertEqual(declined.settings, initial.settings)
+        XCTAssertEqual(declined.cuts, initial.cuts)
+        XCTAssertEqual(coordinator.currentRequest, request)
+        XCTAssertFalse(coordinator.isBusy)
+        XCTAssertEqual(updates, 0)
+
+        let accepted = UUID()
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: initial.revision,
+            view: origin.view, settings: .init(threshold: -40, minimum: 0.5, before: 0, after: 0),
+            output: "remove", settingsEdit: accepted, settingsSequence: 2,
+            verifySettings: true, localPreview: true, automaticPreview: true))
+        try await waitUntil { latest?.state == "review" && latest?.settingsEdit == accepted }
+        XCTAssertEqual(latest?.cuts.count, 1)
+        XCTAssertEqual(updates, 1)
+    }
+
+    func testFailedProvisionalPublicationDoesNotLaunchLocalUpdateOrReviveReview() async throws {
+        let fixture = try makeFixture(); defer { fixture.remove() }
+        let request = try makeRequest()
+        var latest: ReviewResponse?, updates = 0
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in
+            ReviewAnalysisResult(analyzed: fixture.result.analyzed, canUpdateCuts: true)
+        }, authorizeRecalculation: { _ in true }, localPreviewOperation: { _, _, _ in updates += 1 },
+            emit: {
+                if $0.response.state == "recalculating" { throw FixtureError.exportFailed }
+                latest = $0.response
+            }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        coordinator.handle(.init(request: request.id, command: .recalculate, expectedRevision: latest?.revision,
+            view: UUID(), settings: .init(threshold: -35, minimum: 0.5, before: 0.1, after: 0.1),
+            output: "remove", settingsEdit: UUID(), settingsSequence: 1,
+            verifySettings: true, localPreview: true))
+        XCTAssertEqual(latest?.state, "failed")
+        XCTAssertFalse(coordinator.isBusy)
+        await Task.yield()
+        coordinator.handle(.init(request: request.id, command: .status))
+        XCTAssertEqual(latest?.state, "failed")
+        XCTAssertEqual(updates, 0)
+    }
+
     func testAutomaticPreviewRequiresWorkflowOriginEligibilityAndDoesNotApplyByItself() async throws {
         let fixture = try makeFixture(); defer { fixture.remove() }
         var latest: ReviewResponse?, updates = 0, applies = 0
@@ -1378,7 +1449,8 @@ import XCTest
             "silentsnip://analyze?request=\(UUID())&threshold=-40&minimum=0.5&before=0.1&after=0.1")))
     }
 
-    private func makeFixture(uniformLevel: Double? = nil, role: String = "dialogue", isolated: Bool = false, camera: Bool = false) throws -> Fixture {
+    private func makeFixture(uniformLevel: Double? = nil, role: String = "dialogue", isolated: Bool = false,
+                             camera: Bool = false, duration: Int = 5, levelAtWindow: ((Int) -> Double)? = nil) throws -> Fixture {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SilentSnipReviewTest-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         do {
@@ -1387,21 +1459,23 @@ import XCTest
             let xml = """
             <fcpxml version="1.14"><resources>
             <format id="r1" frameDuration="1/30s" width="1920" height="1080"/>
-            <asset id="r2" name="Voice" start="0s" duration="7s" hasAudio="1" hasVideo="\(camera ? "1" : "0")" audioSources="1" audioChannels="1">
+            <asset id="r2" name="Voice" start="0s" duration="\(duration + 2)s" hasAudio="1" hasVideo="\(camera ? "1" : "0")" audioSources="1" audioChannels="1">
             <media-rep kind="original-media" src="\(artifact.absoluteString)"/></asset></resources>
-            <library><event><project name="Review Fixture" uid="review-fixture"><sequence format="r1" duration="5s" tcStart="3600s">
-            <spine><asset-clip ref="r2" name="Voice" offset="3600s" start="1s" duration="5s" audioRole="\(role)"/></spine>
+            <library><event><project name="Review Fixture" uid="review-fixture"><sequence format="r1" duration="\(duration)s" tcStart="3600s">
+            <spine><asset-clip ref="r2" name="Voice" offset="3600s" start="1s" duration="\(duration)s" audioRole="\(role)"/></spine>
             </sequence></project></event></library></fcpxml>
             """
             let document = try TimelineParser.parse(data: Data(xml.utf8))
-            let target = try document.selectedTarget(.init(timelineRange: TimeRange(start: .zero, end: RationalTime(5))),
+            let length = RationalTime(Int64(duration))
+            let target = try document.selectedTarget(.init(timelineRange: TimeRange(start: .zero, end: length)),
                 requireExistingMedia: false)
-            let windows = (0..<500).map { index in
-                AudioLevelWindow(range: TimeRange(start: RationalTime(Int64(index), 100),
+            let windows = (0..<(duration * 100)).map { index in
+                let level = levelAtWindow?(index) ?? uniformLevel ?? (((100..<200).contains(index) || (300..<400).contains(index)) ? 0 : 0.25)
+                return AudioLevelWindow(range: TimeRange(start: RationalTime(Int64(index), 100),
                     end: RationalTime(Int64(index + 1), 100)),
-                    channelRMS: [uniformLevel ?? (((100..<200).contains(index) || (300..<400).contains(index)) ? 0 : 0.25)])
+                    channelRMS: [level])
             }
-            let audio = DialogueAudio(windows: windows, duration: RationalTime(5), sampleRate: 48_000, channelCount: 1)
+            let audio = DialogueAudio(windows: windows, duration: length, sampleRate: 48_000, channelCount: 1)
             let analysis = try SilenceDetector.analyze(windows: windows, target: target.timelineRange,
                 frameDuration: document.frameDuration)
             let context = try role != "dialogue" ? (isolated
