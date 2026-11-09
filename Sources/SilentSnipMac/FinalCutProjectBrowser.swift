@@ -19,18 +19,10 @@ enum FinalCutBrowserSelection {
 }
 
 extension FinalCutAXSession {
-    func canObserveFreshImport() -> Bool {
-        guard !application.isTerminated,
-              let current = Self.elementAttribute(root, kAXMainWindowAttribute), CFEqual(current, mainWindow) else { return false }
-        return currentProjectTitle() == projectName
-    }
-
     func openImportedProject(named name: String, importedXML: URL, replacement: XMLReplacementTarget? = nil,
-                             acceptReplacement: Bool = false, originalTimelineSignature: [String]? = nil,
-                             usingFreshImportOrigin: Bool = false) async throws -> FinalCutAXSession {
+                             acceptReplacement: Bool = false, originalTimelineSignature: [String]? = nil) async throws -> FinalCutAXSession {
         try await waitForImportCompletion(named: name, importedXML: importedXML, replacement: replacement,
-                                          acceptReplacement: acceptReplacement, originalTimelineSignature: originalTimelineSignature,
-                                          usingFreshImportOrigin: usingFreshImportOrigin)
+                                          acceptReplacement: acceptReplacement, originalTimelineSignature: originalTimelineSignature)
         if let replacement {
             // Replace closes the old timeline and may expose a previous project
             // or an empty timeline. Re-pin solely to navigate the browser, then
@@ -96,8 +88,7 @@ extension FinalCutAXSession {
     }
 
     private func waitForImportCompletion(named name: String, importedXML: URL, replacement: XMLReplacementTarget?,
-                                         acceptReplacement: Bool, originalTimelineSignature: [String]?,
-                                         usingFreshImportOrigin: Bool) async throws {
+                                         acceptReplacement: Bool, originalTimelineSignature: [String]?) async throws {
         let started = Date()
         var replacementAccepted = false
         var timelineTransitionObserved = false
@@ -111,14 +102,12 @@ extension FinalCutAXSession {
             read: { FinalCutAXAttributes.read($0, names: $1) },
             children: { self.children($0) }, equals: { CFEqual($0, $1) })
         var polls = 0, observations = 0, nodeReads = 0, unknownObservations = 0, modalBrowserSkips = 0
-        var readinessInputWorkspaceRechecks = 0
         var outcome = "failed"
         defer {
             var counters = browserLookups.counters
             counters["polls"] = polls; counters["observations"] = observations; counters["nodeReads"] = nodeReads
             counters["unknownObservations"] = unknownObservations
             counters["browser.modalSkips"] = modalBrowserSkips
-            counters["readiness.inputWorkspaceRechecks"] = readinessInputWorkspaceRechecks
             let report: [String: Any] = ["outcome": Task.isCancelled ? "cancelled" : outcome,
                 "elapsedSeconds": Date().timeIntervalSince(started), "counters": counters]
             if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
@@ -136,18 +125,6 @@ extension FinalCutAXSession {
             // browser navigation is needed. Restart both quiet intervals.
             _ = readiness.observe(projectVisible: false, hasDialog: true, elapsed: elapsed)
             _ = browserReveal.observe(projectVisible: false, originalProjectCurrent: false, hasDialog: true, elapsed: elapsed)
-        }
-        func recheckWorkspaceBeforeReadinessInput() async throws {
-            guard usingFreshImportOrigin else { return }
-            // The normal settle loop is read-only. If it needs host input,
-            // restore the full discovery boundary before acknowledging or revealing.
-            readinessInputWorkspaceRechecks += 1
-            let current = try await FinalCutAXSession.forImport(allowEmptyTimeline: false, inheritingWorkflowFrom: self)
-            guard current.application.processIdentifier == application.processIdentifier,
-                  CFEqual(current.mainWindow, mainWindow),
-                  current.projectName == projectName || current.projectName == name else {
-                throw FinalCutCaptureError.changedProject
-            }
         }
         while Date().timeIntervalSince(started) < 30 {
             polls += 1
@@ -207,7 +184,6 @@ extension FinalCutAXSession {
                 if dialog.isCompletedWarning(for: importedXML.lastPathComponent), buttons.count == 1,
                    !acknowledged.contains(where: { CFEqual($0, panel) }),
                    let ok = buttons.first, (attribute(ok.element, kAXEnabledAttribute) as? NSNumber)?.boolValue == true {
-                    try await recheckWorkspaceBeforeReadinessInput()
                     application.activate(options: [])
                     // Use only this identified panel's OK action, once. Import
                     // navigation intentionally cannot use assertCurrentProject.
@@ -269,7 +245,6 @@ extension FinalCutAXSession {
                 // The generated project may open between sampling the toolbar
                 // and this navigation. In that exact case the reveal is no
                 // longer needed; re-read import state on the next iteration.
-                try await recheckWorkspaceBeforeReadinessInput()
                 do {
                     try await activate()
                     try await pressMenu(path: ["Window", "Go To", "Libraries"])

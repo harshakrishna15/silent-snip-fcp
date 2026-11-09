@@ -767,7 +767,7 @@ import Foundation
                 timing.begin("importAndVerification")
                 try await timing.measure("import.delivery") { try await XMLProjectApply.importIntoFinalCut(url) }
             }
-            try await verifyImportedResult(request.id, progress: progress, timing: timing, freshImportOrigin: session)
+            try await verifyImportedResult(request.id, progress: progress, timing: timing)
             outcome = "verified"
         } catch {
             _ = await capture.restoreReviewWindow()
@@ -946,7 +946,6 @@ import Foundation
     private func verifyImportedResult(_ id: UUID, progress: @escaping AnalysisReviewCoordinator.Progress,
                                      acceptReplacement: Bool = false, originalTimelineSignature: [String]? = nil,
                                      timing: AnalysisTiming? = nil,
-                                     freshImportOrigin: FinalCutAXSession? = nil,
                                      completedBulkTransfer: (name: String, uid: String)? = nil) async throws {
         guard let outputURL = verifications[id] else {
             throw FinalCutCaptureError.unavailable("There is no pending imported result to verify.")
@@ -975,22 +974,9 @@ import Foundation
                       result.hostProjectUID == completedBulkTransfer.uid,
                       result.projectName == completedBulkTransfer.name else { throw FinalCutCaptureError.changedProject }
             }
-            let origin = freshImportOrigin.flatMap { session -> FinalCutAXSession? in
-                guard result.request.id == id, !result.bulkEffectTransfer, result.replacementTarget == nil,
-                      !acceptReplacement, originalTimelineSignature == nil, recoveryOrigins[id] == nil,
-                      session.projectName == result.originalProjectName,
-                      session.canObserveFreshImport() else { return nil }
-                return session
-            }
-            let current: FinalCutAXSession
-            if let origin {
-                attemptTiming.incrementCounter("verification.freshImportOriginReuses")
-                current = origin
-            } else {
-                current = try await attemptTiming.measure("verification.sessionDiscovery") {
-                    try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil,
-                        inheritingWorkflowFrom: reviewSession)
-                }
+            let current = try await attemptTiming.measure("verification.sessionDiscovery") {
+                try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil,
+                    inheritingWorkflowFrom: reviewSession)
             }
             if let origin = recoveryOrigins[id] {
                 progress("Verifying the selected project…", nil)
@@ -1006,7 +992,7 @@ import Foundation
             let imported = try await attemptTiming.measure("verification.openImportedProject") {
                 try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL,
                     replacement: result.replacementTarget, acceptReplacement: acceptReplacement,
-                    originalTimelineSignature: originalTimelineSignature, usingFreshImportOrigin: origin != nil)
+                    originalTimelineSignature: originalTimelineSignature)
             }
             let report = try await result.verify(capture: {
                 // Verification can start from an already-open result's remote
