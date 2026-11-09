@@ -314,8 +314,10 @@ extension FinalCutAXSession {
             try selectEventRow(revealed)
             _ = try await settledEventSidebar(target, allowLibrarySelection: false)
             try await pressMenu(path: ["File", "Reveal Project in Browser"])
+            // The second Reveal can change the sidebar. The branch that
+            // keeps the original event already proved its exact selection.
+            _ = try await settledEventSidebar(target, allowLibrarySelection: false)
         }
-        _ = try await settledEventSidebar(target, allowLibrarySelection: false)
         _ = try await selectBrowserProject(named: target.projectName)
         try await focusTimeline()
     }
