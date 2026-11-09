@@ -59,7 +59,7 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         } catch { }
     }
 
-    func testFreshNativeRenderRejectsReplacementWithIdenticalBytesAfterDecode() async throws {
+    @MainActor func testFreshNativeRenderRejectsReplacementWithIdenticalBytesAfterDecode() async throws {
         let fixture = try fixture()
         let library = directory.appendingPathComponent("Fixture.fcpbundle")
         let data = Data(try String(contentsOf: fixture.xml).replacingOccurrences(of: "<library><event>",
@@ -69,9 +69,24 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         let target = try document.selectedTarget(fixture.selection)
         let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(), libraryURL: library,
             projectUID: "audio-project", projectName: "Audio-only")
-        let audio = fixture.audio
+        let manager = ShareDestinationManager(rootURL: directory.appendingPathComponent("Share Inbox"))
+        let receipt = try await manager.captureMedia(projectName: "Audio-only") {
+            let asset = try manager.createAsset(name: "Audio-only")
+            let xml = asset.directoryURL.appendingPathComponent("Audio-only.fcpxml")
+            let audio = asset.directoryURL.appendingPathComponent("Audio-only.wav")
+            try data.write(to: xml)
+            try FileManager.default.copyItem(at: fixture.audio, to: audio)
+            XCTAssertTrue(manager.handleOpen(urls: [xml, audio]))
+        }
+        let audio = try XCTUnwrap(receipt.mediaURLs.first)
+        XCTAssertNotNil(receipt.guardedRender)
+        do {
+            _ = try await DialogueRenderContext.capturedNativeRender(document: document, target: target,
+                audioURL: fixture.audio, receipt: receipt, workflowOrigin: origin)
+            XCTFail("The receipt is bound to the delivered path, even when another file has the same bytes")
+        } catch ProjectAnalysisError.changedRenderArtifact { }
         let context = try await DialogueRenderContext.capturedNativeRender(document: document, target: target,
-            audioURL: audio, workflowOrigin: origin)
+            audioURL: audio, receipt: receipt, workflowOrigin: origin)
         let bytes = try Data(contentsOf: audio)
         do {
             _ = try await ProjectAudioAnalysis.analyze(projectData: data, selection: fixture.selection,

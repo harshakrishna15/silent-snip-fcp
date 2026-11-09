@@ -14,6 +14,10 @@ public struct ShareDestinationReceipt {
     public let dataOptions: [String: Any]
     public let mediaRoleSuffixes: [URL: String]
     var completedXML: Data?
+    // The completion can arrive while the Share trigger still owns host UI.
+    // Keep the task on this receipt even after the manager drains its queue.
+    fileprivate var cleanupRegistration: Task<GuardedShareRender?, Error>?
+    fileprivate(set) var guardedRender: GuardedShareRender?
 
     public init(id: UUID, name: String, directoryURL: URL, xmlURL: URL,
                 mediaURLs: [URL], metadata: [String: Any] = [:],
@@ -22,6 +26,19 @@ public struct ShareDestinationReceipt {
         self.xmlURL = xmlURL; self.mediaURLs = mediaURLs
         self.metadata = metadata; self.dataOptions = dataOptions
         self.mediaRoleSuffixes = mediaRoleSuffixes
+    }
+}
+
+struct GuardedShareRender: Sendable {
+    fileprivate let prepared: MediaContentSnapshot.ReadGuard
+    fileprivate let snapshot: MediaContentSnapshot
+
+    func read(at url: URL) throws -> (guardValue: MediaContentSnapshot.ReadGuard, digest: String) {
+        guard prepared.originals == [url], prepared.canonicalURLs == [url], let digest = snapshot.hashes[url] else {
+            throw ProjectAnalysisError.changedRenderArtifact
+        }
+        try snapshot.requireExactGuard(prepared)
+        return (prepared, digest)
     }
 }
 
@@ -70,8 +87,9 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         var deliverySignal: AsyncStream<Void>.Continuation?
     }
     private var xmlRequest: XMLRequest?
-    private var cleanupRegistrations: [UUID: Task<Void, Never>] = [:]
-    private var cleanupRegistrationTail: (id: UUID, task: Task<Void, Never>)?
+    private typealias CleanupRegistration = Task<GuardedShareRender?, Error>
+    private var cleanupRegistrations: [UUID: CleanupRegistration] = [:]
+    private var cleanupRegistrationTail: (id: UUID, task: CleanupRegistration)?
     public var hasActiveRequest: Bool { xmlRequest != nil || !cleanupRegistrations.isEmpty }
 #if DEBUG
     func prototypeShareRequestMatches(projectName: String) -> Bool {
@@ -105,37 +123,72 @@ public enum ShareDestinationError: LocalizedError, Equatable {
 
     public func captureMedia(projectName: String, timeout: TimeInterval = 3600,
                              trigger: () async throws -> Void) async throws -> ShareDestinationReceipt {
-        let receipt = try await capture(projectName: projectName, requiresMedia: true, timeout: timeout, trigger: trigger)
+        var receipt = try await capture(projectName: projectName, requiresMedia: true, timeout: timeout, trigger: trigger)
         // Completion schedules registration even if this waiter is canceled.
         // A successful consumer still waits for its disposable-media inventory.
-        if let registration = cleanupRegistrations[receipt.id] { await registration.value }
+        if let registration = receipt.cleanupRegistration {
+            receipt.guardedRender = try await registration.value
+            receipt.cleanupRegistration = nil
+            if let evidence = receipt.guardedRender, let audio = receipt.mediaURLs.first {
+                _ = try evidence.read(at: audio)
+            }
+        }
         return receipt
     }
 
     /// Keep registration independent of a successful capture waiter. Native
     /// background exports can complete after Cancel, timeout or worker restart.
     /// Only the exact verified, completed request-owned media enter this queue.
-    private func registerCompletedRender(_ receipt: ShareDestinationReceipt) {
-        guard cleanupRegistrations[receipt.id] == nil else { return }
+    private func registerCompletedRender(_ receipt: ShareDestinationReceipt) -> CleanupRegistration {
+        if let registration = cleanupRegistrations[receipt.id] { return registration }
         let id = receipt.id, urls = receipt.mediaURLs, storage = cleanupStorage
         let previous = cleanupRegistrationTail?.task
-        let work = Task.detached(priority: .utility) {
+        // Pin the completed file before yielding or waiting behind an older job.
+        // A canceled delivery caller must still get the ordinary inventory scan.
+        let preparation = urls.count == 1 && !Task.isCancelled ? Result { try MediaContentSnapshot.prepareRead(urls) } : nil
+        let work = Task.detached(priority: .utility) { () throws -> GuardedShareRender? in
             // Serialize record-folder creation and writes across late deliveries.
-            await previous?.value
+            _ = await previous?.result
+            if let preparation, let url = urls.first {
+                let prepared = try preparation.get()
+                guard prepared.canonicalURLs == [url] else { throw ProjectAnalysisError.changedRenderArtifact }
+                let snapshot: MediaContentSnapshot
+                do {
+                    snapshot = try await MediaContentSnapshot.capture(prepared: prepared)
+                } catch ProjectAnalysisError.changedRenderArtifact {
+                    throw ProjectAnalysisError.changedRenderArtifact
+                } catch {
+                    // Preserve the existing inventory attempt on an I/O error.
+                    // An unchanged guard permits the caller's usual fresh read.
+                    try prepared.validate()
+                    _ = try? storage.register(url)
+                    try prepared.validate()
+                    return nil
+                }
+                let evidence = GuardedShareRender(prepared: prepared, snapshot: snapshot)
+                let read = try evidence.read(at: url)
+                _ = try? storage.register(url, expectedHash: read.digest)
+                try prepared.validate()
+                return evidence
+            }
             for url in urls { _ = try? storage.register(url) }
+            return nil
         }
         let completion = Task { @MainActor [weak self] in
-            await work.value
-            self?.cleanupRegistrations.removeValue(forKey: id)
-            if self?.cleanupRegistrationTail?.id == id { self?.cleanupRegistrationTail = nil }
+            defer {
+                self?.cleanupRegistrations.removeValue(forKey: id)
+                if self?.cleanupRegistrationTail?.id == id { self?.cleanupRegistrationTail = nil }
+            }
+            return try await work.value
         }
         cleanupRegistrations[id] = completion
         cleanupRegistrationTail = (id, completion)
+        return completion
     }
 
     /// Await already scheduled disk work without starting a Share or a cleanup.
     func waitForCleanupRegistrations() async {
-        for task in Array(cleanupRegistrations.values) { await task.value }
+        for task in Array(cleanupRegistrations.values) { _ = await task.result }
     }
 
     private func capture(projectName: String, requiresMedia: Bool, timeout: TimeInterval,
@@ -290,11 +343,11 @@ public enum ShareDestinationError: LocalizedError, Equatable {
             guard !asset.completed else { throw ShareDestinationError.alreadyCompleted }
             guard canBeginShare?() != false else { throw ShareDestinationError.shareInProgress }
             let receipt = try receive(urls: urls, for: asset)
-            if let receipt {
+            if var receipt {
                 asset.completed = true
                 try persist(asset)
                 record("open-complete", asset: asset, details: ["files": urls.map(\.path)])
-                if asset.requestOwned && asset.requiresMedia { registerCompletedRender(receipt) }
+                if asset.requestOwned && asset.requiresMedia { receipt.cleanupRegistration = registerCompletedRender(receipt) }
                 if asset.requestOwned || !asset.requiresMedia {
                     completeRequest(for: asset.id, with: .success(receipt))
                     // A canceled or restarted request must never start a different analysis.

@@ -232,6 +232,37 @@ final class ShareDestinationTests: XCTestCase {
         }
     }
 
+    @MainActor func testReceiptRetainsGuardedReadAfterRegistrationDrainsBeforeTriggerReturns() async throws {
+        let manager = try manager()
+        let receipt = try await manager.captureMedia(projectName: "Processed") {
+            let asset = try manager.createAsset(name: "Processed")
+            let xml = try self.write("Processed.fcpxml", in: asset.directoryURL)
+            let audio = try self.write("Processed.wav", in: asset.directoryURL)
+            XCTAssertTrue(manager.handleOpen(urls: [xml, audio]))
+            await manager.waitForCleanupRegistrations()
+        }
+        let audio = try XCTUnwrap(receipt.mediaURLs.first)
+        let evidence = try XCTUnwrap(receipt.guardedRender)
+        XCTAssertEqual(try evidence.read(at: audio).digest, try MediaContentSnapshot.contentHash(at: audio))
+        XCTAssertFalse(manager.hasActiveRequest)
+    }
+
+    @MainActor func testReplacementAfterRegistrationRejectsInsteadOfRehashingNewFile() async throws {
+        let manager = try manager()
+        do {
+            _ = try await manager.captureMedia(projectName: "Processed") {
+                let asset = try manager.createAsset(name: "Processed")
+                let xml = try self.write("Processed.fcpxml", in: asset.directoryURL)
+                let audio = try self.write("Processed.wav", in: asset.directoryURL)
+                XCTAssertTrue(manager.handleOpen(urls: [xml, audio]))
+                await manager.waitForCleanupRegistrations()
+                try Data(contentsOf: audio).write(to: audio, options: .atomic)
+            }
+            XCTFail("A settled inventory read cannot authorize replacement audio at the same path")
+        } catch ProjectAnalysisError.changedRenderArtifact { }
+        XCTAssertFalse(manager.hasActiveRequest)
+    }
+
     @MainActor func testRenderTimeoutReleasesRequestWithoutDelivery() async throws {
         let manager = try manager()
         do {
