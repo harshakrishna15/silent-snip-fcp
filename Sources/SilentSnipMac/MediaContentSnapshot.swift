@@ -193,8 +193,8 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
     /// remain exact across the asynchronous read and the final composition.
     func capturingAdditionalFiles(_ urls: [URL], protectedBy sourceGuard: ReadGuard,
         hash: @Sendable (URL) throws -> String = { try MediaContentSnapshot.contentHash(at: $0) }) async throws -> Self {
-        try Task.checkCancellation()
         try requireExactGuard(sourceGuard)
+        guard !urls.isEmpty else { return self }
         let additionGuard = try sourceGuard.prepareAddition(urls)
         let additional = try await Self.capture(prepared: additionGuard, hash: hash)
         try Task.checkCancellation()

@@ -26,11 +26,11 @@ enum ApplyAudioRenderCapture {
         /// Historical/legacy evidence never receives this reuse capability.
         func captureOutputMedia(adding urls: [URL],
             hash: @Sendable (URL) throws -> String = { try MediaContentSnapshot.contentHash(at: $0) }) async throws -> MediaContentSnapshot {
-            try Task.checkCancellation()
-            try readGuard.validate()
             if let freshSourceMedia {
                 return try await freshSourceMedia.capturingAdditionalFiles(urls, protectedBy: readGuard, hash: hash)
             }
+            try Task.checkCancellation()
+            try readGuard.validate()
             let additionGuard = try readGuard.prepareAddition(urls)
             let output = try await MediaContentSnapshot.capture(sourceMedia.sourceURLs + urls, hash: hash)
             try readGuard.validate()

@@ -218,6 +218,11 @@ final class ApplyAudioRenderCaptureTests: XCTestCase {
             renders += 1
             return 42
         }, cleanup: { _ in XCTFail("The caller owns the successful render") })
+        let unchanged = try await result.captureOutputMedia(adding: [], hash: { _ in
+            XCTFail("The unchanged output must use the guarded source hashes")
+            return "unexpected"
+        })
+        XCTAssertEqual(unchanged, historical)
         let output = try await result.captureOutputMedia(adding: [durable, durable], hash: { url in
             XCTAssertFalse(Thread.isMainThread)
             reads.record(url)
@@ -242,13 +247,15 @@ final class ApplyAudioRenderCaptureTests: XCTestCase {
             render: { 42 }, cleanup: { _ in XCTFail("The caller owns the successful render") })
         let stamp = try MediaContentSnapshot.FileStamp(source)
         try changeAndRestore(source, original: original, stamp: stamp)
-        do {
-            _ = try await result.captureOutputMedia(adding: [durable], hash: { _ in
-                XCTFail("Changed original evidence must reject before another media read")
-                return "unexpected"
-            })
-            XCTFail("Source mutations between rendering and retention cannot adopt new source evidence")
-        } catch ProjectAnalysisError.changedRenderArtifact { }
+        for additions in [[], [durable]] {
+            do {
+                _ = try await result.captureOutputMedia(adding: additions, hash: { _ in
+                    XCTFail("Changed original evidence must reject before another media read")
+                    return "unexpected"
+                })
+                XCTFail("Source mutations between rendering and retention cannot adopt new source evidence")
+            } catch ProjectAnalysisError.changedRenderArtifact { }
+        }
     }
 
     @MainActor func testAliasPermutationDuringAddedMediaReadRejectsJoinedOutput() async throws {
