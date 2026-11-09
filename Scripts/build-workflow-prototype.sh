@@ -2,8 +2,11 @@
 # Build the isolated Workflow frontend. Never install or register it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-if [[ $# != 0 ]]; then
-  echo 'Usage: Scripts/build-workflow-prototype.sh' >&2
+fresh_package=''
+if [[ $# == 2 && "${1:-}" == --fresh && "$2" == /*.package ]]; then
+  fresh_package="$2"
+elif [[ $# != 0 ]]; then
+  echo 'Usage: Scripts/build-workflow-prototype.sh [--fresh /absolute/path.package]' >&2
   exit 2
 fi
 sdk="${SILENT_SNIP_WORKFLOW_SDK:-/Library/Developer/SDKs/WorkflowExtensionSDK.sdk}"
@@ -22,21 +25,36 @@ for resource in ExtensionIcon.icns ExtensionIcon.png ExtensionIcon@2x.png Workfl
 done
 root="$PWD/build/WorkflowPrototype"
 destination="$root/Products/Silent Snip Workflow Prototype.app"
-for process in SilentSnipWorkflowExtension SilentSnipWorkflowPrototype; do
-  if /usr/bin/pgrep -x "$process" >/dev/null; then
-    echo 'Close the Workflow Prototype and its extension before rebuilding.' >&2; exit 1
-  else
-    result=$?
-    [[ "$result" == 1 ]] || { echo 'Cannot inspect the prototype process; no build was started.' >&2; exit 1; }
-  fi
-done
-mkdir -p "$root/Products" "$root/ModuleCache"
-[[ ! -L "$root" && ! -L "$root/Products" && ! -L "$destination" ]] || { echo 'Prototype output must not be symlinked.' >&2; exit 1; }
-if [[ -e "$destination" ]]; then
-  [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$destination/Contents/Info.plist") == local.silentsnip.workflowprototype ]] || {
-    echo 'An unrelated app occupies the prototype path.' >&2; exit 1;
+[[ ! -L "$PWD/build" && ! -L "$root" && ! -L "$root/ModuleCache" ]] || {
+  echo 'Prototype output must not be symlinked.' >&2; exit 1;
+}
+if [[ -n "$fresh_package" ]]; then
+  # Reserve a new dormant bundle atomically. This path never replaces or
+  # moves an existing app, so another running copy can stay open.
+  package_parent=$(dirname "$fresh_package")
+  [[ -d "$package_parent" && ! -L "$package_parent" ]] || {
+    echo 'The fresh package needs an existing local parent directory.' >&2; exit 1;
   }
+  mkdir "$fresh_package"
+  destination="$fresh_package"
+else
+  for process in SilentSnipWorkflowExtension SilentSnipWorkflowPrototype; do
+    if /usr/bin/pgrep -x "$process" >/dev/null; then
+      echo 'Close the Workflow Prototype and its extension before rebuilding.' >&2; exit 1
+    else
+      result=$?
+      [[ "$result" == 1 ]] || { echo 'Cannot inspect the prototype process; no build was started.' >&2; exit 1; }
+    fi
+  done
+  [[ ! -L "$root/Products" && ! -L "$destination" ]] || { echo 'Prototype output must not be symlinked.' >&2; exit 1; }
+  mkdir -p "$root/Products"
+  if [[ -e "$destination" ]]; then
+    [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$destination/Contents/Info.plist") == local.silentsnip.workflowprototype ]] || {
+      echo 'An unrelated app occupies the prototype path.' >&2; exit 1;
+    }
+  fi
 fi
+mkdir -p "$root/ModuleCache"
 swift build --scratch-path build/swift -c release --target SilentSnipWorkflowModel
 bin=$(swift build --scratch-path build/swift -c release --show-bin-path)
 module_path="$bin"
@@ -48,6 +66,7 @@ fi
 [[ -f "${model_objects[0]}" ]] || { echo 'The built workflow model objects are missing.' >&2; exit 1; }
 work=$(mktemp -d "$root/.Build.XXXXXX")
 app="$work/Silent Snip Workflow Prototype.app"
+if [[ -n "$fresh_package" ]]; then app="$destination"; fi
 extension="$app/Contents/PlugIns/SilentSnipWorkflowExtension.appex"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$extension/Contents/MacOS" "$extension/Contents/Resources"
 cp WorkflowPrototype/Container/Info.plist "$app/Contents/Info.plist"
@@ -82,6 +101,8 @@ identity="${SILENT_SNIP_SIGNING_IDENTITY:--}"
 codesign --force --sign "$identity" --entitlements WorkflowPrototype/Extension/Sandbox.entitlements "$extension"
 codesign --force --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"
-if [[ -e "$destination" ]]; then mv "$destination" "$work/Previous.package"; fi
-mv "$app" "$destination"
+if [[ -z "$fresh_package" ]]; then
+  if [[ -e "$destination" ]]; then mv "$destination" "$work/Previous.package"; fi
+  mv "$app" "$destination"
+fi
 printf 'Built isolated prototype (not installed or registered):\n%s\n' "$destination"
