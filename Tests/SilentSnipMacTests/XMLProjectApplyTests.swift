@@ -52,6 +52,82 @@ final class XMLProjectApplyTests: XCTestCase {
             projectUID: projectUID, projectName: "Original")
     }
 
+    private func sourceOnlyFixture() -> String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE fcpxml>
+        <fcpxml version="1.14"><resources>
+        <format id="f" frameDuration="1/30s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="a" name="Voice" uid="asset-uid" start="0s" duration="10s" hasAudio="1" audioSources="1" audioChannels="1" audioRate="48000">
+        <media-rep kind="original-media" sig="source-signature" src="\(source.absoluteString)"><bookmark>old-bookmark</bookmark></media-rep>
+        <metadata><md key="com.apple.proapps.mio.ingestDate" value="2026-11-08"/></metadata>
+        </asset></resources><library location="\(library.absoluteString)"><event name="Fixture" uid="BBBB0000-0000-4000-8000-000000000001">
+        <project name="Original" uid="original-project" modDate="2026-11-08 12:00:00 -0800">
+        <sequence format="f" duration="10s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k"><spine>
+        <asset-clip ref="a" name="Voice" offset="0s" duration="10s" audioRole="dialogue"></asset-clip>
+        </spine></sequence></project></event>
+        <smart-collection name="Projects" match="all"><match-clip rule="is" type="project"/></smart-collection>
+        </library></fcpxml>
+        """
+    }
+
+    private func sourceOnlyEvidence(_ text: String) throws -> XMLProjectApply.SourceOnlyEvidence? {
+        let data = Data(text.utf8)
+        let document = try TimelineParser.parse(data: data)
+        return try XMLProjectApply.sourceOnlyEvidence(projectData: data, document: document,
+            target: XCTUnwrap(document.clips.first))
+    }
+
+    func testSourceOnlyEvidenceAcceptsSameProjectWithOnlyRegeneratedBookmarkText() throws {
+        let input = sourceOnlyFixture()
+        let evidence = try XCTUnwrap(sourceOnlyEvidence(input))
+        XCTAssertEqual(evidence.destination, try XMLReplacementTarget(projectData: Data(input.utf8)))
+        XCTAssertNoThrow(try evidence.verifyCurrent(projectData: Data(input.utf8)))
+        let refreshed = input.replacingOccurrences(of: "old-bookmark", with: "another-bookmark\nwith-more-data")
+        XCTAssertNoThrow(try evidence.verifyCurrent(projectData: Data(refreshed.utf8)))
+
+        for (old, changed) in [
+            (library.absoluteString, folder.appendingPathComponent("Other.fcpbundle").absoluteString),
+            ("BBBB0000-0000-4000-8000-000000000001", "BBBB0000-0000-4000-8000-000000000002"),
+            ("name=\"Fixture\"", "name=\"Renamed Event\""),
+            ("original-project", "another-project"),
+            (source.absoluteString, folder.appendingPathComponent("other.wav").absoluteString),
+            ("source-signature", "changed-signature"),
+            ("12:00:00", "12:00:01"),
+            ("value=\"2026-11-08\"", "value=\"2026-11-09\""),
+            ("<bookmark>old-bookmark</bookmark>", "<bookmark flag=\"1\">old-bookmark</bookmark>"),
+            ("<bookmark>old-bookmark</bookmark>", ""),
+            ("</asset-clip>", "<adjust-volume amount=\"-3dB\"/></asset-clip>"),
+            (" audioRole=\"dialogue\"", "")
+        ] {
+            let replacement = input.replacingOccurrences(of: old, with: changed)
+            XCTAssertNotEqual(input, replacement, old)
+            XCTAssertThrowsError(try evidence.verifyCurrent(projectData: Data(replacement.utf8)), old)
+        }
+    }
+
+    func testSourceOnlyEvidenceDeclinesProcessingAndUnprovenStructure() throws {
+        let input = sourceOnlyFixture()
+        for (old, changed) in [
+            ("</asset-clip>", "<adjust-volume amount=\"-3dB\"/></asset-clip>"),
+            ("</resources>", "<effect id=\"e\" uid=\"\(AudioControllerSettings.effectUID)\"/></resources>"),
+            (" audioRole=\"dialogue\"", ""),
+            ("audioRole=\"dialogue\"", "audioRole=\"dialogue\" unexpected=\"1\""),
+            ("audioSources=\"1\"", "audioSources=\"2\""),
+            ("audioChannels=\"1\"", "audioChannels=\"0\""),
+            ("kind=\"original-media\"", "kind=\"proxy-media\""),
+            ("</media-rep>", "</media-rep><media-rep kind=\"proxy-media\" src=\"\(source.absoluteString)\"/>"),
+            ("old-bookmark", "<child/>"),
+            ("</asset-clip>", "<marker start=\"1s\" value=\"Opening\"/></asset-clip>")
+        ] {
+            XCTAssertNil(try sourceOnlyEvidence(input.replacingOccurrences(of: old, with: changed)), old)
+        }
+        let document = try TimelineParser.parse(data: Data(input.utf8))
+        let malformed = Data(input.replacingOccurrences(of: "</spine>", with: "").utf8)
+        XCTAssertThrowsError(try XMLProjectApply.sourceOnlyEvidence(projectData: malformed,
+            document: document, target: XCTUnwrap(document.clips.first)))
+    }
+
     func testWorkflowOutputNeedsNoAUAndKeepsRecoverySourcesAndExplicitSettings() throws {
         let input = workflowFixture()
         let settings = try AnalysisSettings(thresholdDBFS: -32, minimumSilenceDuration: 0.7)

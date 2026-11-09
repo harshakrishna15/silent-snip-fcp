@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import SilentSnipCore
 import Foundation
 
@@ -9,6 +10,7 @@ import Foundation
         let capture: CapturedFinalCutProject
         let directory: URL
         let mediaSnapshot: MediaContentSnapshot
+        let sourceOnlyProjectDigest: SHA256.Digest?
     }
     private let preview = TimelineCutPreview()
     private let analysisCache = AnalysisCache()
@@ -351,8 +353,10 @@ import Foundation
                     cuts: analyzed.review.selectedCuts.map(\.range), request: request,
                     outputName: Self.outputName(clip: capture.target, request: request.id))
             }
-            contexts[request.id] = Context(capture: capture,
-                directory: directory, mediaSnapshot: media)
+            let mayApplySourceOnly = request.workflowOrigin != nil && route == .source
+                && capture.document.clips.count == 1 && !capture.target.hasVideo
+            contexts[request.id] = Context(capture: capture, directory: directory, mediaSnapshot: media,
+                sourceOnlyProjectDigest: mayApplySourceOnly ? SHA256.hash(data: projectData) : nil)
             if cached == nil {
                 timing.begin("cacheStorage")
                 do { try await analysisCache.store(key: key, analysis: analyzed, directory: directory) }
@@ -513,103 +517,136 @@ import Foundation
             try await session.suspendReviewWindow()
             try await session.activate()
             let baselineData = try Data(contentsOf: capture.xmlURL)
+            if let digest = context.sourceOnlyProjectDigest, SHA256.hash(data: baselineData) != digest {
+                throw AudioProjectProcessingError.changedProject
+            }
             let applyRoute = try ClipAudioAnalysisRoute.resolve(projectData: baselineData, selection: capture.selection)
             let nativePlan = try Self.nativeEditPlanIfNeeded(projectData: baselineData,
                 selection: capture.selection, cuts: removals, request: request)
-            timing.begin("projectAndAudioVerification")
-            progress("Rendering project audio before applying cuts…", 0.05)
-            let roles = try FinalCutAudioMixScope.expectedRoles(projectData: baselineData)
-            // Recheck the current native processing before editing source clips.
-            // Detection remains Dialogue-only; the complete mix is never
-            // substituted for a mixed target's review or for result media.
-            let sourceCapture = try await ApplyAudioRenderCapture.perform(sourceMedia: context.mediaSnapshot,
-                render: {
-                    try await session.shareRenderedAudio(timing: timing,
-                        mixScope: .fullProjectMix(expectedRoles: roles), sharePurpose: .apply)
-                }, cleanup: { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: $0) })
-            let receipt = sourceCapture.receipt
-            fullMixReceipt = receipt
-            let readGuard = sourceCapture.readGuard
-            if sourceCapture.overlappedSourceValidation {
-                timing.recordCounters(["apply.sourceHashOverlapsRender": 1])
-            }
-            try ShareDestinationManager.shared.validateReceipt(receipt)
-            guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
-            let finalURL = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
-                ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
-            let finalData = try Data(contentsOf: finalURL)
-            let final = try TimelineParser.parse(data: finalData, exclusions: exclusions)
-            try XMLProjectApply.verifyBaseline(final, analyzed: capture.document)
-            guard try FinalCutAudioMixScope.expectedRoles(projectData: finalData) == roles else {
-                throw AudioProjectProcessingError.changedProject
-            }
-            try sourceCapture.validateSourceReferences(final.clips.filter(\.enabled).compactMap(\.mediaURL))
-            if !sourceCapture.overlappedSourceValidation {
-                // Legacy evidence keeps the preceding full-content route.
-                // Exact delivered references were checked above; validate()
-                // retains legacy canonical-reference/hash compatibility.
-                try await context.mediaSnapshot.validate()
-            }
-            try readGuard.validate()
-            let target = try final.selectedTarget(capture.selection)
-            if let origin = request.workflowOrigin { try origin.verify(projectData: finalData) }
-            else {
-                try AudioControllerSettings.validateForApply(projectData: finalData,
-                    target: target, requested: result.analyzed.settings)
-            }
-            let fullMix = receipt.mediaURLs[0]
-            let renderGuard = try MediaContentSnapshot.prepareRead([fullMix, finalURL])
-            if applyRoute == .finalCutRender {
-                timing.begin("freshAudioMeasurement")
-                progress("Checking current audio against the reviewed cuts…", 0.2)
-                let audible = final.clips.filter { $0.enabled && $0.hasAudio }
-                let fresh: AnalyzedAudioProject
-                if audible.count == 1, audible[0].id == target.id,
-                   try DirectAudioRender.isEligible(projectData: finalData, selection: capture.selection) {
-                    // With exactly one audible source, the full mix is also the
-                    // selected Dialogue render. Its file zero is project zero.
-                    let bound = try await DialogueRenderContext.capturedNativeRender(document: final,
-                        target: target, audioURL: fullMix, receipt: receipt, projectSlice: true, workflowOrigin: request.workflowOrigin)
-                    fresh = try await ProjectAudioAnalysis.analyze(projectData: finalData,
-                        selection: capture.selection, dialogueAudio: fullMix, renderContext: bound,
-                        settings: request.settings, jobID: request.id, capturedMedia: nil)
-                } else {
-                    fresh = try await freshTargetForApply(projectData: finalData, document: final,
-                        capture: capture, directory: context.directory, request: request,
-                        timing: timing, progress: progress)
+            let finalData: Data
+            let final: TimelineDocument
+            let outputMedia: MediaContentSnapshot
+            let readGuard: MediaContentSnapshot.ReadGuard
+            let renderGuard: MediaContentSnapshot.ReadGuard?
+            let sourceOnly: XMLProjectApply.SourceOnlyEvidence?
+            if context.sourceOnlyProjectDigest != nil, request.workflowOrigin != nil, applyRoute == .source, nativePlan == nil,
+               result.analyzed.dialogueContext.sourceRange != nil,
+               let evidence = try XMLProjectApply.sourceOnlyEvidence(projectData: baselineData,
+                   document: capture.document, target: capture.target),
+               let guardValue = try context.mediaSnapshot.prepareValidationRead() {
+                // Stage from the immutable Analyze baseline. The final Share
+                // after the full source scan must prove these same XML inputs.
+                guard context.mediaSnapshot.covers(capture.document.clips.filter(\.enabled).compactMap(\.mediaURL)) else {
+                    throw ProjectAnalysisError.changedRenderArtifact
                 }
-                let evidence: [String: Any] = ["reviewedCandidates": result.analyzed.review.cuts.map(\.id),
-                    "freshCandidates": fresh.review.cuts.map(\.id), "selectedCuts": result.analyzed.review.selectedCuts.map(\.id),
-                    "reviewedAudioSHA256": result.analyzed.dialogueContext.audioSHA256,
-                    "freshAudioSHA256": fresh.dialogueContext.audioSHA256,
-                    "verificationAudio": "continuous full-project native mix",
-                    "outputAudio": "original source clips with editable audio effects"]
-                try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
-                    .write(to: context.directory.appendingPathComponent("Apply-Audio-Verification.json"), options: .atomic)
-                try ReviewedCutValidation.verify(reviewed: result.analyzed, fresh: fresh)
+                sourceOnly = evidence
+                finalData = baselineData
+                final = capture.document
+                outputMedia = context.mediaSnapshot
+                readGuard = guardValue
+                renderGuard = nil
+                timing.incrementCounter("apply.sourceOnlyXML")
+            } else {
+                sourceOnly = nil
+                timing.begin("projectAndAudioVerification")
+                progress("Rendering project audio before applying cuts…", 0.05)
+                let roles = try FinalCutAudioMixScope.expectedRoles(projectData: baselineData)
+                // Recheck the current native processing before editing source clips.
+                // Detection remains Dialogue-only; the complete mix is never
+                // substituted for a mixed target's review or for result media.
+                let sourceCapture = try await ApplyAudioRenderCapture.perform(sourceMedia: context.mediaSnapshot,
+                    render: {
+                        try await session.shareRenderedAudio(timing: timing,
+                            mixScope: .fullProjectMix(expectedRoles: roles), sharePurpose: .apply)
+                    }, cleanup: { try? ShareDestinationManager.shared.cleanupRenderedMedia(receipt: $0) })
+                let receipt = sourceCapture.receipt
+                fullMixReceipt = receipt
+                readGuard = sourceCapture.readGuard
+                if sourceCapture.overlappedSourceValidation {
+                    timing.recordCounters(["apply.sourceHashOverlapsRender": 1])
+                }
+                try ShareDestinationManager.shared.validateReceipt(receipt)
+                guard receipt.mediaURLs.count == 1 else { throw ProjectAnalysisError.invalidRenderArtifact }
+                let finalURL = receipt.xmlURL.pathExtension.lowercased() == "fcpxmld"
+                    ? receipt.xmlURL.appendingPathComponent("Info.fcpxml") : receipt.xmlURL
+                finalData = try Data(contentsOf: finalURL)
+                final = try TimelineParser.parse(data: finalData, exclusions: exclusions)
+                try XMLProjectApply.verifyBaseline(final, analyzed: capture.document)
+                guard try FinalCutAudioMixScope.expectedRoles(projectData: finalData) == roles else {
+                    throw AudioProjectProcessingError.changedProject
+                }
+                try sourceCapture.validateSourceReferences(final.clips.filter(\.enabled).compactMap(\.mediaURL))
+                if !sourceCapture.overlappedSourceValidation {
+                    // Legacy evidence keeps the preceding full-content route.
+                    // Exact delivered references were checked above; validate()
+                    // retains legacy canonical-reference/hash compatibility.
+                    try await context.mediaSnapshot.validate()
+                }
+                try readGuard.validate()
+                let target = try final.selectedTarget(capture.selection)
+                if let origin = request.workflowOrigin { try origin.verify(projectData: finalData) }
+                else {
+                    try AudioControllerSettings.validateForApply(projectData: finalData,
+                        target: target, requested: result.analyzed.settings)
+                }
+                let fullMix = receipt.mediaURLs[0]
+                let nativeRenderGuard = try MediaContentSnapshot.prepareRead([fullMix, finalURL])
+                renderGuard = nativeRenderGuard
+                if applyRoute == .finalCutRender {
+                    timing.begin("freshAudioMeasurement")
+                    progress("Checking current audio against the reviewed cuts…", 0.2)
+                    let audible = final.clips.filter { $0.enabled && $0.hasAudio }
+                    let fresh: AnalyzedAudioProject
+                    if audible.count == 1, audible[0].id == target.id,
+                       try DirectAudioRender.isEligible(projectData: finalData, selection: capture.selection) {
+                        // With exactly one audible source, the full mix is also the
+                        // selected Dialogue render. Its file zero is project zero.
+                        let bound = try await DialogueRenderContext.capturedNativeRender(document: final,
+                            target: target, audioURL: fullMix, receipt: receipt, projectSlice: true, workflowOrigin: request.workflowOrigin)
+                        fresh = try await ProjectAudioAnalysis.analyze(projectData: finalData,
+                            selection: capture.selection, dialogueAudio: fullMix, renderContext: bound,
+                            settings: request.settings, jobID: request.id, capturedMedia: nil)
+                    } else {
+                        fresh = try await freshTargetForApply(projectData: finalData, document: final,
+                            capture: capture, directory: context.directory, request: request,
+                            timing: timing, progress: progress)
+                    }
+                    let evidence: [String: Any] = ["reviewedCandidates": result.analyzed.review.cuts.map(\.id),
+                        "freshCandidates": fresh.review.cuts.map(\.id), "selectedCuts": result.analyzed.review.selectedCuts.map(\.id),
+                        "reviewedAudioSHA256": result.analyzed.dialogueContext.audioSHA256,
+                        "freshAudioSHA256": fresh.dialogueContext.audioSHA256,
+                        "verificationAudio": "continuous full-project native mix",
+                        "outputAudio": "original source clips with editable audio effects"]
+                    try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
+                        .write(to: context.directory.appendingPathComponent("Apply-Audio-Verification.json"), options: .atomic)
+                    try ReviewedCutValidation.verify(reviewed: result.analyzed, fresh: fresh)
+                }
+                if !sourceCapture.overlappedSourceValidation { try await context.mediaSnapshot.validate() }
+                // The original phase guard spans both the joined hash/render and
+                // later target measurement, including any extra native isolation.
+                try readGuard.validate()
+                try validateReviewSelection(capture)
+                try Task.checkCancellation()
+                timing.begin("preserveSourceAudio")
+                progress("Preserving source clips and audio effects…", 0.3)
+                try ShareDestinationManager.shared.validateReceipt(receipt)
+                try nativeRenderGuard.validate()
+                // The native mix is analysis evidence only. The cleaned timeline
+                // references the original media and copies each kept clip's DSP
+                // chain, volume and source-time animation, like manual blade cuts.
+                outputMedia = try await timing.measure("apply.outputMediaEvidence") {
+                    try await sourceCapture.captureOutputMedia(adding: [])
+                }
+                timing.recordCounters(["apply.outputSourceHashReuse": sourceCapture.reusesSourceHashesForOutput ? 1 : 0])
+                guard outputMedia == context.mediaSnapshot else {
+                    throw AudioProjectProcessingError.changedProject
+                }
+                try readGuard.validate()
             }
-            if !sourceCapture.overlappedSourceValidation { try await context.mediaSnapshot.validate() }
-            // The original phase guard spans both the joined hash/render and
-            // later target measurement, including any extra native isolation.
-            try readGuard.validate()
-            try validateReviewSelection(capture)
-            try Task.checkCancellation()
-            timing.begin("preserveSourceAudio")
-            progress("Preserving source clips and audio effects…", 0.3)
-            try ShareDestinationManager.shared.validateReceipt(receipt)
-            try renderGuard.validate()
-            // The native mix is analysis evidence only. The cleaned timeline
-            // references the original media and copies each kept clip's DSP
-            // chain, volume and source-time animation, like manual blade cuts.
-            let outputMedia = try await timing.measure("apply.outputMediaEvidence") {
-                try await sourceCapture.captureOutputMedia(adding: [])
-            }
-            timing.recordCounters(["apply.outputSourceHashReuse": sourceCapture.reusesSourceHashesForOutput ? 1 : 0])
-            guard outputMedia == context.mediaSnapshot else {
-                throw AudioProjectProcessingError.changedProject
-            }
-            try readGuard.validate()
             if nativePlan != nil {
+                guard let receipt = fullMixReceipt, let renderGuard else {
+                    throw ProjectAnalysisError.invalidRenderArtifact
+                }
                 let outputName = Self.outputName(clip: capture.target, request: request.id)
                 let plan = try BulkEffectTransferPlan.make(projectData: finalData,
                     selection: capture.selection, cuts: removals, outputName: outputName)
@@ -679,7 +716,6 @@ import Foundation
                 omitController: true, workflowOrigin: request.workflowOrigin)
             prepared = artifact
             try session.assertCurrentProject()
-            progress("Sending ‘\(outputName)’ to Final Cut Pro…", 0.8)
             try Data("Import requested; verification pending. Do not import again until checking Final Cut Pro.\n".utf8)
                 .write(to: parent.appendingPathComponent("Import-Status.txt"), options: .atomic)
             let verification = try ImportedResultVerification(expected: artifact.output.xmlData, outputURL: artifact.outputURL,
@@ -693,8 +729,11 @@ import Foundation
                 // immediately before this single import attempt.
                 let importReadGuard = try MediaContentSnapshot.prepareRead(outputMedia.sourceURLs +
                     [artifact.outputURL, artifact.recoveryURL])
-                try await timing.measure("apply.finalFullMediaValidation") { try await outputMedia.validate() }
-                progress("Checking the current project before import…", 0.75)
+                progress("Checking the source media and current project before import…", 0.7)
+                try await timing.measure("apply.finalFullMediaValidation") {
+                    if sourceOnly != nil { _ = try await outputMedia.validatedSnapshot(prepared: readGuard) }
+                    else { try await outputMedia.validate() }
+                }
                 try await session.activate()
                 try self.validateReviewSelection(capture)
                 let importCheck = try await session.exportProjectXML(to: context.directory
@@ -702,6 +741,7 @@ import Foundation
                 let importData = try Data(contentsOf: importCheck)
                 let current = try TimelineParser.parse(data: importData, exclusions: exclusions)
                 try XMLProjectApply.verifyBaseline(current, analyzed: final)
+                try sourceOnly?.verifyCurrent(projectData: importData)
                 if let origin = request.workflowOrigin { try origin.verify(projectData: importData) }
                 else {
                     try AudioControllerSettings.validateForApply(projectData: importData,
@@ -710,15 +750,16 @@ import Foundation
                 try self.validateReviewSelection(capture)
                 try importReadGuard.validate()
                 try readGuard.validate()
-                try renderGuard.validate()
-                try ShareDestinationManager.shared.validateReceipt(receipt)
+                try renderGuard?.validate()
+                if let fullMixReceipt { try ShareDestinationManager.shared.validateReceipt(fullMixReceipt) }
                 try verification.savePending()
                 // The phase guard covers both the full scan and XML exchange.
                 // No second full media scan is needed after these synchronous
                 // checks, and an uncertain delivery is never retried.
                 try importReadGuard.validate()
                 try readGuard.validate()
-                try renderGuard.validate()
+                try renderGuard?.validate()
+                progress("Sending ‘\(outputName)’ to Final Cut Pro…", 0.8)
                 try session.assertCurrentProject()
                 try Task.checkCancellation()
                 importAttempted = true

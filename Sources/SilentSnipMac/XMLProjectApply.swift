@@ -29,6 +29,106 @@ struct PreparedXMLProject {
 }
 
 enum XMLProjectApply {
+    /// Binds a staged source-only edit to the original export. The final
+    /// read-only Share can use a new bookmark for the same original file.
+    struct SourceOnlyEvidence: Sendable {
+        let destination: XMLReplacementTarget
+        fileprivate let comparableXML: Data
+
+        func verifyCurrent(projectData: Data) throws {
+            // The identity reader runs the bounded parser before FoundationXML.
+            guard try XMLReplacementTarget(projectData: projectData) == destination,
+                  try XMLProjectApply.sourceOnlyComparableXML(XMLProjectApply.sourceOnlyXML(projectData)) == comparableXML else {
+                throw XMLProjectBaselineError(changes: ["the source project or its event"])
+            }
+        }
+    }
+
+    /// Only a plain whole-project audio asset may omit Apply's native render.
+    /// Keep the ordinary path for unrecognized structures and processing flags.
+    static func sourceOnlyEvidence(projectData: Data, document: TimelineDocument,
+                                   target: TimelineClip) throws -> SourceOnlyEvidence? {
+        let parsed = try TimelineParser.parse(data: projectData)
+        guard parsed.projectUID == document.projectUID, parsed.projectName == document.projectName,
+              parsed.fingerprint == document.fingerprint, parsed.clips == [target], document.clips == [target],
+              parsed.warnings.isEmpty, target.kind == "asset-clip", target.isPrimaryStoryline, target.parentID == nil,
+              target.lane == 0, target.enabled, target.hasAudio, !target.hasVideo, target.unsupportedReasons.isEmpty,
+              !target.hasUnresolvedTiming, target.timelineRange == parsed.projectRange else { return nil }
+        let xml = try sourceOnlyXML(projectData)
+        func shape(_ element: XMLElement, attributes: Set<String>, children: Set<String> = []) -> Bool {
+            (element.namespaces ?? []).isEmpty
+                && (element.attributes ?? []).allSatisfy { attributes.contains($0.name ?? "") }
+                && (element.children ?? []).allSatisfy { node in
+                    if let child = node as? XMLElement { return children.contains(child.name ?? "") }
+                    return node.kind == .comment || (node.kind == .text
+                        && node.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true)
+                }
+        }
+        func only(_ name: String, in parent: XMLElement) -> XMLElement? {
+            let elements = parent.elements(forName: name)
+            return elements.count == 1 ? elements.first : nil
+        }
+        func attr(_ name: String, in element: XMLElement) -> String? {
+            element.attribute(forName: name)?.stringValue
+        }
+        func inertMetadata(_ node: XMLElement) -> Bool {
+            shape(node, attributes: [], children: ["md"])
+                && node.elements(forName: "md").allSatisfy { shape($0, attributes: ["key", "value"]) }
+        }
+        guard let root = xml.rootElement(), shape(root, attributes: ["version"], children: ["resources", "library"]),
+              let resources = only("resources", in: root), shape(resources, attributes: [], children: ["format", "asset"]),
+              let format = only("format", in: resources), let asset = only("asset", in: resources),
+              shape(format, attributes: ["id", "name", "frameDuration", "width", "height", "colorSpace"]),
+              let library = only("library", in: root),
+              shape(library, attributes: ["location", "colorProcessing"], children: ["event", "smart-collection"]),
+              let event = only("event", in: library), shape(event, attributes: ["name", "uid"], children: ["project"]),
+              let project = only("project", in: event),
+              shape(project, attributes: ["name", "uid", "modDate"], children: ["sequence"]),
+              let sequence = only("sequence", in: project),
+              shape(sequence, attributes: ["format", "duration", "tcStart", "tcFormat", "audioLayout", "audioRate"], children: ["spine"]),
+              attr("format", in: sequence) == attr("id", in: format),
+              let spine = only("spine", in: sequence), shape(spine, attributes: [], children: ["asset-clip"]),
+              let clip = only("asset-clip", in: spine),
+              shape(clip, attributes: ["ref", "name", "offset", "start", "duration", "audioRole", "enabled", "srcEnable"]),
+              attr("ref", in: clip) == attr("id", in: asset),
+              attr("enabled", in: clip) == nil || attr("enabled", in: clip) == "1",
+              ["all", "audio"].contains(attr("srcEnable", in: clip) ?? "all"),
+              let role = attr("audioRole", in: clip), role == "dialogue" || role.hasPrefix("dialogue."),
+              !role.components(separatedBy: ".").contains(where: \.isEmpty),
+              role.trimmingCharacters(in: .whitespacesAndNewlines) == role,
+              role.rangeOfCharacter(from: .controlCharacters) == nil,
+              shape(asset, attributes: ["id", "name", "uid", "start", "duration", "hasAudio", "hasVideo",
+                "audioSources", "audioChannels", "audioRate"], children: ["media-rep", "metadata"]),
+              asset.elements(forName: "metadata").allSatisfy(inertMetadata),
+              attr("hasAudio", in: asset) == "1", (attr("hasVideo", in: asset) ?? "0") == "0",
+              attr("audioSources", in: asset) == "1",
+              let channels = attr("audioChannels", in: asset).flatMap(Int.init), (1...8).contains(channels),
+              let rate = attr("audioRate", in: asset).flatMap(Int.init), (1...768_000).contains(rate),
+              let representation = only("media-rep", in: asset),
+              shape(representation, attributes: ["kind", "src", "sig"], children: ["bookmark"]),
+              attr("kind", in: representation) == "original-media",
+              let source = attr("src", in: representation).flatMap(URL.init(string:)), source == target.mediaURL,
+              source.isFileURL, source.host == nil || source.host == "", source.path.hasPrefix("/"),
+              source.query == nil, source.fragment == nil, source.user == nil, source.password == nil, source.port == nil,
+              let destination = try? XMLReplacementTarget(projectData: projectData),
+              let comparable = try sourceOnlyComparableXML(xml) else { return nil }
+        return .init(destination: destination, comparableXML: comparable)
+    }
+
+    private static func sourceOnlyXML(_ data: Data) throws -> XMLDocument {
+        try XMLDocument(data: data, options: [.nodeLoadExternalEntitiesNever, .nodePreserveAll])
+    }
+
+    private static func sourceOnlyComparableXML(_ xml: XMLDocument) throws -> Data? {
+        let bookmarks = try xml.nodes(forXPath: "/fcpxml/resources/asset/media-rep[@kind='original-media']/bookmark")
+        guard bookmarks.count <= 1 else { return nil }
+        if let bookmark = bookmarks.first {
+            guard (bookmark.children ?? []).allSatisfy({ $0.kind == .text }) else { return nil }
+            bookmark.stringValue = ""
+        }
+        return xml.xmlData(options: [.nodePreserveAll])
+    }
+
     /// This runs before generation and compares two captures of the original
     /// project, not a generated result against a natively edited timeline.
     static func verifyBaseline(_ current: TimelineDocument, analyzed: TimelineDocument) throws {
