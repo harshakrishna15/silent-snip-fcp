@@ -703,7 +703,7 @@ import Foundation
                     expectedResultData: plan.expectedXML, directory: parent, timing: timing)
                 timing.recordCounters(["apply.bulkEffectTransfers": 1])
                 try await verifyImportedResult(request.id, progress: progress, timing: timing,
-                    settledBulkResult: (imported, importedUID))
+                    completedBulkTransfer: (imported.projectName, importedUID))
                 outcome = "verified"
                 return
             }
@@ -947,7 +947,7 @@ import Foundation
                                      acceptReplacement: Bool = false, originalTimelineSignature: [String]? = nil,
                                      timing: AnalysisTiming? = nil,
                                      freshImportOrigin: FinalCutAXSession? = nil,
-                                     settledBulkResult: (session: FinalCutAXSession, uid: String)? = nil) async throws {
+                                     completedBulkTransfer: (name: String, uid: String)? = nil) async throws {
         guard let outputURL = verifications[id] else {
             throw FinalCutCaptureError.unavailable("There is no pending imported result to verify.")
         }
@@ -967,61 +967,46 @@ import Foundation
             try ImportedResultVerification.load(outputURL: outputURL)
         }
         do {
-            var reusableSession: FinalCutAXSession?
-            if let settledBulkResult {
-                let session = settledBulkResult.session
-                // Loading the bulk receipt proves the applied journal's UID
-                // against the saved result. The live session comes from that
-                // same transfer, after import readiness and Paste completed.
+            if let completedBulkTransfer {
+                // Bind the completed Paste to the saved result, then discover
+                // and settle the workspace afresh before verification Share.
                 guard result.request.id == id, result.bulkEffectTransfer,
                       result.replacementTarget == nil, !acceptReplacement, originalTimelineSignature == nil,
-                      result.hostProjectUID == settledBulkResult.uid,
-                      result.projectName == session.projectName else { throw FinalCutCaptureError.changedProject }
-                let stillFocused = attemptTiming.measure("verification.checkSettledBulkSession") {
-                    (try? session.assertInputFocus()) != nil && session.currentSheet() == nil
-                }
-                try Task.checkCancellation()
-                if stillFocused, recoveryOrigins[id] == nil { reusableSession = session }
+                      result.hostProjectUID == completedBulkTransfer.uid,
+                      result.projectName == completedBulkTransfer.name else { throw FinalCutCaptureError.changedProject }
             }
-            let imported: FinalCutAXSession
-            if let reusableSession {
-                progress("Verifying the existing cleaned project…", 0.9)
-                attemptTiming.incrementCounter("verification.settledBulkSessionReuses")
-                imported = reusableSession
+            let origin = freshImportOrigin.flatMap { session -> FinalCutAXSession? in
+                guard result.request.id == id, !result.bulkEffectTransfer, result.replacementTarget == nil,
+                      !acceptReplacement, originalTimelineSignature == nil, recoveryOrigins[id] == nil,
+                      session.projectName == result.originalProjectName,
+                      session.canObserveFreshImport() else { return nil }
+                return session
+            }
+            let current: FinalCutAXSession
+            if let origin {
+                attemptTiming.incrementCounter("verification.freshImportOriginReuses")
+                current = origin
             } else {
-                let origin = freshImportOrigin.flatMap { session -> FinalCutAXSession? in
-                    guard result.request.id == id, !result.bulkEffectTransfer, result.replacementTarget == nil,
-                          !acceptReplacement, originalTimelineSignature == nil, recoveryOrigins[id] == nil,
-                          session.projectName == result.originalProjectName,
-                          session.canObserveFreshImport() else { return nil }
-                    return session
+                current = try await attemptTiming.measure("verification.sessionDiscovery") {
+                    try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil,
+                        inheritingWorkflowFrom: reviewSession)
                 }
-                let current: FinalCutAXSession
-                if let origin {
-                    attemptTiming.incrementCounter("verification.freshImportOriginReuses")
-                    current = origin
-                } else {
-                    current = try await attemptTiming.measure("verification.sessionDiscovery") {
-                        try await FinalCutAXSession.forImport(allowEmptyTimeline: result.replacementTarget != nil,
-                            inheritingWorkflowFrom: reviewSession)
-                    }
-                }
-                if let origin = recoveryOrigins[id] {
-                    progress("Verifying the selected project…", nil)
-                    try await current.activate()
-                    let url = try await current.exportProjectXML(to: parent.appendingPathComponent("Recovery-Origin-\(UUID().uuidString).fcpxmld"))
-                    try origin.verify(projectData: Data(contentsOf: url))
-                    recoveryOrigins.removeValue(forKey: id)
-                }
-                guard result.replacementTarget != nil || current.projectName == result.originalProjectName || current.projectName == result.projectName else {
-                    throw FinalCutCaptureError.unavailable("Open the original project or ‘\(result.projectName)’ before retrying verification.")
-                }
-                progress("Verifying the existing cleaned project…", 0.9)
-                imported = try await attemptTiming.measure("verification.openImportedProject") {
-                    try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL,
-                        replacement: result.replacementTarget, acceptReplacement: acceptReplacement,
-                        originalTimelineSignature: originalTimelineSignature, usingFreshImportOrigin: origin != nil)
-                }
+            }
+            if let origin = recoveryOrigins[id] {
+                progress("Verifying the selected project…", nil)
+                try await current.activate()
+                let url = try await current.exportProjectXML(to: parent.appendingPathComponent("Recovery-Origin-\(UUID().uuidString).fcpxmld"))
+                try origin.verify(projectData: Data(contentsOf: url))
+                recoveryOrigins.removeValue(forKey: id)
+            }
+            guard result.replacementTarget != nil || current.projectName == result.originalProjectName || current.projectName == result.projectName else {
+                throw FinalCutCaptureError.unavailable("Open the original project or ‘\(result.projectName)’ before retrying verification.")
+            }
+            progress("Verifying the existing cleaned project…", 0.9)
+            let imported = try await attemptTiming.measure("verification.openImportedProject") {
+                try await current.openImportedProject(named: result.projectName, importedXML: result.outputURL,
+                    replacement: result.replacementTarget, acceptReplacement: acceptReplacement,
+                    originalTimelineSignature: originalTimelineSignature, usingFreshImportOrigin: origin != nil)
             }
             let report = try await result.verify(capture: {
                 // Verification can start from an already-open result's remote
