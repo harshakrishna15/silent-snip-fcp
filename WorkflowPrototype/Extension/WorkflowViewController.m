@@ -406,6 +406,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 @property (nonatomic, strong) NSStackView *cutList;
 @property (nonatomic, copy) NSArray<NSDictionary *> *reviewCuts;
 @property (nonatomic, copy) NSDictionary *reviewResponse;
+@property (nonatomic) BOOL navigationPending;
 @property (nonatomic, copy) NSString *pointerReviewState;
 @property (nonatomic, copy) NSString *completionMessage;
 @property (nonatomic, copy) NSDictionary *completionContext;
@@ -1231,6 +1232,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 
 - (void)invalidateReview {
     [self cancelAutomaticUpdate];
+    self.navigationPending = NO;
     self.reviewGeneration += 1;
     if (self.reviewClient.canCancel) [self.reviewClient cancel];
     [self.reviewClient detach];
@@ -1562,12 +1564,13 @@ static NSColor *SSWorkflowGray(CGFloat value) {
             self.automaticUpdateRejectedGeneration = self.automaticUpdateGeneration;
         }
     }
-    BOOL wasNavigating = [self.reviewResponse[@"state"] isEqual:@"navigating"];
+    BOOL navigationSettled = !self.reviewClient.busy &&
+        (self.navigationPending || [self.reviewResponse[@"state"] isEqual:@"navigating"]);
+    if (navigationSettled) self.navigationPending = NO;
     self.reviewResponse = response;
     if (!self.reviewClient.busy) {
         self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
         self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
-        if (wasNavigating) [self refreshPlayhead];
     }
     BOOL deferRanges = self.automaticUpdatePending && !terminal;
     NSArray *cuts = deferRanges || [state isEqual:@"navigating"] ? self.reviewCuts : (response[@"cuts"] ?: @[]);
@@ -1637,8 +1640,14 @@ static NSColor *SSWorkflowGray(CGFloat value) {
         // Apply can open its verified project copy; bind the settings UI to the
         // SDK's new active project only after the worker has finished.
         [self refreshProject];
-    } else if (self.automaticUpdatePending && !self.reviewClient.busy && !self.automaticUpdateEdit) {
-        [self queueAutomaticUpdate];
+    } else {
+        // An SDK sequence change may have arrived while navigation was busy.
+        // Recheck now, after rendering this response, so invalidation can
+        // discard all of the previous project's rows and settings.
+        if (navigationSettled) [self refreshProject];
+        if (self.automaticUpdatePending && !self.reviewClient.busy && !self.automaticUpdateEdit) {
+            [self queueAutomaticUpdate];
+        }
     }
 }
 
@@ -1731,23 +1740,32 @@ static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
     NSDictionary *context = [self observedProjectContext];
     if (![self projectContext:context hasSameIdentityAs:@{@"projectUID": self.projectUID ?: @"",
         @"libraryURL": self.libraryURL ?: NSNull.null}]) return;
-    if (self.reviewClient.supportsNativeNavigation && [self.timeline respondsToSelector:@selector(movePlayheadTo:)]) {
-        __weak NSWindow *window = self.view.window;
-        if (![self ownsNavigationWindow:window]) return;
+    BOOL useSDK = self.reviewClient.supportsNativeNavigation && [self.timeline respondsToSelector:@selector(movePlayheadTo:)];
+    __weak NSWindow *window = useSDK ? self.view.window : nil;
+    if (useSDK && ![self ownsNavigationWindow:window]) return;
+    // Track both dispatch paths, including requests rejected before the
+    // worker publishes a navigating state.
+    self.navigationPending = YES;
+    BOOL accepted;
+    if (useSDK) {
         NSString *gesture = NSUUID.UUID.UUIDString;
         self.navigateMenu.accessibilityIdentifier = [@"silentsnip.workflow.navigate.requested." stringByAppendingString:gesture];
         self.navigateMenu.enabled = NO;
         NSUInteger generation = self.reviewGeneration;
         NSUInteger contextGeneration = self.contextGeneration;
         __weak SSWorkflowViewController *weakSelf = self;
-        if (![self.reviewClient navigateCut:sender.representedObject gesture:gesture move:^BOOL(NSDictionary *permit) {
+        accepted = [self.reviewClient navigateCut:sender.representedObject gesture:gesture move:^BOOL(NSDictionary *permit) {
             SSWorkflowViewController *owner = weakSelf;
             return owner && owner.viewVisible && owner.reviewGeneration == generation &&
                 owner.contextGeneration == contextGeneration && !owner.automaticUpdatePending &&
                 [owner movePlayheadForPermit:permit context:context window:window];
-        }]) self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
+        }];
     } else {
-        [self.reviewClient highlightCut:sender.representedObject];
+        accepted = [self.reviewClient highlightCut:sender.representedObject];
+    }
+    if (!accepted) {
+        self.navigationPending = NO;
+        self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
     }
     [self setControlsEnabled:self.settingsLoaded && (!self.reviewClient.busy || self.reviewClient.updatingCuts)];
     [self updateReviewControls];

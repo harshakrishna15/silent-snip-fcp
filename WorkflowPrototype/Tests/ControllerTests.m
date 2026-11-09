@@ -1051,6 +1051,43 @@ static void sdkNavigationRequiresExactProjectWindowAndReturnedTime(void) {
     groupCount += 1;
 }
 
+static void navigationSettlementRefreshesDeferredProjectChanges(void) {
+    for (NSNumber *sdk in @[@NO, @YES]) {
+        SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Same name"));
+        SSTestWorkflowViewController *controller = openController(current);
+        completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+        SSFakeWorkflowReviewClient *client = beginReview(controller);
+        client.fakeNativeNavigation = sdk.boolValue;
+        controller.fakeOwnsNavigationWindow = YES;
+        NSView *originalRow = controller.cutList.arrangedSubviews.firstObject;
+        [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+        [client deliver:reviewResponse(@"navigating", @"Moving") busy:YES canApply:NO];
+        current.testTimeline.currentPlayhead = CMTimeMake(7229, 2);
+        [client deliver:reviewResponse(@"review", @"Playhead moved") busy:NO canApply:YES];
+        check(controller.reviewClient == client && controller.cutList.arrangedSubviews.firstObject == originalRow &&
+              controller.settings.loads.count == 1 && controller.applyButton.enabled &&
+              [controller.playheadLabel.stringValue isEqual:@"Playhead 14.500 sec"] &&
+              [controller.statusLabel.stringValue isEqual:@"Playhead moved"],
+              @"Settlement in the same project refreshes its playhead without rebuilding the review or overriding feedback");
+
+        [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+        // Also cover a declined SDK request that never gets a navigating reply.
+        [client deliver:reviewResponse(sdk.boolValue ? @"review" : @"navigating", @"Moving") busy:YES canApply:NO];
+        current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-A.fcpbundle", @"Same name");
+        [current.testTimeline notifySequenceChanged];
+        check([controller.projectUID isEqual:@"project-A"] && controller.reviewClient == client &&
+              controller.settings.loads.count == 1 && !controller.applyButton.enabled,
+              @"A project callback during navigation is deferred with the original controls locked");
+        [client deliver:reviewResponse(@"review", @"Final Cut Pro did not confirm the playhead move") busy:NO canApply:YES];
+        check([controller.projectUID isEqual:@"project-B"] && controller.settings.loads.count == 2 &&
+              [controller.settings.loads[1].projectUID isEqual:@"project-B"] && controller.reviewClient == nil &&
+              controller.cutList.arrangedSubviews.count == 0 && !controller.applyButton.enabled && !controller.navigateMenu.enabled,
+              @"Settling navigation picks up the deferred same-name project change and drops stale rows");
+        closeController(controller);
+    }
+    groupCount += 1;
+}
+
 static void retainedUpdatesNavigationAndRecovery(void) {
     SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
     SSTestWorkflowViewController *controller = openController(current);
@@ -3193,6 +3230,7 @@ int main(void) {
         analyzeDispatchPinsPayloadAndGesture();
         applyRequiresReviewAndFreshGesture();
         sdkNavigationRequiresExactProjectWindowAndReturnedTime();
+        navigationSettlementRefreshesDeferredProjectChanges();
         retainedUpdatesNavigationAndRecovery();
         automaticDraftsCoalesceWithoutNewAnalysis();
         textEditingDefersSDKContextUntilDebounce();
