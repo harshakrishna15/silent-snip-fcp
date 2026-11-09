@@ -70,6 +70,46 @@ final class ImportedVerificationIOTests: XCTestCase {
             "The same read-only host capture phase must not rescan every source twice")
     }
 
+    @MainActor func testHistoricalDigestMismatchRejectsReadOnlyCaptureWithoutRecovery() async throws {
+        let result = try prepare()
+        let actual = try hostCopy(result.output.xmlData, strippingSettings: true)
+        let snapshot = try await MediaContentSnapshot.capture([source])
+        var receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any])
+        let differentHashes = snapshot.hashes.mapValues { _ in String(repeating: "0", count: 64) }
+        receipt["hashes"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(differentHashes))
+        let historical = try JSONDecoder().decode(MediaContentSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: receipt))
+        let verification = try ImportedResultVerification(expected: result.output.xmlData, outputURL: result.outputURL,
+            originalProjectName: "Original", request: .init(id: UUID(), settings: .defaults, outputMode: .remove),
+            sourceMedia: historical)
+        var captures = 0
+        do {
+            _ = try await verification.verify(capture: {
+                captures += 1
+                return actual
+            }, restore: { _, _ in
+                XCTFail("A historical digest mismatch must block settings recovery")
+            })
+            XCTFail("Matching references and stamps cannot replace the historical digest")
+        } catch ProjectAnalysisError.changedRenderArtifact { }
+        XCTAssertEqual(captures, 1)
+        let directory = result.outputURL.deletingLastPathComponent()
+        let report = try JSONDecoder().decode(ProjectRoundTripReport.self,
+            from: Data(contentsOf: directory.appendingPathComponent("Import-Verification.json")))
+        XCTAssertFalse(report.verified)
+        XCTAssertEqual(report.sourceMediaVerified, false)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Verification-Receipt.json").path))
+
+        do {
+            _ = try await verification.verify(capture: {
+                XCTFail("A supplied validator must still follow the historical preflight")
+                return actual
+            }, restore: { _, _ in XCTFail("The mismatched digest must prevent recovery") },
+               validateMedia: { _ in XCTFail("The supplied validator cannot replace historical evidence") })
+            XCTFail("The historical preflight must fail before capture")
+        } catch ProjectAnalysisError.changedRenderArtifact { }
+    }
+
     @MainActor func testCaptureMutationAfterConcurrentValidationEvenWhenBytesAreRestoredFails() async throws {
         let result = try prepare()
         let verification = try await makeVerification(result)

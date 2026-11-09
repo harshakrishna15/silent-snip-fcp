@@ -283,8 +283,9 @@ enum ImportedSettingsRecovery {
     /// capture. They describe work duration, not additive critical-path stages.
     func verify(capture: () async throws -> Data,
                 restore: (ImportedSettingsRecovery.Correction, TimelineDocument) async throws -> Void,
-                validateMedia: @escaping @Sendable (MediaContentSnapshot) async throws -> Void = { try await $0.validate() },
+                validateMedia: (@Sendable (MediaContentSnapshot) async throws -> Void)? = nil,
                 timing: AnalysisTiming? = nil) async throws -> ProjectRoundTripReport {
+        let validate = validateMedia ?? { try await $0.validate() }
         try Self.measured(timing, "verification.savedResultRead") {
             guard try Data(contentsOf: outputURL) == expected else {
                 throw EditedProjectWriterError.verificationFailed("the saved result changed; verification did not run")
@@ -310,18 +311,23 @@ enum ImportedSettingsRecovery {
             for phase in 0...1 {
                 try Task.checkCancellation()
                 timing?.incrementCounter("verification.readOnlyPhases")
-                let captureGuard = try Self.measured(timing, "verification.sourceGuardSetup") {
-                    try MediaContentSnapshot.prepareRead(sourceMedia?.sourceURLs ?? resultURLs)
+                let (captureGuard, pinnedHistoricalSource) = try Self.measured(timing, "verification.sourceGuardSetup") {
+                    if validateMedia == nil, renderedAudio == nil, let prepared = try sourceMedia?.prepareValidationRead() {
+                        return (prepared, true)
+                    }
+                    return (try MediaContentSnapshot.prepareRead(sourceMedia?.sourceURLs ?? resultURLs), false)
                 }
                 let media: MediaContentSnapshot
                 if let sourceMedia {
                     guard sourceMedia.containsReferences(resultURLs) else {
                         throw EditedProjectWriterError.verificationFailed("the saved media evidence does not include every result media reference; no settings were restored")
                     }
-                    // Always validate the ORIGINAL historical content and PCM
-                    // proof. A local current snapshot never replaces a receipt.
                     media = try await Self.measured(timing, "verification.sourceSnapshot") {
-                        try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
+                        // A modern raw-source receipt has pinned the exact
+                        // historical references and stamps. Check its full
+                        // digest once, alongside the read-only capture.
+                        if pinnedHistoricalSource { return sourceMedia }
+                        return try await sourceMedia.validatedForImport(renderedAudio: renderedAudio)
                     }
                 } else {
                     media = try await Self.measured(timing, "verification.sourceSnapshot") {
@@ -329,8 +335,13 @@ enum ImportedSettingsRecovery {
                     }
                 }
                 timing?.incrementCounter("verification.mediaValidationPasses")
+                if pinnedHistoricalSource { timing?.incrementCounter("verification.historicalSourceScanOverlap") }
                 async let captureValidation: Void = Self.measured(timing, "verification.mediaValidation") {
-                    try await validateMedia(media)
+                    if pinnedHistoricalSource {
+                        _ = try await media.validatedSnapshot(prepared: captureGuard)
+                    } else {
+                        try await validate(media)
+                    }
                 }
                 // A throw may mean uncertain host delivery. It exits this loop
                 // immediately: only SUCCESSFULLY RETURNED XML can be discarded
@@ -416,7 +427,7 @@ enum ImportedSettingsRecovery {
                 // post-recovery content verification rather than the earlier
                 // capture's read-only phase evidence.
                 timing?.incrementCounter("verification.mediaValidationPasses")
-                try await Self.measured(timing, "verification.recoveryValidation") { try await validateMedia(media) }
+                try await Self.measured(timing, "verification.recoveryValidation") { try await validate(media) }
             } else {
                 // No host writes happened after the joined capture/scan. The
                 // same phase's mutation guard closes receipt/report processing
