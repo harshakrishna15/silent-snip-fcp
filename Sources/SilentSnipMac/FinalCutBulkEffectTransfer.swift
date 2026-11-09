@@ -129,6 +129,28 @@ enum BulkEffectTransferPolicy {
         return actual == "Copied From: \(name) \(count) Clips" ||
             (count == 1 && actual == "Copied From: \(name) 1 Clip") || actual == "Copied From: \(name)"
     }
+
+    /// An AX error after dispatch can still change the dialog. Only an
+    /// observed desired value can settle it, and the action is never repeated.
+    @MainActor static func pressDialogControlOnce(press: () throws -> Void, wasDispatched: () -> Bool,
+                                                 settled: () throws -> Bool,
+                                                 waitForAnotherObservation: () async throws -> Bool) async throws {
+        try Task.checkCancellation()
+        var dispatchError: Error?
+        do { try press() }
+        catch {
+            guard wasDispatched(), !Task.isCancelled else { throw error }
+            dispatchError = error
+        }
+        while true {
+            try Task.checkCancellation()
+            if try settled() { return }
+            guard try await waitForAnotherObservation() else {
+                if let dispatchError { throw dispatchError }
+                throw FinalCutCaptureError.unavailable("Final Cut Pro did not confirm the Paste Attributes control change.")
+            }
+        }
+    }
 }
 
 extension FinalCutAXSession {
@@ -259,7 +281,9 @@ extension FinalCutAXSession {
             var sheet: AXUIElement?
             try await waitUntil(timeout: 4, context: "the native Paste Attributes dialog") { sheet = self.currentSheet(); return sheet != nil }
             guard let sheet else { throw FinalCutCaptureError.changedProject }
-            try await bulkConfigureDialog(sheet: sheet, token: token, count: plan.final.segments.count, timing: timing)
+            try await timing.measure("apply.nativeEffectsDialogConfiguration") {
+                try await bulkConfigureDialog(sheet: sheet, token: token, count: plan.final.segments.count, timing: timing)
+            }
             try await prepareBulkDialogInput(sheet: sheet, token: token, count: plan.final.segments.count, timing: timing)
             let ready = try bulkValidateDialog(sheet: sheet, token: token, count: plan.final.segments.count)
             try bulkAssertSelected(layout: plan.final, plan: plan)
@@ -507,7 +531,8 @@ extension FinalCutAXSession {
     }
 
     private func bulkControlName(_ node: AXUIElement) -> String {
-        [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].compactMap { string(node, $0) }.first { !$0.isEmpty } ?? ""
+        [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].lazy
+            .compactMap { self.string(node, $0) }.first { !$0.isEmpty } ?? ""
     }
 
     /// Share delivery can foreground this exact accessory worker after the Paste
@@ -516,23 +541,26 @@ extension FinalCutAXSession {
     private func prepareBulkDialogInput(sheet: AXUIElement, token: NativeEffectTransferToken,
                                          count: Int, timing: AnalysisTiming) async throws {
         func validateOwnership() throws {
+            timing.incrementCounter("apply.bulkDialog.ownershipChecks")
             try assertCurrentProject()
             guard let current = currentSheet(), CFEqual(current, sheet),
                   string(sheet, kAXTitleAttribute) == "Paste Attributes",
                   NSPasteboard.general.changeCount == token.clipboardStamp else { throw FinalCutCaptureError.changedProject }
             let nodes = try bulkDialogNodes(sheet)
             let boxes = nodes.filter { string($0, kAXRoleAttribute) == kAXCheckBoxRole }
+            let names = boxes.map(bulkControlName)
             for required in ["Effects", "Volume", "Pan", "Audio Attributes", "Video Attributes"] {
-                guard boxes.filter({ bulkControlName($0) == required }).count == 1 else { throw FinalCutCaptureError.changedProject }
+                guard names.filter({ $0 == required }).count == 1 else { throw FinalCutCaptureError.changedProject }
             }
-            let effects = boxes.map(bulkControlName).filter { token.effectNames.contains($0) }
+            let effects = names.filter { token.effectNames.contains($0) }
             guard effects == token.effectNames, bulkCopiedFromMatches(nodes, token: token, count: count),
                   nodes.filter({ string($0, kAXRoleAttribute) == kAXButtonRole && bulkControlName($0) == "Paste" }).count == 1,
                   nodes.filter({ string($0, kAXRoleAttribute) == kAXButtonRole && bulkControlName($0) == "Cancel" }).count == 1 else {
                 throw FinalCutCaptureError.changedProject
             }
         }
-        try validateOwnership()
+        // The foreground decision is read-only. Verify the full dialog before
+        // a handoff, if needed, and again before returning control to the caller.
         try await FinalCutOwnedInputFocus.prepare(ownsForeground: {
             let current = self.currentSheet()
             return BulkEffectTransferPolicy.mayReturnOwnedDialog(
@@ -561,34 +589,101 @@ extension FinalCutAXSession {
 
     private func bulkConfigureDialog(sheet: AXUIElement, token: NativeEffectTransferToken, count: Int,
                                      timing: AnalysisTiming) async throws {
-        // Reobserve after each checkbox action; Final Cut may rebuild controls
-        // when a group changes. A stale list must never configure another field.
+        var configured: [String: Set<Int>] = [:]
         for _ in 0..<128 {
             try await prepareBulkDialogInput(sheet: sheet, token: token, count: count, timing: timing)
             let nodes = try bulkDialogNodes(sheet)
             let boxes = nodes.filter { string($0, kAXRoleAttribute) == kAXCheckBoxRole }
+            let names = boxes.map(bulkControlName)
             var effectIndex = 0
-            var change: AXUIElement?
-            for box in boxes {
-                let name = bulkControlName(box)
+            var change: (index: Int, value: Int, desired: Int)?
+            for (index, box) in boxes.enumerated() {
+                let name = names[index]
                 if ["Audio Attributes", "Video Attributes"].contains(name) { continue }
                 let desired: Int
                 if name == "Effects" { desired = 1 }
                 else if effectIndex < token.effectNames.count, name == token.effectNames[effectIndex] { desired = 1; effectIndex += 1 }
                 else { desired = 0 }
                 guard let value = (attribute(box, kAXValueAttribute) as? NSNumber)?.intValue else { throw FinalCutCaptureError.changedProject }
-                if value != desired, change == nil { change = box }
+                if value != desired, change == nil { change = (index, value, desired) }
             }
             guard let change else { break }
-            try press(change)
+            let name = names[change.index]
+            let occurrence = names.prefix(change.index).filter { $0 == name }.count
+            // A later full snapshot that disagrees with settled readback is
+            // ambiguous. Do not send the same checkbox toggle again.
+            guard configured[name, default: []].insert(occurrence).inserted else { throw FinalCutCaptureError.changedProject }
+            try await bulkSetDialogControl(boxes[change.index], name: name, occurrence: occurrence,
+                matchCount: names.filter { $0 == name }.count, role: kAXCheckBoxRole,
+                from: change.value, to: change.desired, sheet: sheet, token: token, timing: timing)
         }
         try await prepareBulkDialogInput(sheet: sheet, token: token, count: count, timing: timing)
         let nodes = try bulkDialogNodes(sheet)
         let maintain = nodes.filter { string($0, kAXRoleAttribute) == kAXRadioButtonRole && bulkControlName($0) == "Maintain" }
         guard maintain.count == 1, let checked = (attribute(maintain[0], kAXValueAttribute) as? NSNumber)?.intValue else { throw FinalCutCaptureError.changedProject }
-        if checked != 1 { try press(maintain[0]) }
-        try await prepareBulkDialogInput(sheet: sheet, token: token, count: count, timing: timing)
-        _ = try bulkValidateDialog(sheet: sheet, token: token, count: count)
+        if checked != 1 {
+            try await bulkSetDialogControl(maintain[0], name: "Maintain", occurrence: 0, matchCount: 1, role: kAXRadioButtonRole,
+                from: checked, to: 1, sheet: sheet, token: token, timing: timing)
+        }
+    }
+
+    private func bulkSetDialogControl(_ control: AXUIElement, name: String, occurrence: Int, matchCount: Int,
+                                      role: String, from previous: Int, to desired: Int, sheet: AXUIElement,
+                                      token: NativeEffectTransferToken, timing: AnalysisTiming) async throws {
+        guard !name.isEmpty else { throw FinalCutCaptureError.changedProject }
+        func validateContext(allowOwnHelper: Bool) throws {
+            if allowOwnHelper && NSWorkspace.shared.frontmostApplication?.processIdentifier == NSRunningApplication.current.processIdentifier {
+                // An owned handoff may finish settling the value. No input is
+                // issued until the next full dialog/focus validation.
+                try assertCurrentProject()
+            } else { try assertInputFocus() }
+            guard let current = currentSheet(), CFEqual(current, sheet),
+                  NSPasteboard.general.changeCount == token.clipboardStamp,
+                  string(sheet, kAXTitleAttribute) == "Paste Attributes" else { throw FinalCutCaptureError.changedProject }
+        }
+        func readValue(_ element: AXUIElement) -> Int? {
+            (attribute(element, kAXValueAttribute) as? NSNumber)?.intValue
+        }
+        func isMountedInDialog() -> Bool {
+            var child = control
+            for _ in 0..<12 {
+                guard let parent = Self.elementAttribute(child, kAXParentAttribute),
+                      children(parent).contains(where: { CFEqual($0, child) }) else { return false }
+                if CFEqual(parent, sheet) { return true }
+                child = parent
+            }
+            return false
+        }
+        var dispatched = false
+        var firstObservation = true
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        try await BulkEffectTransferPolicy.pressDialogControlOnce(press: {
+            try validateContext(allowOwnHelper: false)
+            // This element came from the preceding full owned-dialog snapshot.
+            // Do not toggle if the control changed while it was being read.
+            guard let value = readValue(control) else { throw FinalCutCaptureError.changedProject }
+            if value == desired { return }
+            guard value == previous else { throw FinalCutCaptureError.changedProject }
+            _ = try press(control) {
+                dispatched = true
+                timing.incrementCounter("apply.bulkDialog.controlDispatches")
+            }
+        }, wasDispatched: { dispatched }, settled: {
+            try validateContext(allowOwnHelper: true)
+            let currentValue = readValue(control)
+            if currentValue == desired, isMountedInDialog() { return true }
+            defer { firstObservation = false }
+            if firstObservation, currentValue != nil, currentValue != desired { return false }
+            // Final Cut can rebuild the controls. Resolve only the same role,
+            // name and occurrence, and never use this readback to retry Press.
+            let matches = try bulkDialogNodes(sheet).filter { string($0, kAXRoleAttribute) == role && bulkControlName($0) == name }
+            return matches.count == matchCount && readValue(matches[occurrence]) == desired
+        }, waitForAnotherObservation: {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return false }
+            try await Task.sleep(for: .milliseconds(40))
+            return ProcessInfo.processInfo.systemUptime < deadline
+        })
+        if dispatched { timing.incrementCounter("apply.bulkDialog.controlSettlements") }
     }
 
     private func bulkCopiedFromMatches(_ nodes: [AXUIElement], token: NativeEffectTransferToken, count: Int) -> Bool {
@@ -605,12 +700,12 @@ extension FinalCutAXSession {
         try assertInputFocus()
         let nodes = try bulkDialogNodes(sheet)
         let boxes = nodes.filter { string($0, kAXRoleAttribute) == kAXCheckBoxRole }
+        let boxNames = boxes.map(bulkControlName)
         for required in ["Effects", "Volume", "Pan", "Audio Attributes", "Video Attributes"] {
-            guard boxes.filter({ bulkControlName($0) == required }).count == 1 else { throw FinalCutCaptureError.changedProject }
+            guard boxNames.filter({ $0 == required }).count == 1 else { throw FinalCutCaptureError.changedProject }
         }
         var names: [String] = [], checked: [Int] = []
-        for box in boxes {
-            let name = bulkControlName(box)
+        for (box, name) in zip(boxes, boxNames) {
             guard let value = (attribute(box, kAXValueAttribute) as? NSNumber)?.intValue else { throw FinalCutCaptureError.changedProject }
             if name == "Audio Attributes" { continue }
             if name == "Video Attributes" { guard value == 0 else { throw FinalCutCaptureError.changedProject }; continue }

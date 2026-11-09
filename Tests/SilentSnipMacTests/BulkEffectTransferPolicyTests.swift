@@ -3,6 +3,37 @@ import SilentSnipCore
 @testable import SilentSnipMac
 
 final class BulkEffectTransferPolicyTests: XCTestCase {
+    @MainActor func testPasteDialogToggleSettlesWithoutResendingInput() async throws {
+        for staleReads in [0, 2] {
+            var presses = 0, reads = 0, waits = 0
+            try await BulkEffectTransferPolicy.pressDialogControlOnce(press: { presses += 1 }, wasDispatched: { true },
+                settled: { reads += 1; return reads > staleReads }, waitForAnotherObservation: { waits += 1; return true })
+            XCTAssertEqual(presses, 1)
+            XCTAssertEqual(reads, staleReads + 1)
+            XCTAssertEqual(waits, staleReads, "An already settled control adds no delay")
+        }
+    }
+
+    @MainActor func testPasteDialogOnlyObservesErrorsThatOccurredAfterDispatch() async throws {
+        struct AXFailure: Error {}
+        var presses = 0, reads = 0
+        try await BulkEffectTransferPolicy.pressDialogControlOnce(press: { presses += 1; throw AXFailure() },
+            wasDispatched: { true }, settled: { reads += 1; return true }, waitForAnotherObservation: { false })
+        XCTAssertEqual(presses, 1)
+        XCTAssertEqual(reads, 1, "An ambiguous AX return can still be settled by exact state readback")
+
+        for dispatched in [true, false] {
+            presses = 0; reads = 0
+            do {
+                try await BulkEffectTransferPolicy.pressDialogControlOnce(press: { presses += 1; throw AXFailure() },
+                    wasDispatched: { dispatched }, settled: { reads += 1; return false }, waitForAnotherObservation: { false })
+                XCTFail("An unconfirmed change cannot advance the dialog")
+            } catch is AXFailure { }
+            XCTAssertEqual(presses, 1)
+            XCTAssertEqual(reads, dispatched ? 1 : 0)
+        }
+    }
+
     func testOnlyOwnHelperCanYieldToTheUnchangedOwnedPasteDialog() {
         XCTAssertTrue(BulkEffectTransferPolicy.mayReturnOwnedDialog(foregroundPID: 200, helperPID: 200,
             sameDialog: true, clipboardUnchanged: true))
