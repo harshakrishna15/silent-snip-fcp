@@ -42,6 +42,17 @@ struct GuardedShareRender: Sendable {
         return (prepared, digest)
     }
 
+    @MainActor func readForMeasurement(at url: URL) async throws -> (guardValue: MediaContentSnapshot.ReadGuard, digest: String) {
+        do { return try read(at: url) }
+        catch ProjectAnalysisError.changedRenderArtifact {
+            guard let fresh = try prepared.completedRenderGuardAfterCTimeChange(at: url) else {
+                throw ProjectAnalysisError.changedRenderArtifact
+            }
+            let refreshed = try await rebinding(to: fresh, at: url)
+            return try refreshed.read(at: url)
+        }
+    }
+
     fileprivate func rebinding(to fresh: MediaContentSnapshot.ReadGuard, at url: URL) async throws -> Self {
         guard !rebound, let digest = snapshot.hashes[url] else { throw ProjectAnalysisError.changedRenderArtifact }
         let checked = try await MediaContentSnapshot.capture(prepared: fresh)
@@ -185,20 +196,25 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                 } catch ProjectAnalysisError.changedRenderArtifact {
                     // Host Open Document can attach metadata just after completion.
                     // Require any already completed digest to match a new full read.
-                    // Without one, let the caller take its usual fresh read.
                     guard let fresh = try prepared.completedRenderGuardAfterCTimeChange(at: url), let deliveredIdentity,
                           try ShareDestinationFileIdentity(file: url) == deliveredIdentity else {
                         throw ProjectAnalysisError.changedRenderArtifact
                     }
-                    let rebound = try await completedEvidence?.rebinding(to: fresh, at: url)
+                    let rebound: GuardedShareRender
+                    if let completedEvidence {
+                        rebound = try await completedEvidence.rebinding(to: fresh, at: url)
+                    } else {
+                        let snapshot = try await MediaContentSnapshot.capture(prepared: fresh)
+                        rebound = GuardedShareRender(prepared: fresh, snapshot: snapshot, rebound: true)
+                    }
                     if !registered {
-                        let digest = try rebound?.read(at: url).digest
+                        let digest = try rebound.read(at: url).digest
                         _ = try? storage.register(url, expectedHash: digest)
                     }
                     guard try ShareDestinationFileIdentity(file: url) == deliveredIdentity else {
                         throw ProjectAnalysisError.changedRenderArtifact
                     }
-                    try rebound?.prepared.validate()
+                    try rebound.prepared.validate()
                     return rebound
                 } catch {
                     // Preserve the existing inventory attempt on an I/O error.

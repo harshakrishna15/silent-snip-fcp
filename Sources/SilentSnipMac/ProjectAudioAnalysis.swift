@@ -93,15 +93,16 @@ public struct DialogueRenderContext: Sendable {
     }
 
     /// Call after verifying a fresh native Share receipt and its render scope.
-    /// The receipt's cleanup scan can provide the pre-decode evidence. Keep
-    /// that same guard through the full post-decode comparison.
+    /// The receipt's cleanup scan can provide the pre-decode evidence. An
+    /// intervening metadata update must preserve that digest. Keep the guard
+    /// established here through the full post-decode comparison.
     @MainActor static func capturedNativeRender(document: TimelineDocument, target: TimelineClip, audioURL: URL,
                                      receipt: ShareDestinationReceipt? = nil,
                                      projectSlice: Bool = false, workflowOrigin: WorkflowReviewOrigin? = nil) async throws -> Self {
         if let receipt {
             guard receipt.mediaURLs == [audioURL] else { throw ProjectAnalysisError.changedRenderArtifact }
             if let evidence = receipt.guardedRender {
-                let read = try evidence.read(at: audioURL)
+                let read = try await evidence.readForMeasurement(at: audioURL)
                 return capturedRender(document: document, target: target, canonical: audioURL, digest: read.digest,
                     projectSlice: projectSlice, workflowOrigin: workflowOrigin, nativeRenderGuard: read.guardValue)
             }

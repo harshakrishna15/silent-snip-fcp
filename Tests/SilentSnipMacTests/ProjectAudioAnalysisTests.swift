@@ -1,5 +1,6 @@
 import SilentSnipCore
 import Foundation
+import Darwin
 import XCTest
 @testable import SilentSnipMac
 
@@ -79,14 +80,22 @@ final class ProjectAudioAnalysisTests: XCTestCase {
             XCTAssertTrue(manager.handleOpen(urls: [xml, audio]))
         }
         let audio = try XCTUnwrap(receipt.mediaURLs.first)
-        XCTAssertNotNil(receipt.guardedRender)
+        let evidence = try XCTUnwrap(receipt.guardedRender)
+        let original = try evidence.read(at: audio)
         do {
             _ = try await DialogueRenderContext.capturedNativeRender(document: document, target: target,
                 audioURL: fixture.audio, receipt: receipt, workflowOrigin: origin)
             XCTFail("The receipt is bound to the delivered path, even when another file has the same bytes")
         } catch ProjectAnalysisError.changedRenderArtifact { }
+        let metadata = Data([1]).withUnsafeBytes { bytes in
+            setxattr(audio.path, "com.silentsnip.test-premeasurement", bytes.baseAddress, bytes.count, 0, 0)
+        }
+        XCTAssertEqual(metadata, 0)
+        XCTAssertThrowsError(try evidence.read(at: audio))
+        try manager.validateReceipt(receipt)
         let context = try await DialogueRenderContext.capturedNativeRender(document: document, target: target,
             audioURL: audio, receipt: receipt, workflowOrigin: origin)
+        XCTAssertEqual(context.audioSHA256, original.digest)
         let bytes = try Data(contentsOf: audio)
         do {
             _ = try await ProjectAudioAnalysis.analyze(projectData: data, selection: fixture.selection,
