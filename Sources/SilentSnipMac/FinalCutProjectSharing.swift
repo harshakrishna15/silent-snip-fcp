@@ -23,20 +23,21 @@ extension FinalCutAXSession {
         lastXMLShareDirectory = delivered.deletingLastPathComponent().standardizedFileURL
         let output = try timing.measure("share.xml.deliveryValidation") { () throws -> URL in
             try assertCurrentProject()
-            _ = try TimelineParser.parse(url: delivered)
-#if DEBUG
-            if QuietSharePrototype.pluginLease != nil { try QuietSharePrototype.verifyLibrary(delivered) }
-#endif
-            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            // Keep the caller's capture format stable without a Save dialog.
             let input = delivered.pathExtension.lowercased() == "fcpxmld"
                 ? delivered.appendingPathComponent("Info.fcpxml") : delivered
+            let data = try Data(contentsOf: input)
+            _ = try TimelineParser.parse(data: data)
+#if DEBUG
+            if QuietSharePrototype.pluginLease != nil { try QuietSharePrototype.verifyLibrary(data) }
+#endif
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            // Save the exact bytes that were validated above.
             let output: URL
             if destination.pathExtension.lowercased() == "fcpxmld" {
                 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
                 output = destination.appendingPathComponent("Info.fcpxml")
             } else { output = destination }
-            try Data(contentsOf: input).write(to: output, options: .withoutOverwriting)
+            try data.write(to: output, options: .withoutOverwriting)
             return output
         }
         try await timing.measure("share.xml.panelClose") {
@@ -323,8 +324,11 @@ extension FinalCutAXSession {
             guard let next = confirmationControls.next(in: panel, shouldContinue: { !Task.isCancelled }) else {
                 throw FinalCutCaptureError.unavailable("The Share confirmation is unavailable.")
             }
-            _ = try timing.measure(prefix + ".confirm") { try press(next) }
-            ownsPanel = false
+            _ = try timing.measure(prefix + ".confirm") {
+                // An AX error after dispatch can still mean Final Cut accepted
+                // Next. Cleanup may only cancel the exact untouched panel.
+                try press(next) { ownsPanel = false }
+            }
             probe?.finish(foreground: NSWorkspace.shared.frontmostApplication?.processIdentifier, project: currentProjectTitle())
 #if DEBUG
             quietPrototypeStage?("delivery")
@@ -334,7 +338,7 @@ extension FinalCutAXSession {
             if ownsPanel {
                 await Task { @MainActor in
                     if let panel = self.currentSheet(), self.string(panel, kAXTitleAttribute) == "Silent Snip",
-                       probe == nil || observedPanel.map({ CFEqual($0, panel) }) == true,
+                       observedPanel.map({ CFEqual($0, panel) }) == true,
                        let cancel = self.find(in: panel, role: kAXButtonRole, title: "Cancel") {
                         try? await self.restoreOwnShareActivation(panel: panel)
                         _ = try? self.press(cancel)

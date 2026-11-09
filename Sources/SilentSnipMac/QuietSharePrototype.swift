@@ -177,7 +177,11 @@ import SilentSnipCore
 
     static func verifyLibrary(_ url: URL) throws {
         let file = url.pathExtension == "fcpxmld" ? url.appendingPathComponent("Info.fcpxml") : url
-        let xml = try XMLDocument(data: Data(contentsOf: file), options: [.nodeLoadExternalEntitiesNever])
+        try verifyLibrary(Data(contentsOf: file))
+    }
+
+    static func verifyLibrary(_ data: Data) throws {
+        let xml = try XMLDocument(data: data, options: [.nodeLoadExternalEntitiesNever])
         let location = try xml.nodes(forXPath: "/fcpxml/library/@location").first?.stringValue
         // The generated fixture's embedded location must remain the required
         // workspace library. No prototype work is allowed in another library.
