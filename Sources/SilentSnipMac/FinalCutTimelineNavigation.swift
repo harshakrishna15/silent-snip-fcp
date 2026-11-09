@@ -89,6 +89,13 @@ extension FinalCutAXSession {
             try await waitUntil(timeout: 2, context: "direct timeline focus") { (try? hasTimelineFocus()) == true }
             return
         }
+        // A failed AX write can still have focused the timeline. Recheck the
+        // pinned input context and read back focus before opening a menu.
+        try await prepareInputFocus()
+        guard currentSheet() == nil else {
+            throw FinalCutCaptureError.unavailable("Close the open Final Cut Pro dialog before focusing the timeline.")
+        }
+        if try hasTimelineFocus() { return }
         try await pressMenu(path: ["Window", "Go To", "Timeline"])
         // Verify the fallback too; elapsed time alone does not establish focus.
         try await waitUntil(timeout: 2, context: "timeline focus") { (try? hasTimelineFocus()) == true }

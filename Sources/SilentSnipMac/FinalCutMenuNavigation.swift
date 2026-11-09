@@ -241,7 +241,9 @@ extension FinalCutAXSession {
                     guard matches.count == 1 else { throw FinalCutCaptureError.unavailable("Menu command \(path.joined(separator: " → ")) was not found.") }
                     item = matches[0]
                     if final && allowDisabled && (attribute(item, kAXEnabledAttribute) as? NSNumber)?.boolValue == false {
-                        try key(code: 53) // Dismiss only the menu just opened by this method.
+                        if let openedTopItem, ownsTrackedMenu(bar: bar, item: openedTopItem) {
+                            try key(code: 53)
+                        }
                         return
                     }
                     action = try press(item) { willDispatch(item) }
@@ -292,13 +294,17 @@ extension FinalCutAXSession {
         }
     }
 
-    private func cancelOwnedMenu(bar: AXUIElement, item: AXUIElement) {
+    private func ownsTrackedMenu(bar: AXUIElement, item: AXUIElement) -> Bool {
         guard (try? assertCurrentProject()) != nil,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
               currentSheet() == nil,
               let current = Self.elementAttribute(root, kAXMenuBarAttribute), CFEqual(current, bar),
-              let selected = attribute(current, kAXSelectedChildrenAttribute) as? [AXUIElement],
-              selected.count == 1, CFEqual(selected[0], item) else { return }
+              let selected = attribute(current, kAXSelectedChildrenAttribute) as? [AXUIElement] else { return false }
+        return selected.count == 1 && CFEqual(selected[0], item)
+    }
+
+    private func cancelOwnedMenu(bar: AXUIElement, item: AXUIElement) {
+        guard ownsTrackedMenu(bar: bar, item: item) else { return }
         var actions: CFArray?
         guard AXUIElementCopyActionNames(item, &actions) == .success,
               (actions as? [String])?.contains(kAXCancelAction) == true else { return }
