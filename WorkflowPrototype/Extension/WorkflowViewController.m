@@ -924,6 +924,11 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 
 - (void)setStatusMessage:(NSString *)message requiresAttention:(BOOL)requiresAttention {
+    [self updateStatusContent:message requiresAttention:requiresAttention];
+    [self updateDocumentFrame];
+}
+
+- (void)updateStatusContent:(NSString *)message requiresAttention:(BOOL)requiresAttention {
     message = message ?: @"";
     BOOL changed = ![self.statusDetails.stringValue isEqual:message];
     self.statusDetails.stringValue = message;
@@ -963,7 +968,6 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     self.statusIcon.hidden = self.statusLabel.stringValue.length == 0;
     self.statusLabel.textColor = warning ? NSColor.labelColor : NSColor.secondaryLabelColor;
     self.statusDetails.textColor = warning ? NSColor.labelColor : NSColor.secondaryLabelColor;
-    [self updateDocumentFrame];
 }
 
 - (void)toggleDetails:(id)sender {
@@ -1484,7 +1488,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     if (changed) [(SSWorkflowContentView *)self.view requestDefaultCursorRefreshForPhase:[@"state-" stringByAppendingString:state]];
 }
 
-- (void)setReviewStatus:(NSDictionary *)response {
+- (void)updateReviewStatusContent:(NSDictionary *)response {
     NSString *message = response[@"message"] ?: @"";
     NSString *state = response[@"state"];
     BOOL recovery = [response[@"canRetryVerification"] boolValue];
@@ -1512,7 +1516,8 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     }
     if (!recovery && snapshot && [state isEqual:@"review"] &&
         knownSnapshotMessage) {
-        [self setStatusMessage:@"Cuts updated. Apply Cuts verifies the current audio. Click Analyze Again after changing volume or audio effects."];
+        [self updateStatusContent:@"Cuts updated. Apply Cuts verifies the current audio. Click Analyze Again after changing volume or audio effects."
+                requiresAttention:NO];
         self.statusDetails.stringValue = message;
         self.statusDetails.toolTip = message;
         self.statusLabel.toolTip = message;
@@ -1538,13 +1543,14 @@ static NSColor *SSWorkflowGray(CGFloat value) {
             for (NSString *text in boilerplate) remaining = [remaining stringByReplacingOccurrencesOfString:text withString:@""];
             remaining = [remaining stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         }
-        [self setStatusMessage:completed ? ([response[@"verificationOnly"] boolValue] ? @"Result verified." : @"Cuts applied.") : remaining requiresAttention:!completed && remaining.length > 0];
+        [self updateStatusContent:completed ? ([response[@"verificationOnly"] boolValue] ? @"Result verified." : @"Cuts applied.") : remaining
+                requiresAttention:!completed && remaining.length > 0];
         self.statusDetails.stringValue = message;
         self.statusDetails.toolTip = message;
         self.statusLabel.toolTip = message;
         return;
     }
-    [self setStatusMessage:message requiresAttention:[state isEqual:@"review"] && (snapshot || message.length > 180)];
+    [self updateStatusContent:message requiresAttention:[state isEqual:@"review"] && (snapshot || message.length > 180)];
 }
 
 - (BOOL)canReuseCutRowsForCuts:(NSArray<NSDictionary *> *)cuts {
@@ -1645,15 +1651,16 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     }
     NSString *summary = response[@"summary"] ?: @"";
     NSString *target = response[@"targetClipName"];
+    // The controls update below lays out the complete response once.
     if (!deferRanges) {
         self.reviewSummary.stringValue = target.length ? [NSString stringWithFormat:@"Clip: %@\n%@", target, summary] : summary;
         [self styleReviewSummary];
         self.reviewSummary.toolTip = self.reviewSummary.stringValue;
-        [self setReviewStatus:response];
+        [self updateReviewStatusContent:response];
     } else {
-        [self setStatusMessage:!self.pendingAutomaticSettings ? @"Finish entering detection settings." :
+        [self updateStatusContent:!self.pendingAutomaticSettings ? @"Finish entering detection settings." :
             (self.automaticUpdateRejectedGeneration == self.automaticUpdateGeneration ?
-                @"Unable to update the ranges. Click Analyze Again to refresh the audio." : @"Updating cut ranges…")];
+                @"Unable to update the ranges. Click Analyze Again to refresh the audio." : @"Updating cut ranges…") requiresAttention:NO];
     }
     [self setControlsEnabled:self.settingsLoaded && (!self.reviewClient.busy || self.reviewClient.updatingCuts)];
     self.analyzeButton.title = @"Analyze Again";

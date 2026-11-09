@@ -459,9 +459,15 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *verificationCompletions;
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *automaticUpdateCompletions;
 @property (nonatomic) BOOL fakeOwnsNavigationWindow;
+@property (nonatomic, copy) void (^didLayoutDocument)(SSTestWorkflowViewController *controller);
 @end
 @implementation SSTestWorkflowViewController
 - (BOOL)ownsNavigationWindow:(NSWindow *)window { return self.fakeOwnsNavigationWindow; }
+- (void)updateDocumentFrame {
+    BOOL outerLayout = !self.updatingDocumentLayout;
+    [super updateDocumentFrame];
+    if (outerLayout && self.didLayoutDocument) self.didLayoutDocument(self);
+}
 - (SSWorkflowContentView *)newContentViewWithFrame:(NSRect)frame {
     return [[SSTestWorkflowContentView alloc] initWithFrame:frame];
 }
@@ -1300,6 +1306,51 @@ static SSFakeWorkflowReviewClient *beginAutomaticReview(SSTestWorkflowViewContro
     client.fakeCanUpdate = YES;
     [controller updateReviewControls];
     return client;
+}
+
+static void reviewResponsesLayOutFinalContentOnce(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginAutomaticReview(controller);
+    check(controller.applyButton.enabled, @"The current review can apply before the response changes its controls");
+
+    __block NSUInteger layouts = 0;
+    controller.didLayoutDocument = ^(SSTestWorkflowViewController *view) {
+        layouts += 1;
+        check([view.statusLabel.stringValue isEqual:@"Review updated"] &&
+              [view.reviewSummary.stringValue hasSuffix:@"1 reviewed range"] && !view.applyButton.enabled,
+              @"Review lays out after the new status, summary, and action state are set");
+    };
+    NSMutableDictionary *response = [reviewResponse(@"review", @"Review updated") mutableCopy];
+    response[@"summary"] = @"1 reviewed range";
+    [client deliver:response busy:NO canApply:NO];
+    check(layouts == 1, @"An ordinary review response lays out once");
+
+    controller.didLayoutDocument = nil;
+    controller.fields[0].stringValue = @"-49";
+    [controller settingsChanged:controller.fields[0]];
+    check(controller.automaticUpdatePending, @"A new settings edit defers the worker's previous review ranges");
+    layouts = 0;
+    controller.didLayoutDocument = ^(SSTestWorkflowViewController *view) {
+        layouts += 1;
+        check([view.statusLabel.stringValue isEqual:@"Updating cut ranges…"] &&
+              [view.reviewSummary.stringValue hasSuffix:@"1 reviewed range"] && !view.applyButton.enabled,
+              @"A deferred response lays out the pending status with the retained review and disabled Apply");
+    };
+    [client deliver:reviewResponse(@"review", @"Previous review") busy:NO canApply:YES];
+    check(layouts == 1, @"A response with deferred ranges lays out once");
+
+    layouts = 0;
+    controller.didLayoutDocument = ^(SSTestWorkflowViewController *view) {
+        layouts += 1;
+        check([view.statusLabel.stringValue isEqual:@"Standalone status"], @"Standalone status is present at layout");
+    };
+    [controller setStatusMessage:@"Standalone status"];
+    check(layouts == 1, @"A standalone status still lays out immediately");
+    controller.didLayoutDocument = nil;
+    closeController(controller);
+    groupCount += 1;
 }
 
 static void automaticDraftsCoalesceWithoutNewAnalysis(void) {
@@ -3295,6 +3346,7 @@ int main(void) {
         analyzeDispatchPinsPayloadAndGesture();
         applyRequiresReviewAndFreshGesture();
         inclusionAcknowledgmentsKeepExistingCutControls();
+        reviewResponsesLayOutFinalContentOnce();
         sdkNavigationRequiresExactProjectWindowAndReturnedTime();
         navigationSettlementRefreshesDeferredProjectChanges();
         retainedUpdatesNavigationAndRecovery();
