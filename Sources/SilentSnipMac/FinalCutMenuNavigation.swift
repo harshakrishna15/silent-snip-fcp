@@ -318,7 +318,13 @@ extension FinalCutAXSession {
     private func activatePickedMenuItem(_ item: AXUIElement, menu: AXUIElement, owner: AXUIElement, action: String,
                                         openingProject: String?) async throws {
         func projectOpened() -> Bool {
-            guard let openingProject, let current = try? FinalCutAXSession() else { return false }
+            guard let openingProject else { return false }
+            // While the retained workspace still proves the original title,
+            // a full session scan cannot prove the new project has opened.
+            // An unreadable title during toolbar rebuild still takes the
+            // original fresh same-process, same-window discovery path.
+            if openingProject != projectName, currentProjectTitle() == projectName { return false }
+            guard let current = try? FinalCutAXSession() else { return false }
             return current.projectName == openingProject
                 && current.application.processIdentifier == application.processIdentifier
                 && CFEqual(current.mainWindow, mainWindow)

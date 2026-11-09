@@ -417,45 +417,49 @@ import Foundation
     }
 
     func key(code: CGKeyCode, flags: CGEventFlags = []) throws {
-        try assertInputFocus()
         guard let source = CGEventSource(stateID: .hidSystemState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
             throw FinalCutCaptureError.unavailable("A keyboard event could not be created.")
         }
         down.flags = flags; up.flags = flags
-        // Used for range preparation, owned menus, and explicit playhead
-        // navigation. Recheck focus immediately before posting
-        // through the normal keyboard route; never retry an uncertain event.
+        // Constructing events sends no input. Check focus immediately before
+        // posting them, when the check can still prevent a wrong-window event.
         try assertInputFocus()
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
     }
 
     @discardableResult func press(_ element: AXUIElement, willDispatch: (() -> Void)? = nil) throws -> String {
-        try assertInputFocus()
-        let role = string(element, kAXRoleAttribute) ?? "unknown role"
-        let name = [string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute),
-                    string(element, kAXIdentifierAttribute)].compactMap { $0 }.first { !$0.isEmpty } ?? "unnamed control"
-        let control = "‘\(name)’ (\(role))"
+        // Descriptive attributes are needed only to explain a failure. Avoid
+        // four extra cross-process reads on every successful control press.
+        func controlDescription() -> String {
+            let names = [kAXTitleAttribute, kAXDescriptionAttribute, kAXIdentifierAttribute]
+            let values = FinalCutAXAttributes.read(element, names: names + [kAXRoleAttribute])
+            let name = names.lazy.compactMap { key in
+                (values[key] as? String) ?? (values[key] as? NSNumber)?.stringValue
+            }.first { !$0.isEmpty } ?? "unnamed control"
+            return "‘\(name)’ (\(values[kAXRoleAttribute] as? String ?? "unknown role"))"
+        }
         guard (attribute(element, kAXEnabledAttribute) as? NSNumber)?.boolValue != false else {
-            throw FinalCutCaptureError.unavailable("\(operationStage): \(control) is disabled.")
+            throw FinalCutCaptureError.unavailable("\(operationStage): \(controlDescription()) is disabled.")
         }
         var actionNames: CFArray?
         let lookup = AXUIElementCopyActionNames(element, &actionNames)
         guard lookup == .success else {
-            throw FinalCutCaptureError.unavailable("\(operationStage): Could not read actions for \(control) (AX error \(lookup.rawValue)).")
+            throw FinalCutCaptureError.unavailable("\(operationStage): Could not read actions for \(controlDescription()) (AX error \(lookup.rawValue)).")
         }
         let supported = actionNames as? [String] ?? []
         guard let action = FinalCutControlAction.preferred(from: supported) else {
-            throw FinalCutCaptureError.unavailable("\(operationStage): \(control) supports neither Press nor Pick (AX error \(AXError.actionUnsupported.rawValue)).")
+            throw FinalCutCaptureError.unavailable("\(operationStage): \(controlDescription()) supports neither Press nor Pick (AX error \(AXError.actionUnsupported.rawValue)).")
         }
+        try assertInputFocus()
         // Mark an attempted command only after every input precondition passes.
         // An AX error can be reported after the host accepted this exact action.
         willDispatch?()
         let result = AXUIElementPerformAction(element, action as CFString)
         guard result == .success else {
-            throw FinalCutCaptureError.unavailable("\(operationStage): \(action) failed for \(control) (AX error \(result.rawValue)).")
+            throw FinalCutCaptureError.unavailable("\(operationStage): \(action) failed for \(controlDescription()) (AX error \(result.rawValue)).")
         }
         return action
     }
