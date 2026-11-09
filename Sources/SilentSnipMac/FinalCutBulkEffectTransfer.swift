@@ -291,7 +291,7 @@ extension FinalCutAXSession {
             journal.stage = "effects paste requested"
             try journal.save(directory: directory)
             try timing.measure("apply.nativeEffectsPaste") {
-                try self.bulkPressPaste(ready, willDispatch: {
+                try self.bulkPressPaste(ready, sheet: sheet, clipboardStamp: token.clipboardStamp, willDispatch: {
                     // This write follows the final focus/control/action checks
                     // and must succeed before AX receives the mutation.
                     journal.stage = "effects paste dispatched"
@@ -330,12 +330,11 @@ extension FinalCutAXSession {
     /// Same strict control checks as press(), with a throwing dispatch boundary
     /// so an unwritable journal stops before Final Cut receives Paste. No retry
     /// is attempted after AXUIElementPerformAction, including an AX error.
-    private func bulkPressPaste(_ control: AXUIElement, willDispatch: () throws -> Void) throws {
-        try assertInputFocus()
+    private func bulkPressPaste(_ control: AXUIElement, sheet: AXUIElement, clipboardStamp: Int,
+                                willDispatch: () throws -> Void) throws {
         guard bulkControlName(control) == "Paste",
               string(control, kAXRoleAttribute) == kAXButtonRole,
               (attribute(control, kAXEnabledAttribute) as? NSNumber)?.boolValue == true,
-              let sheet = currentSheet(),
               try bulkDialogNodes(sheet).contains(where: { CFEqual($0, control) }) else {
             throw FinalCutCaptureError.changedProject
         }
@@ -345,6 +344,9 @@ extension FinalCutAXSession {
               let action = FinalCutControlAction.preferred(from: actionNames as? [String] ?? []) else {
             throw FinalCutCaptureError.unavailable("The native Paste action could not be read safely.")
         }
+        try assertInputFocus()
+        guard let current = currentSheet(), CFEqual(current, sheet),
+              NSPasteboard.general.changeCount == clipboardStamp else { throw FinalCutCaptureError.changedProject }
         try willDispatch()
         let dispatched = AXUIElementPerformAction(control, action as CFString)
         guard dispatched == .success else {
@@ -538,9 +540,9 @@ extension FinalCutAXSession {
     /// Share delivery can foreground this exact accessory worker after the Paste
     /// dialog opens. Return only our own activation to Final Cut; activate()
     /// would wrongly raise the project over this still-owned modal dialog.
-    private func prepareBulkDialogInput(sheet: AXUIElement, token: NativeEffectTransferToken,
-                                         count: Int, timing: AnalysisTiming) async throws {
-        func validateOwnership() throws {
+    @discardableResult private func prepareBulkDialogInput(sheet: AXUIElement, token: NativeEffectTransferToken,
+                                                            count: Int, timing: AnalysisTiming) async throws -> [AXUIElement] {
+        func validateOwnership() throws -> [AXUIElement] {
             timing.incrementCounter("apply.bulkDialog.ownershipChecks")
             try assertCurrentProject()
             guard let current = currentSheet(), CFEqual(current, sheet),
@@ -558,9 +560,11 @@ extension FinalCutAXSession {
                   nodes.filter({ string($0, kAXRoleAttribute) == kAXButtonRole && bulkControlName($0) == "Cancel" }).count == 1 else {
                 throw FinalCutCaptureError.changedProject
             }
+            return nodes
         }
         // The foreground decision is read-only. Verify the full dialog before
         // a handoff, if needed, and again before returning control to the caller.
+        var verifiedNodes: [AXUIElement] = []
         try await FinalCutOwnedInputFocus.prepare(ownsForeground: {
             let current = self.currentSheet()
             return BulkEffectTransferPolicy.mayReturnOwnedDialog(
@@ -569,7 +573,7 @@ extension FinalCutAXSession {
                 sameDialog: current.map { CFEqual($0, sheet) } == true,
                 clipboardUnchanged: NSPasteboard.general.changeCount == token.clipboardStamp)
         }, restore: {
-            try validateOwnership()
+            _ = try validateOwnership()
             // Recheck the foreground immediately before relinquishing this
             // worker's activation. Another app never gets activated over.
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == NSRunningApplication.current.processIdentifier else {
@@ -582,17 +586,17 @@ extension FinalCutAXSession {
                 return NSWorkspace.shared.frontmostApplication?.processIdentifier == self.application.processIdentifier
             }
         }, assertFocused: {
-            try validateOwnership()
+            verifiedNodes = try validateOwnership()
             try self.assertInputFocus()
         })
+        return verifiedNodes
     }
 
     private func bulkConfigureDialog(sheet: AXUIElement, token: NativeEffectTransferToken, count: Int,
                                      timing: AnalysisTiming) async throws {
         var configured: [String: Set<Int>] = [:]
         for _ in 0..<128 {
-            try await prepareBulkDialogInput(sheet: sheet, token: token, count: count, timing: timing)
-            let nodes = try bulkDialogNodes(sheet)
+            let nodes = try await prepareBulkDialogInput(sheet: sheet, token: token, count: count, timing: timing)
             let boxes = nodes.filter { string($0, kAXRoleAttribute) == kAXCheckBoxRole }
             let names = boxes.map(bulkControlName)
             var effectIndex = 0
@@ -617,8 +621,7 @@ extension FinalCutAXSession {
                 matchCount: names.filter { $0 == name }.count, role: kAXCheckBoxRole,
                 from: change.value, to: change.desired, sheet: sheet, token: token, timing: timing)
         }
-        try await prepareBulkDialogInput(sheet: sheet, token: token, count: count, timing: timing)
-        let nodes = try bulkDialogNodes(sheet)
+        let nodes = try await prepareBulkDialogInput(sheet: sheet, token: token, count: count, timing: timing)
         let maintain = nodes.filter { string($0, kAXRoleAttribute) == kAXRadioButtonRole && bulkControlName($0) == "Maintain" }
         guard maintain.count == 1, let checked = (attribute(maintain[0], kAXValueAttribute) as? NSNumber)?.intValue else { throw FinalCutCaptureError.changedProject }
         if checked != 1 {
