@@ -311,7 +311,7 @@ extension FinalCutAXSession {
                 throw FinalCutCaptureError.unavailable("The revealed project is not selected in its expected source event. Select ‘\(target.eventName)’ in the source library before trying again. No unrelated event was selected automatically.")
             }
             try await prepareInputFocus()
-            try selectEventRow(revealed)
+            try selectEventRow(revealed, for: target)
             _ = try await settledEventSidebar(target, allowLibrarySelection: false)
             try await pressMenu(path: ["File", "Reveal Project in Browser"])
             // The second Reveal can change the sidebar. The branch that
@@ -428,30 +428,54 @@ extension FinalCutAXSession {
         }
     }
 
-    private func selectEventRow(_ observed: EventSidebarObservation) throws {
-        try assertInputFocus()
-        guard currentSheet() == nil else { throw FinalCutCaptureError.changedProject }
-        let target = observed.elements[observed.index]
-        if AXUIElementSetAttributeValue(observed.sidebar, kAXSelectedRowsAttribute as CFString, [target] as CFArray) == .success { return }
-        if AXUIElementSetAttributeValue(target, kAXSelectedAttribute as CFString, kCFBooleanTrue) == .success { return }
+    private func selectEventRow(_ observed: EventSidebarObservation, for target: XMLReplacementTarget) throws {
+        func assertOwnedInput() throws {
+            try Task.checkCancellation()
+            try assertInputFocus()
+            guard currentSheet() == nil else { throw FinalCutCaptureError.changedProject }
+        }
+        func observeAfterFailedWrite() throws -> EventSidebarObservation? {
+            let current = try eventSidebarObservation(target)
+            if try FinalCutEventSidebar.isSelected(current.index, rows: current.rows, selectedRows: current.selectedRows) {
+                return nil
+            }
+            guard try FinalCutEventSidebar.libraryIsSelected(rows: current.rows, libraryURL: target.libraryURL,
+                    selectedRows: current.selectedRows) else {
+                throw FinalCutCaptureError.invalidSelection("The Libraries sidebar selection changed before selecting the source event.")
+            }
+            return current
+        }
+
+        try assertOwnedInput()
+        let row = observed.elements[observed.index]
+        if AXUIElementSetAttributeValue(observed.sidebar, kAXSelectedRowsAttribute as CFString, [row] as CFArray) == .success { return }
+        // A failed write can still select the event. Use fresh readback before
+        // issuing more input, and continue only from the same source library.
+        guard let afterSidebarWrite = try observeAfterFailedWrite() else { return }
+        try assertOwnedInput()
+        if AXUIElementSetAttributeValue(afterSidebarWrite.elements[afterSidebarWrite.index],
+                kAXSelectedAttribute as CFString, kCFBooleanTrue) == .success { return }
+        guard let afterRowWrite = try observeAfterFailedWrite() else { return }
         // Selection is reversible. The fallback clicks only a freshly hit-tested
         // descendant of this exact event row, never an overlapping window.
-        let nodes = importElements(in: target)
+        let nodes = importElements(in: afterRowWrite.elements[afterRowWrite.index])
         guard let field = nodes.first(where: { string($0, kAXRoleAttribute) == kAXTextFieldRole }),
               let point = controlCenter(field) else { throw FinalCutCaptureError.unavailable("The source event row is not available for selection.") }
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
+            throw FinalCutCaptureError.unavailable("The source event could not be selected.")
+        }
+        down.setIntegerValueField(.mouseEventClickState, value: 1)
+        up.setIntegerValueField(.mouseEventClickState, value: 1)
+        try assertOwnedInput()
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(root, Float(point.x), Float(point.y), &hit) == .success,
-              let hit, nodes.contains(where: { CFEqual($0, hit) }),
-              let source = CGEventSource(stateID: .hidSystemState) else {
+              let hit, nodes.contains(where: { CFEqual($0, hit) }) else {
             throw FinalCutCaptureError.unavailable("The source event is covered or outside the visible Libraries sidebar. Reveal it before trying again.")
         }
-        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-            guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else {
-                throw FinalCutCaptureError.unavailable("The source event could not be selected.")
-            }
-            event.setIntegerValueField(.mouseEventClickState, value: 1)
-            event.post(tap: .cghidEventTap)
-        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
     }
 
     /// Restrict traversal to the import panel/browser. Never inspect field
