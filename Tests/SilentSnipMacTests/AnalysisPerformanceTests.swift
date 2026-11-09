@@ -46,7 +46,7 @@ final class AnalysisPerformanceTests: XCTestCase {
             }
         }
         func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
-        let report: [String: Any] = ["fixtureSeconds": duration.seconds,
+        var report: [String: Any] = ["fixtureSeconds": duration.seconds,
             "channels": file.processingFormat.channelCount, "sampleRate": rate,
             "targetWholeWorkflowSeconds": duration.seconds / 100,
             "renderDecodeAndMeasureSeconds": renderedTimes, "sourceDecodeAndMeasureSeconds": sourceTimes,
@@ -56,8 +56,34 @@ final class AnalysisPerformanceTests: XCTestCase {
             "sourceDecodeAndMeasureSecondsPerMinute": median(sourceTimes) / (duration.seconds / 60),
             "medianHashSeconds": median(hashTimes), "medianRecalculateSeconds": median(reuseTimes),
             "candidateRanges": (expected ?? []).map { [$0.start.seconds, $0.end.seconds] },
-            "scope": "Offline PCM processing only; excludes Final Cut export, rendering, verification and cleanup"]
+            "scope": "Offline PCM and file checks; excludes Final Cut export, rendering, project verification and cleanup"]
+        if let source = env["SILENT_SNIP_BENCHMARK_SOURCE_MEDIA"] {
+            report["sourceValidationAfterCombined"] = try await compareSourceValidation(URL(fileURLWithPath: source))
+        }
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
             .write(to: URL(fileURLWithPath: output), options: .atomic)
+    }
+
+    /// Compare the two production source checks after a combined exchange.
+    /// Both start with the same fully hashed input and end with a full hash.
+    private func compareSourceValidation(_ url: URL) async throws -> [String: Any] {
+        let captured = try await MediaContentSnapshot.capture([url])
+        let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        var rescanned: [Double] = [], reused: [Double] = []
+        for index in 0..<5 {
+            for reuse in (index.isMultiple(of: 2) ? [false, true] : [true, false]) {
+                let start = ProcessInfo.processInfo.systemUptime
+                let current = try MediaContentSnapshot.prepareRead([url])
+                if reuse { try captured.requireExactGuard(current) }
+                else { try await captured.validate() }
+                try current.validate()
+                try await captured.validate()
+                let elapsed = ProcessInfo.processInfo.systemUptime - start
+                if reuse { reused.append(elapsed) } else { rescanned.append(elapsed) }
+            }
+        }
+        return ["bytes": bytes, "twoScansSeconds": rescanned, "guardAndOneScanSeconds": reused,
+                "medianTwoScansSeconds": rescanned.sorted()[2], "medianGuardAndOneScanSeconds": reused.sorted()[2],
+                "scope": "Offline source checks after the overlapping hash; no render or audio measurement"]
     }
 }

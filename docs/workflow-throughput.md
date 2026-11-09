@@ -8,6 +8,8 @@ The baseline Apply verified seven retained source clips and took **21.538 s**, i
 
 The candidate keeps up to eight exact routing hints, wakes on rendered Share delivery, skips redundant browser work during bulk Apply, and uses the Workflow SDK for Go to Cut when both components support it. Host Swift tests and the offscreen Workflow harnesses passed. Candidate latency, the native menu recovery, and SDK playhead movement still need a live run with an isolated or explicitly approved test setup.
 
+On the generated 652 MB camera fixture, an offline Release benchmark timed the source checks after a combined export. Five trials per route alternated the check order. The median fell from **1.025 s** for two full scans to **0.602 s** for one full scan plus the identity and mutation check. Both routes started with the full hash that Analyze obtains during Share and finished with a full content check. The benchmark excludes host rendering, audio measurement, and their overlap. `SILENT_SNIP_BENCHMARK_SOURCE_MEDIA` enables this comparison in `AnalysisPerformanceTests`; the raw results are in `build/AnalysisLatency/Offline-Combined-Source-Release.json`.
+
 ## Worker 71: native effect-preserving cuts
 
 Worker71/frontend27 completed a fresh Analyze → review → Apply on generated 60-second audio in workspace-root **Cutdown Integration.fcpbundle**. **19 cuts** produced **20 original-source clips / 35.300 s**. Both advanced **Noise Gate → Legacy Limiter** editors matched the source on every retained clip; volume remained **−3 dB**. Raw source bytes, identity and mutation stamps, fresh native audio, exact source intervals and native result UID passed. Every rendering filter now requires native preservation and fresh measurements; unsupported layouts/output modes stop.

@@ -329,6 +329,7 @@ import Foundation
             }
             let media = try await pendingMedia
             try mediaReadGuard.validate()
+            if capture.renderedMedia != nil { timing.incrementCounter("capture.reusedCombinedSourceHashes") }
             if route == .finalCutRender && cached == nil {
                 timing.begin("sourceValidationAfterRender")
                 try await media.validate()
@@ -1092,10 +1093,13 @@ import Foundation
                                                  renderedMedia: MediaContentSnapshot? = nil,
                                                  prepared: MediaContentSnapshot.ReadGuard? = nil) async throws -> MediaContentSnapshot {
         if let renderedMedia {
-            guard renderedMedia.covers(document.clips.filter(\.enabled).compactMap(\.mediaURL)) else {
+            guard let prepared, renderedMedia.covers(document.clips.filter(\.enabled).compactMap(\.mediaURL)) else {
                 throw ProjectAnalysisError.changedRenderArtifact
             }
-            try await renderedMedia.validate()
+            // The combined exchange already hashed these sources while rendering.
+            // Bind that snapshot to the current guard and keep the final full
+            // content check after measurement or cache reuse.
+            try renderedMedia.requireExactGuard(prepared)
             return renderedMedia
         }
         if let prepared { return try await MediaContentSnapshot.capture(prepared: prepared) }

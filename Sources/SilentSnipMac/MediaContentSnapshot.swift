@@ -226,7 +226,10 @@ struct MediaContentSnapshot: Sendable, Equatable, Codable {
         return combined
     }
 
-    private func requireExactGuard(_ guardValue: ReadGuard) throws {
+    /// Carry a freshly computed hash forward within the same guarded phase.
+    /// This verifies references and mutation stamps, without reading file contents.
+    func requireExactGuard(_ guardValue: ReadGuard) throws {
+        try Task.checkCancellation()
         guard let canonicalURLs, let stamps,
               originalURLs == Array(Set(originalURLs)).sorted(by: { $0.absoluteString < $1.absoluteString }),
               canonicalURLs.count == originalURLs.count,
