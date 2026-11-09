@@ -12,7 +12,7 @@ enum FinalCutBrowserSelection {
     /// or focus without moving the pointer.
     static func canSettleWithoutPointer(hasSelection: () -> Bool, hasFocus: () -> Bool,
                                        select: () -> Bool, focus: () -> Void) -> Bool {
-        let selectionRequested = hasSelection() || select()
+        let selectionRequested = !hasSelection() && select()
         if !hasFocus() { focus() }
         return (selectionRequested || hasSelection()) && hasFocus()
     }

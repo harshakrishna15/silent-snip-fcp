@@ -17,6 +17,12 @@ final class FinalCutImportCompletionTests: XCTestCase {
         XCTAssertFalse(FinalCutBrowserSelection.canSettleWithoutPointer(hasSelection: { true }, hasFocus: { false },
             select: { XCTFail("The exact project is already selected"); return false }, focus: {}),
             "An unfocused browser still needs the guarded fallback")
+
+        selected = true; focused = false
+        XCTAssertFalse(FinalCutBrowserSelection.canSettleWithoutPointer(hasSelection: { selected }, hasFocus: { focused },
+            select: { XCTFail("The exact project is already selected"); return false },
+            focus: { focused = true; selected = false }),
+            "Focusing the browser can discard the selection observed before it took focus")
     }
 
     func testFirstImportAllowsEmptyTimelineButRejectsOtherProjects() {
