@@ -2,6 +2,23 @@ import XCTest
 @testable import SilentSnipMac
 
 final class FinalCutImportCompletionTests: XCTestCase {
+    func testAlreadySelectedAndFocusedBrowserNeedsNeitherSetterNorPointer() {
+        XCTAssertTrue(FinalCutBrowserSelection.canSettleWithoutPointer(hasSelection: { true }, hasFocus: { true },
+            select: { XCTFail("Do not replace an exact selection"); return false },
+            focus: { XCTFail("Do not focus an already focused browser") }))
+    }
+
+    func testBrowserUsesObservedStateAfterAnUncertainSetter() {
+        var selected = false, focused = false
+        XCTAssertTrue(FinalCutBrowserSelection.canSettleWithoutPointer(hasSelection: { selected }, hasFocus: { focused },
+            select: { selected = true; return false }, focus: { focused = true }))
+        XCTAssertTrue(FinalCutBrowserSelection.canSettleWithoutPointer(hasSelection: { false }, hasFocus: { true },
+            select: { true }, focus: { XCTFail("Leave existing focus alone while selection settles") }))
+        XCTAssertFalse(FinalCutBrowserSelection.canSettleWithoutPointer(hasSelection: { true }, hasFocus: { false },
+            select: { XCTFail("The exact project is already selected"); return false }, focus: {}),
+            "An unfocused browser still needs the guarded fallback")
+    }
+
     func testFirstImportAllowsEmptyTimelineButRejectsOtherProjects() {
         XCTAssertTrue(FinalCutImportTimeline.permits(nil, original: "Original", imported: "Silent Snip Analysis 1"))
         XCTAssertTrue(FinalCutImportTimeline.permits("", original: "Original", imported: "Silent Snip Analysis 1"))

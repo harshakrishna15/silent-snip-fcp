@@ -6,6 +6,18 @@ import Foundation
 import FoundationXML
 #endif
 
+enum FinalCutBrowserSelection {
+    /// An acknowledged selection can settle in the caller's existing wait.
+    /// Even after a setter error, the exact readback can establish selection
+    /// or focus without moving the pointer.
+    static func canSettleWithoutPointer(hasSelection: () -> Bool, hasFocus: () -> Bool,
+                                       select: () -> Bool, focus: () -> Void) -> Bool {
+        let selectionRequested = hasSelection() || select()
+        if !hasFocus() { focus() }
+        return (selectionRequested || hasSelection()) && hasFocus()
+    }
+}
+
 extension FinalCutAXSession {
     func openImportedProject(named name: String, importedXML: URL, replacement: XMLReplacementTarget? = nil,
                              acceptReplacement: Bool = false, originalTimelineSignature: [String]? = nil) async throws -> FinalCutAXSession {
@@ -89,12 +101,13 @@ extension FinalCutAXSession {
         let browserLookups = FinalCutImportBrowserLookups(root: mainWindow,
             read: { FinalCutAXAttributes.read($0, names: $1) },
             children: { self.children($0) }, equals: { CFEqual($0, $1) })
-        var polls = 0, observations = 0, nodeReads = 0, unknownObservations = 0
+        var polls = 0, observations = 0, nodeReads = 0, unknownObservations = 0, modalBrowserSkips = 0
         var outcome = "failed"
         defer {
             var counters = browserLookups.counters
             counters["polls"] = polls; counters["observations"] = observations; counters["nodeReads"] = nodeReads
             counters["unknownObservations"] = unknownObservations
+            counters["browser.modalSkips"] = modalBrowserSkips
             let report: [String: Any] = ["outcome": Task.isCancelled ? "cancelled" : outcome,
                 "elapsedSeconds": Date().timeIntervalSince(started), "counters": counters]
             if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
@@ -185,23 +198,29 @@ extension FinalCutAXSession {
                     }
                 }
             } else { lastDialog = nil }
-            let lookupDeadline = Date().addingTimeInterval(2)
-            let browser = browserLookups.resolve(currentProject: currentName, importedProject: name,
-                shouldContinue: { !Task.isCancelled && Date() < lookupDeadline })
-            guard browserLookups.lastResolutionComplete else {
-                try Task.checkCancellation()
-                markUnknownObservation()
-                try await Task.sleep(for: .milliseconds(150))
-                continue
-            }
             var browserVisible = false
-            if let browser {
-                do { browserVisible = try observe(browser).containsProject(named: name) }
-                catch {
+            if panel != nil {
+                // The quiet period cannot start under a modal import dialog,
+                // even if its result has already appeared in the browser.
+                modalBrowserSkips += 1
+            } else {
+                let lookupDeadline = Date().addingTimeInterval(2)
+                let browser = browserLookups.resolve(currentProject: currentName, importedProject: name,
+                    shouldContinue: { !Task.isCancelled && Date() < lookupDeadline })
+                guard browserLookups.lastResolutionComplete else {
                     try Task.checkCancellation()
                     markUnknownObservation()
                     try await Task.sleep(for: .milliseconds(150))
                     continue
+                }
+                if let browser {
+                    do { browserVisible = try observe(browser).containsProject(named: name) }
+                    catch {
+                        try Task.checkCancellation()
+                        markUnknownObservation()
+                        try await Task.sleep(for: .milliseconds(150))
+                        continue
+                    }
                 }
             }
             let visible = currentName == name || browserVisible
@@ -460,12 +479,12 @@ extension FinalCutAXSession {
                     ?? find(in: browser, role: kAXImageRole, description: name) else { return nil }
             return image
         }
-        func visibleProjectImage() -> AXUIElement? {
-            guard let image = projectImage(), let point = controlCenter(image) else { return nil }
+        func visibleProjectPoint(for expected: AXUIElement) -> CGPoint? {
+            guard let image = projectImage(), CFEqual(image, expected), let point = controlCenter(image) else { return nil }
             var hit: AXUIElement?
             guard AXUIElementCopyElementAtPosition(root, Float(point.x), Float(point.y), &hit) == .success,
                   let hit, CFEqual(hit, image) || children(image).contains(where: { CFEqual($0, hit) }) else { return nil }
-            return image
+            return point
         }
         var image = projectImage()
         if image == nil {
@@ -495,10 +514,10 @@ extension FinalCutAXSession {
         try assertInputFocus()
         // Use AX selection when supported. The single-click fallback establishes
         // selection and browser focus; never rely on a burst of double-clicks.
-        let selectedDirectly = AXUIElementSetAttributeValue(container, kAXSelectedChildrenAttribute as CFString,
-                                                           [item] as CFArray) == .success
-        let focusedDirectly = AXUIElementSetAttributeValue(container, kAXFocusedAttribute as CFString,
-                                                          kCFBooleanTrue) == .success
+        func browserHasExactSelection() -> Bool {
+            guard let selected = attribute(container, kAXSelectedChildrenAttribute) as? [AXUIElement] else { return false }
+            return selected.count == 1 && CFEqual(selected[0], item)
+        }
         func browserHasFocus() -> Bool {
             var focused = Self.elementAttribute(root, kAXFocusedUIElementAttribute)
             for _ in 0..<8 {
@@ -508,7 +527,13 @@ extension FinalCutAXSession {
             }
             return false
         }
-        if !selectedDirectly || !focusedDirectly || !browserHasFocus() {
+        let canSettleWithoutPointer = FinalCutBrowserSelection.canSettleWithoutPointer(hasSelection: browserHasExactSelection,
+            hasFocus: browserHasFocus, select: {
+                AXUIElementSetAttributeValue(container, kAXSelectedChildrenAttribute as CFString, [item] as CFArray) == .success
+            }, focus: {
+                _ = AXUIElementSetAttributeValue(container, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            })
+        if !canSettleWithoutPointer {
 #if DEBUG
             QuietSharePrototype.pluginLease?.reveal(reason: "Visible compatibility step: browser selection.")
 #endif
@@ -523,20 +548,25 @@ extension FinalCutAXSession {
             }
             // Resolve the hit again after AX changes; a floating effect window
             // must never receive the fallback click.
-            guard let visible = visibleProjectImage(), CFEqual(visible, image), let point = controlCenter(image) else {
+            try assertInputFocus()
+            guard currentSheet() == nil else { throw FinalCutCaptureError.changedProject }
+            guard let point = visibleProjectPoint(for: image) else {
                 throw FinalCutCaptureError.unavailable("The imported project is covered by another window. Move the covering window away from the browser, then analyze the clip again.")
             }
-            for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-                guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else {
-                    throw FinalCutCaptureError.unavailable("Could not select the imported project.")
-                }
+            guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+                  let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
+                throw FinalCutCaptureError.unavailable("Could not select the imported project.")
+            }
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier else {
+                throw FinalCutCaptureError.changedProject
+            }
+            for event in [down, up] {
                 event.setIntegerValueField(.mouseEventClickState, value: 1)
                 event.post(tap: .cghidEventTap)
             }
         }
         try await waitUntil(timeout: 3, context: "the exact imported project selection") {
-            guard let selected = self.attribute(container, kAXSelectedChildrenAttribute) as? [AXUIElement] else { return false }
-            return selected.count == 1 && CFEqual(selected[0], item) && browserHasFocus()
+            browserHasExactSelection() && browserHasFocus()
         }
         return container
     }
