@@ -329,6 +329,9 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 }
 @end
 
+// The main-thread controller may be recreated while a system prompt is open.
+static BOOL SSWorkflowPermissionPromptPending;
+
 @interface SSWorkflowViewController : NSViewController <FCPXTimelineObserver, NSTextFieldDelegate>
 @property (nonatomic, strong) id<FCPXHost> host;
 @property (nonatomic, strong) SSWorkflowWindowClient *windowClient;
@@ -345,6 +348,8 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 @property (nonatomic, strong) NSPopUpButton *output;
 @property (nonatomic, strong) NSButton *saveButton;
 @property (nonatomic, strong) NSButton *connectButton;
+@property (nonatomic, strong) NSObject *permissionWaitToken;
+@property (nonatomic, strong) NSObject *permissionCheckToken;
 @property (nonatomic, strong) NSView *bodyView;
 @property (nonatomic, strong) NSStackView *content;
 @property (nonatomic, strong) NSView *contentColumn;
@@ -1061,38 +1066,74 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 
 - (void)requestConnection:(id)sender { [self checkConnection:YES]; }
 
+- (void)recheckConnection:(id)sender { [self checkConnection:NO]; }
+
+- (void)schedulePermissionWaitDeadline:(dispatch_block_t)block {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), block);
+}
+
+- (void)showPermissionRecoveryAfterTimeout:(BOOL)timedOut {
+    BOOL promptPending = SSWorkflowPermissionPromptPending;
+    self.connectButton.hidden = NO;
+    self.connectButton.enabled = !promptPending || !self.permissionCheckToken;
+    self.connectButton.title = promptPending ? @"Check Permission" : @"Connect to Final Cut Pro";
+    self.connectButton.action = promptPending ? @selector(recheckConnection:) : @selector(requestConnection:);
+    self.projectLabel.stringValue = @"Connect to Final Cut Pro";
+    [self setStatusMessage:(timedOut || promptPending)
+        ? @"Check the macOS permission dialog or allow access in System Settings > Privacy & Security > Automation."
+        : @"Allow Silent Snip to access Final Cut Pro to show the open project and playhead."];
+}
+
 - (void)checkConnection:(BOOL)ask {
     // Window sizing belongs to the verified visible extension, independent
     // of permission to inspect a project or the presence of a selection.
     [self startWindowClientIfVisible];
-    if (!self.viewVisible || ![self hasVerifiedWindowHost]) return;
+    if (!self.viewVisible || ![self hasVerifiedWindowHost] || self.timeline || self.permissionWaitToken) return;
+    if (ask ? SSWorkflowPermissionPromptPending : self.permissionCheckToken != nil) return;
+    NSObject *wait = [NSObject new];
+    if (ask) SSWorkflowPermissionPromptPending = YES;
+    else self.permissionCheckToken = wait;
     NSUInteger generation = self.contextGeneration;
+    self.permissionWaitToken = wait;
     self.connectButton.enabled = NO;
     [self setStatusMessage:ask ? @"Waiting for macOS permission…" : @"Checking the Final Cut Pro connection…"];
     __weak SSWorkflowViewController *weakSelf = self;
     [self checkHostPermissionAskingUser:ask completion:^(OSStatus status) {
         SSWorkflowViewController *owner = weakSelf;
+        if (ask) SSWorkflowPermissionPromptPending = NO;
+        else if (owner.permissionCheckToken == wait) owner.permissionCheckToken = nil;
         if (!owner || !owner.viewVisible || generation != owner.contextGeneration) return;
         if (![owner hasVerifiedWindowHost]) {
             [owner stopWindowClient];
             return;
         }
+        if (owner.timeline) return;
         if (status != noErr) {
-            owner.connectButton.hidden = NO;
-            owner.connectButton.enabled = YES;
-            owner.projectLabel.stringValue = @"Connect to Final Cut Pro";
-            [owner setStatusMessage:@"Allow Silent Snip to access Final Cut Pro to show the open project and playhead."];
+            if (owner.permissionWaitToken && owner.permissionWaitToken != wait) return;
+            owner.permissionWaitToken = nil;
+            [owner showPermissionRecoveryAfterTimeout:NO];
             return;
         }
+        owner.permissionWaitToken = nil;
         owner.connectButton.hidden = YES;
         owner.timeline = owner.host.timeline;
         [owner.timeline addTimelineObserver:owner];
         [owner refreshProject];
     }];
+    if (self.permissionWaitToken != wait) return;
+    [self schedulePermissionWaitDeadline:^{
+        SSWorkflowViewController *owner = weakSelf;
+        if (!owner || !owner.viewVisible || generation != owner.contextGeneration ||
+            owner.permissionWaitToken != wait || ![owner hasVerifiedWindowHost]) return;
+        owner.permissionWaitToken = nil;
+        [owner showPermissionRecoveryAfterTimeout:YES];
+    }];
 }
 
 - (void)viewWillDisappear {
     self.viewVisible = NO;
+    self.permissionWaitToken = nil;
+    self.permissionCheckToken = nil;
     [self stopAutomaticUpdateObservers];
     self.verificationPanelPending = NO;
     self.verificationPanelToken += 1;

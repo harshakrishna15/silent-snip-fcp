@@ -454,6 +454,7 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic) OSStatus permissionStatus;
 @property (nonatomic) BOOL delaysPermission;
 @property (nonatomic, strong) NSMutableArray<SSPendingPermission *> *permissions;
+@property (nonatomic, strong) NSMutableArray<dispatch_block_t> *permissionDeadlines;
 @property (nonatomic, strong) NSMutableArray<SSFakeWorkflowReviewClient *> *reviewClients;
 @property (nonatomic, strong) NSMutableArray<SSFakeWorkflowWindowClient *> *windowClients;
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *verificationCompletions;
@@ -473,6 +474,10 @@ static void unexpectedWindowBoundary(void) {
 }
 - (void)startAutomaticUpdateObservers {}
 - (void)stopAutomaticUpdateObservers {}
+- (void)schedulePermissionWaitDeadline:(dispatch_block_t)completion {
+    if (!self.permissionDeadlines) self.permissionDeadlines = [NSMutableArray new];
+    [self.permissionDeadlines addObject:[completion copy]];
+}
 - (void)scheduleAutomaticUpdate:(dispatch_block_t)completion afterDelay:(NSTimeInterval)delay {
     if (!self.automaticUpdateCompletions) self.automaticUpdateCompletions = [NSMutableArray new];
     [self.automaticUpdateCompletions addObject:[completion copy]];
@@ -555,6 +560,12 @@ static void completePermission(SSPendingPermission *request, OSStatus status) {
     void (^completion)(OSStatus) = request.completion;
     request.completion = nil;
     completion(status);
+}
+
+static void runPermissionDeadlines(SSTestWorkflowViewController *controller) {
+    NSArray<dispatch_block_t> *ready = controller.permissionDeadlines.copy;
+    [controller.permissionDeadlines removeAllObjects];
+    for (dispatch_block_t completion in ready) completion();
 }
 
 static SSProxy *sequence(NSString *UID, NSString *libraryPath, NSString *projectName) {
@@ -844,6 +855,91 @@ static void deniedPermissionKeepsConnectExplicit(void) {
     completeLoad(controller.settings.loads[0], values(-50, NO), nil);
     check(controller.saveButton.enabled, @"Persistence enables only after permission and the project load succeed");
     closeController(controller);
+    groupCount += 1;
+}
+
+static void stalledPermissionPromptOffersNonpromptingRecovery(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openControllerWithPermission(current, errAEEventWouldRequireUserConsent, NO);
+    controller.delaysPermission = YES;
+    [controller requestConnection:nil];
+    check(controller.permissionDeadlines.count == 1 && !controller.connectButton.enabled,
+          @"The explicit prompt has one deadline and starts with Connect disabled");
+    runPermissionDeadlines(controller);
+    check(!controller.connectButton.hidden && controller.connectButton.enabled &&
+          controller.connectButton.action == @selector(recheckConnection:) &&
+          [controller.statusLabel.stringValue containsString:@"Automation"],
+          @"A stalled prompt offers a nonprompting check and macOS recovery guidance");
+    [controller requestConnection:nil];
+    check(controller.permissions.count == 2, @"A timeout cannot release the pending prompt guard");
+    [controller recheckConnection:nil];
+    runPermissionDeadlines(controller);
+    [controller recheckConnection:nil];
+    check(controller.permissions.count == 3 && !controller.permissions[2].asksUser && !controller.connectButton.enabled,
+          @"A stalled recovery check cannot be repeated while it is in flight");
+    check(current.timelineReadCount == 0 && controller.settings.loads.count == 0 && controller.reviewClients.count == 0,
+          @"Permission recovery never reads project data or starts analysis");
+    completePermission(controller.permissions[1], noErr);
+    completePermission(controller.permissions[2], errAEEventNotPermitted);
+    check(controller.connectButton.hidden && current.timelineReadCount == 1 && current.testTimeline.addCount == 1 &&
+          controller.settings.loads.count == 1 && [controller.statusLabel.stringValue isEqual:@"Loading project settings…"],
+          @"A valid late grant connects once and cannot be overwritten by a stale recovery result");
+    completeLoad(controller.settings.loads[0], values(-50, NO), nil);
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void overlappingPermissionGrantsConnectOnlyOnce(void) {
+    for (NSNumber *firstIndex in @[@1, @2]) {
+        SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+        SSTestWorkflowViewController *controller = openControllerWithPermission(current, errAEEventWouldRequireUserConsent, NO);
+        controller.delaysPermission = YES;
+        [controller requestConnection:nil];
+        runPermissionDeadlines(controller);
+        [controller recheckConnection:nil];
+        NSUInteger first = firstIndex.unsignedIntegerValue;
+        completePermission(controller.permissions[first], noErr);
+        runPermissionDeadlines(controller);
+        completePermission(controller.permissions[3 - first], noErr);
+        check(controller.connectButton.hidden && current.timelineReadCount == 1 && current.testTimeline.addCount == 1 &&
+              controller.settings.loads.count == 1 && [controller.statusLabel.stringValue isEqual:@"Loading project settings…"],
+              @"Either overlapping permission grant connects once and invalidates the other result and deadline");
+        completeLoad(controller.settings.loads[0], values(-50, NO), nil);
+        closeController(controller);
+    }
+    groupCount += 1;
+}
+
+static void permissionDeadlineAndPromptGuardSurviveClosing(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *closing = openControllerWithPermission(current, errAEEventNotPermitted, YES);
+    runPermissionDeadlines(closing);
+    check(!closing.connectButton.hidden && closing.connectButton.enabled &&
+          closing.connectButton.action == @selector(requestConnection:),
+          @"A stalled initial observation still allows an explicit prompt");
+    [closing requestConnection:nil];
+    [closing viewWillDisappear];
+    NSString *closedStatus = closing.statusLabel.stringValue;
+    runPermissionDeadlines(closing);
+    completePermission(closing.permissions[0], noErr);
+    check([closing.statusLabel.stringValue isEqual:closedStatus] && current.timelineReadCount == 0,
+          @"A hidden view ignores both deadlines and late successful observations");
+
+    SSTestWorkflowViewController *reopened = openControllerWithPermission(current, errAEEventNotPermitted, NO);
+    [reopened requestConnection:nil];
+    check(reopened.permissions.count == 1 && !reopened.permissions[0].asksUser &&
+          reopened.connectButton.action == @selector(recheckConnection:),
+          @"A replacement controller can observe permission but cannot duplicate an outstanding prompt");
+    completePermission(closing.permissions[1], noErr);
+    check(current.timelineReadCount == 0 && reopened.settings.loads.count == 0,
+          @"A grant from the closed controller cannot connect either view");
+    reopened.permissionStatus = noErr;
+    [reopened recheckConnection:nil];
+    check(reopened.permissions.count == 2 && !reopened.permissions[1].asksUser &&
+          reopened.connectButton.hidden && current.timelineReadCount == 1 && current.testTimeline.addCount == 1,
+          @"The replacement controller recovers from the system grant without prompting again");
+    completeLoad(reopened.settings.loads[0], values(-50, NO), nil);
+    closeController(reopened);
     groupCount += 1;
 }
 
@@ -3342,6 +3438,9 @@ int main(void) {
         invalidNumbersNeverDispatchSave();
         delayedPermissionCannotReconnectHiddenView();
         deniedPermissionKeepsConnectExplicit();
+        stalledPermissionPromptOffersNonpromptingRecovery();
+        overlappingPermissionGrantsConnectOnlyOnce();
+        permissionDeadlineAndPromptGuardSurviveClosing();
         windowLeaseTracksVisibleVerifiedHostWithoutProjectWork();
         analyzeDispatchPinsPayloadAndGesture();
         applyRequiresReviewAndFreshGesture();
