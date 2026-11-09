@@ -58,16 +58,31 @@ final class FinalCutMenuPath<Element> {
         // Some hosts materialize descendants only after File/Share opens.
         // A failed closed-menu shortcut lookup must not disable the ordinary
         // route: discover only the currently needed prefix in that case.
-        if (hierarchy?.count ?? 0) < (index + 1) * 2,
+        let hadRetainedCommand = (hierarchy?.count ?? 0) >= (index + 1) * 2
+        if !hadRetainedCommand,
            discover(in: menuBar, through: index, shortcut: false, shouldContinue: shouldContinue) == nil { return nil }
-        guard let hierarchy else { return nil }
-        counters["menuPath.pathChecks", default: 0] += 1
-        guard var result = mounted(hierarchy, menuBar: menuBar, index: index,
-            expectedContainer: container, shortcut: false, uniqueAncestors: false,
-            requireEnabled: true, shouldContinue: shouldContinue) else {
-            invalidate()
-            return nil
+        guard let previous = hierarchy, let previousBar = previous.first, equals(previousBar, menuBar) else { return nil }
+        func mountedInput(_ path: [Element]) -> Item? {
+            counters["menuPath.pathChecks", default: 0] += 1
+            return mounted(path, menuBar: menuBar, index: index, expectedContainer: container,
+                shortcut: false, uniqueAncestors: false, requireEnabled: true, shouldContinue: shouldContinue)
         }
+        var target = mountedInput(previous)
+        if target == nil {
+            invalidate()
+            // Opening a menu can replace its closed AX children. Rebuild once
+            // before dispatching this command, keeping every already-pressed
+            // ancestor and requiring the exact submenu just observed onscreen.
+            guard hadRetainedCommand, index > 0,
+                  let fresh = discover(in: menuBar, through: index, shortcut: false, shouldContinue: shouldContinue),
+                  let current = hierarchy, equals(fresh.container, container),
+                  (0..<index).allSatisfy({ equals(previous[$0 * 2 + 1], current[$0 * 2 + 1]) }) else {
+                hierarchy = nil
+                return nil
+            }
+            target = mountedInput(current)
+        }
+        guard var result = target else { return nil }
         counters["menuPath.actionReads", default: 0] += 1
         guard shouldContinue(), let available = actions(result.element), available.count <= 32,
               available.allSatisfy({ $0.utf8.count <= 128 }),

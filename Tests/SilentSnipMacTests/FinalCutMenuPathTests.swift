@@ -146,6 +146,31 @@ final class FinalCutMenuPathTests: XCTestCase {
         XCTAssertEqual(host.actionRequests, [1, 3, 5])
     }
 
+    func testOpeningShareCanReplaceItsClosedMenuBeforeFinalDispatch() throws {
+        let host = Host()
+        XCTAssertEqual(host.command()?.element, 5)
+        XCTAssertEqual(host.input(0, container: 0)?.element, 1)
+        XCTAssertEqual(host.input(1, container: 2)?.element, 3)
+        host.nodes[3]?[kAXChildrenAttribute] = [7]
+        host.nodes[7] = [kAXRoleAttribute: kAXMenuRole, kAXChildrenAttribute: [8]]
+        host.nodes[8] = host.nodes[5]
+
+        XCTAssertEqual(host.input(container: 7)?.element, 8)
+        XCTAssertEqual(host.actionRequests, [1, 3, 8])
+    }
+
+    func testRebuiltMenuCannotReplaceAnAlreadyPressedAncestor() throws {
+        let host = Host()
+        XCTAssertEqual(host.command()?.element, 5)
+        XCTAssertEqual(host.input(0, container: 0)?.element, 1)
+        XCTAssertEqual(host.input(1, container: 2)?.element, 3)
+        host.nodes[2]?[kAXChildrenAttribute] = [7]
+        host.nodes[7] = host.nodes[3]
+
+        XCTAssertNil(host.input())
+        XCTAssertEqual(host.actionRequests, [1, 3])
+    }
+
     func testAmbiguousHierarchyMissingChildrenAndOversizedMenusReject() {
         let mutations: [(Host) -> Void] = [
             { $0.nodes[9] = $0.nodes[1] },

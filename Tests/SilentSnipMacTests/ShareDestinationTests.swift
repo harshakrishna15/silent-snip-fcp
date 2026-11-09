@@ -96,7 +96,10 @@ final class ShareDestinationTests: XCTestCase {
             _ = try self.write("Project.fcpxml", in: asset.directoryURL, contents: self.completeXML)
         }
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - started, 2.9)
-        XCTAssertEqual(result.lastPathComponent, "Project.fcpxml")
+        let original = manager.assets[0].directoryURL.appendingPathComponent("Project.fcpxml")
+        XCTAssertNotEqual(result, original)
+        try Data("later producer write".utf8).write(to: original)
+        XCTAssertEqual(try String(contentsOf: result), completeXML)
     }
 
     @MainActor func testSymlinkedShareRootCannotRotateAnExternalLog() throws {
@@ -188,6 +191,58 @@ final class ShareDestinationTests: XCTestCase {
             }
             XCTAssertEqual(try String(contentsOf: source), "Original media")
         }
+    }
+
+    @MainActor func testPendingRenderCompletesOnlyAfterBothFilesAndSurvivesRepeatedDelivery() async throws {
+        let manager = try manager()
+        var pending: ShareDestinationAsset?
+        let dispatched = expectation(description: "Render dispatched")
+        let capture = Task { @MainActor in
+            try await manager.captureMedia(projectName: "Processed", timeout: 2) {
+                pending = try manager.createAsset(name: "Processed")
+                dispatched.fulfill()
+            }
+        }
+        await fulfillment(of: [dispatched], timeout: 1)
+        let asset = try XCTUnwrap(pending)
+        let xml = try write("Processed.fcpxml", in: asset.directoryURL)
+        let audio = try write("Processed.wav", in: asset.directoryURL)
+
+        XCTAssertTrue(manager.handleOpen(urls: [xml]))
+        XCTAssertTrue(manager.hasActiveRequest)
+        XCTAssertTrue(manager.handleOpen(urls: [audio]))
+        XCTAssertTrue(manager.handleOpen(urls: [audio]))
+
+        let receipt = try await capture.value
+        XCTAssertEqual(receipt.id, asset.id)
+        XCTAssertEqual(receipt.xmlURL, xml)
+        XCTAssertEqual(receipt.mediaURLs, [audio])
+        try manager.validateReceipt(receipt)
+        XCTAssertFalse(manager.hasActiveRequest)
+
+        var lateFailure: Error?
+        manager.onFailure = { lateFailure = $0 }
+        XCTAssertTrue(manager.handleOpen(urls: [xml]))
+        XCTAssertNil(lateFailure)
+        let unexpected = try write("Processed-Music.wav", in: asset.directoryURL)
+        XCTAssertTrue(manager.handleOpen(urls: [unexpected]))
+        XCTAssertEqual(lateFailure as? ShareDestinationError, .changedDelivery)
+        XCTAssertThrowsError(try manager.validateReceipt(receipt)) { error in
+            XCTAssertEqual(error as? ShareDestinationError, .changedDelivery)
+        }
+    }
+
+    @MainActor func testRenderTimeoutReleasesRequestWithoutDelivery() async throws {
+        let manager = try manager()
+        do {
+            _ = try await manager.captureMedia(projectName: "Processed", timeout: 0.01) {
+                _ = try manager.createAsset(name: "Processed")
+            }
+            XCTFail("An incomplete render must time out")
+        } catch FinalCutCaptureError.unavailable(let message) {
+            XCTAssertTrue(message.contains("rendered audio"))
+        }
+        XCTAssertFalse(manager.hasActiveRequest)
     }
 
     @MainActor func testConsecutiveLateRendersSerializeCleanupRegistration() async throws {

@@ -67,6 +67,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         let requiresMedia: Bool
         var result: Result<ShareDestinationReceipt, Error>?
         var completedXML: Data?
+        var deliverySignal: AsyncStream<Void>.Continuation?
     }
     private var xmlRequest: XMLRequest?
     private var cleanupRegistrations: [UUID: Task<Void, Never>] = [:]
@@ -145,6 +146,24 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         xmlRequest = XMLRequest(token: token, projectName: projectName, requiresMedia: requiresMedia)
         defer { if xmlRequest?.token == token { xmlRequest = nil } }
         try await trigger()
+        if requiresMedia {
+            // Rendered media requires Open Document. Wake on that verified
+            // delivery instead of checking for it every 100 ms during a render.
+            if xmlRequest?.result == nil, timeout > 0 {
+                let (delivery, signal) = AsyncStream<Void>.makeStream()
+                xmlRequest?.deliverySignal = signal
+                let expiry: Task<Void, Error>? = timeout < Double(Int64.max) ? Task {
+                    try await Task.sleep(for: .seconds(timeout))
+                    signal.finish()
+                } : nil
+                defer { expiry?.cancel(); signal.finish() }
+                var waiter = delivery.makeAsyncIterator()
+                _ = await waiter.next()
+            }
+            try Task.checkCancellation()
+            if let result = xmlRequest?.result { return try result.get() }
+            throw FinalCutCaptureError.unavailable("Final Cut Pro did not deliver the rendered audio and project XML through Share to Silent Snip.")
+        }
         let deadline = Date().addingTimeInterval(timeout)
         var delivery = StableXMLDelivery()
         while Date() < deadline {
@@ -179,11 +198,18 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                     case .inUse, .incomplete:
                         delivery = StableXMLDelivery()
                     case .unavailable:
-                        if delivery.observe(try? Data(contentsOf: file), validate: {
+                        let data = try? Data(contentsOf: file)
+                        if delivery.observe(data, validate: {
                             (try? TimelineParser.parse(data: $0)) != nil
-                        }) {
-                            _ = handleOpen(urls: [candidate])
+                        }), let data {
+                            guard handleOpen(urls: [candidate]), xmlRequest?.result != nil else {
+                                throw ShareDestinationError.invalidFile
+                            }
+                            guard (try? Data(contentsOf: file)) == data else { throw ShareDestinationError.changedDelivery }
+                            xmlRequest?.completedXML = data
+                            asset.awaitingHostXMLCompletion = true
                             record("xml-stability-fallback", asset: asset)
+                            continue
                         }
                     }
                 } else {
@@ -251,6 +277,16 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                 }
                 return true // Late Open Document after validated file readiness.
             }
+            if asset.completed, asset.requestOwned, asset.requiresMedia {
+                // The host can repeat either half of a split delivery. Only
+                // acknowledge the already-received paths. Another output makes
+                // this receipt unusable, including after the waiter wakes.
+                guard urls.allSatisfy({ asset.receivedURLs.contains($0.standardizedFileURL) }) else {
+                    asset.unexpectedMediaDelivery = true
+                    throw ShareDestinationError.changedDelivery
+                }
+                return true
+            }
             guard !asset.completed else { throw ShareDestinationError.alreadyCompleted }
             guard canBeginShare?() != false else { throw ShareDestinationError.shareInProgress }
             let receipt = try receive(urls: urls, for: asset)
@@ -260,7 +296,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
                 record("open-complete", asset: asset, details: ["files": urls.map(\.path)])
                 if asset.requestOwned && asset.requiresMedia { registerCompletedRender(receipt) }
                 if asset.requestOwned || !asset.requiresMedia {
-                    if xmlRequest?.assetID == asset.id { xmlRequest?.result = .success(receipt) }
+                    completeRequest(for: asset.id, with: .success(receipt))
                     // A canceled or restarted request must never start a different analysis.
                 } else { onReceive?(receipt) }
             } else {
@@ -269,10 +305,16 @@ public enum ShareDestinationError: LocalizedError, Equatable {
         } catch {
             record("open-failed", asset: candidates.first, details: ["error": error.localizedDescription])
             if let candidate = candidates.first, xmlRequest?.assetID == candidate.id {
-                xmlRequest?.result = .failure(error)
+                completeRequest(for: candidate.id, with: .failure(error))
             } else { onFailure?(error) }
         }
         return true
+    }
+
+    private func completeRequest(for assetID: UUID, with result: Result<ShareDestinationReceipt, Error>) {
+        guard xmlRequest?.assetID == assetID else { return }
+        xmlRequest?.result = result
+        xmlRequest?.deliverySignal?.finish()
     }
 
     public func asset(id: String) -> ShareDestinationAsset? { assets.first { $0.uniqueID == id } }
@@ -335,6 +377,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
               Set(receipt.mediaURLs + [receipt.xmlURL]) == asset.receivedURLs else {
             throw ShareDestinationError.unknownDelivery
         }
+        guard !asset.unexpectedMediaDelivery else { throw ShareDestinationError.changedDelivery }
         for url in asset.receivedURLs {
             let file = url.pathExtension.lowercased() == "fcpxmld" ? url.appendingPathComponent("Info.fcpxml") : url
             guard url.deletingLastPathComponent().path == asset.directoryURL.path,
@@ -425,6 +468,7 @@ public enum ShareDestinationError: LocalizedError, Equatable {
     public let requestOwned: Bool
     fileprivate var receivedURLs = Set<URL>()
     fileprivate var completed = false
+    fileprivate var unexpectedMediaDelivery = false
     fileprivate var awaitingHostXMLCompletion = false
     fileprivate var fileIdentities: [URL: ShareDestinationFileIdentity] = [:]
     private weak var manager: ShareDestinationManager?
