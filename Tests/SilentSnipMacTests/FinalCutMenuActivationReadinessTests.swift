@@ -51,8 +51,11 @@ final class FinalCutMenuActivationReadinessTests: XCTestCase {
     }
 
     func testObservedCompletionReturnsWithoutWaitingForSelectionOrGracePeriod() {
-        XCTAssertTrue(FinalCutMenuActivationReadiness.isReady(completed: true, exactlySelected: false, elapsed: 0))
-        XCTAssertTrue(FinalCutMenuActivationReadiness.isReady(completed: true, exactlySelected: true, elapsed: 0.01))
+        func readSelection() -> Bool {
+            XCTFail("A completed action does not need another menu selection read")
+            return false
+        }
+        XCTAssertTrue(FinalCutMenuActivationReadiness.isReady(completed: true, exactlySelected: readSelection(), elapsed: 0))
     }
 
     func testSelectionDoesNotAuthorizeAnotherActivationWhileAXActionMayStillBePending() {

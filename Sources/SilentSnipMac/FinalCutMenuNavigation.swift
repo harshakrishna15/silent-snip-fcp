@@ -416,8 +416,8 @@ enum FinalCutMenuProjectTransition {
 enum FinalCutMenuActivationReadiness {
     /// Observed completion never needs a delay. Selection alone cannot prove
     /// that a successful AX action has finished dispatching its command.
-    static func isReady(completed: Bool, exactlySelected: Bool, elapsed: TimeInterval) -> Bool {
-        completed || (exactlySelected && elapsed >= 0.2)
+    static func isReady(completed: Bool, exactlySelected: @autoclosure () -> Bool, elapsed: TimeInterval) -> Bool {
+        completed || (elapsed >= 0.2 && exactlySelected())
     }
 }
 
