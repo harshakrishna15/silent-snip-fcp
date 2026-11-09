@@ -14,7 +14,7 @@ Silent Snip quits automatically after Final Cut quits and interrupted work finis
 
 Enable the copied **Silent Snip.app** in **System Settings → Privacy & Security → Accessibility**, or the control-access pane named in its error. On macOS 27 that pane is **Device Control and Data Access**. If the app is missing, click **+**, press **Command–Shift–G**, enter its actual Applications path, and choose **Open**. The Workflow extension reports access errors when an operation needs permission.
 
-The Workflow frontend uses a separate Automation grant to inspect the current Final Cut library, project, and playhead. When **Connect to Final Cut Pro** appears in the extension, click it and approve the macOS request. Permissions are granted by you; build and registration tools do not grant them.
+The Workflow frontend uses a separate Automation grant to inspect the current Final Cut library, project, and playhead. When **Connect to Final Cut Pro** appears in the extension, click it and approve the macOS request. If the request is still pending after ten seconds, **Check Permission** can check access without asking macOS to show another prompt. You grant permissions in macOS.
 
 Select the actual copied worker, rather than an inert staged candidate. Ad hoc rebuilds can require quitting and reopening it, then refreshing its existing control-access entry if access remains unavailable. The worker keeps the existing `local.silentsnip.app` identity and `SilentSnip` executable. Updating from the previous effect version does not require a new worker identity or a different Share receiver.
 
