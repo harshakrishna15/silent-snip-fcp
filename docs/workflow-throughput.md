@@ -1,5 +1,13 @@
 # Workflow throughput and audio preservation
 
+## November 9 analysis and navigation candidate
+
+The installed worker 78 completed two analyses on the same disposable 24-second Noise Gate → Limiter clip in the workspace's **Cutdown Integration.fcpbundle**. Separate XML and audio exchanges took **7.004 s** and **7.134 s**. Two more analyses using the existing combined exchange took **6.031 s** and **4.299 s**. All four reviews found the same six cuts. The separate XML exchange accounted for **2.231–2.610 s**. The runs were sequential, with different host activation conditions. They measure the installed worker and establish the cost of the exchange this candidate can skip more often.
+
+The baseline Apply verified seven retained source clips and took **21.538 s**, including **0.732 s** reopening the result for verification. Baseline Go to Cut took **1.892 s**, moved the actual playhead to **00:00:08:09**, and preserved clip selection. The other disposable project hit a menu failure twice before render dispatch. Generated source bytes and file identity matched the pretest record. Timing, XML, and result receipts are in `build/AnalysisLatency/Baseline`.
+
+The candidate keeps up to eight exact routing hints, wakes on rendered Share delivery, skips redundant browser work during bulk Apply, and uses the Workflow SDK for Go to Cut when both components support it. Host Swift tests and the offscreen Workflow harnesses passed. Candidate latency, the native menu recovery, and SDK playhead movement still need a live run with an isolated or explicitly approved test setup.
+
 ## Worker 71: native effect-preserving cuts
 
 Worker71/frontend27 completed a fresh Analyze → review → Apply on generated 60-second audio in workspace-root **Cutdown Integration.fcpbundle**. **19 cuts** produced **20 original-source clips / 35.300 s**. Both advanced **Noise Gate → Legacy Limiter** editors matched the source on every retained clip; volume remained **−3 dB**. Raw source bytes, identity and mutation stamps, fresh native audio, exact source intervals and native result UID passed. Every rendering filter now requires native preservation and fresh measurements; unsupported layouts/output modes stop.
