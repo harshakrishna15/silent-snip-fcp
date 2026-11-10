@@ -490,14 +490,15 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         XCTAssertTrue(result.review.selectedCuts.isEmpty)
     }
 
-    func testCachedRecalculationPreservesOrResetsChoicesByRange() async throws {
+    func testCachedRecalculationKeepsChangedPauseExcludedUntilReviewed() async throws {
         let fixture = try fixture()
         var result = try await analyze(fixture)
         try result.review.setIncluded(false, cutID: result.review.cuts[0].id)
         XCTAssertFalse(try result.recalculate(settings: AnalysisSettings(thresholdDBFS: -30)))
         XCTAssertFalse(result.review.cuts[0].included)
         XCTAssertTrue(try result.recalculate(settings: AnalysisSettings(beforeSpeechPadding: 0.2, afterSpeechPadding: 0.2)))
-        XCTAssertTrue(result.review.cuts[0].included)
+        XCTAssertFalse(result.review.cuts[0].included)
+        XCTAssertTrue(result.review.cuts[0].needsReview)
         XCTAssertEqual(result.review.cuts[0].range, TimeRange(start: RationalTime(6, 5), end: RationalTime(9, 5)))
     }
 

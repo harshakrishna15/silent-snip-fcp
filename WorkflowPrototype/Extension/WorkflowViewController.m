@@ -289,6 +289,7 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 @property (nonatomic, copy) NSString *startValue;
 @property (nonatomic, copy) NSString *endValue;
 @property (nonatomic, copy) NSString *durationValue;
+@property (nonatomic) BOOL needsReview;
 @property (nonatomic, strong) NSFont *textFont;
 - (NSRect)columnRectForIndex:(NSUInteger)index;
 - (NSTextAlignment)textAlignmentForColumn:(NSUInteger)index;
@@ -317,11 +318,14 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     NSMutableParagraphStyle *style = [NSMutableParagraphStyle new];
     style.alignment = NSTextAlignmentRight;
     style.lineBreakMode = NSLineBreakByClipping;
-    NSArray *values = @[self.startValue ?: @"", self.endValue ?: @"", self.durationValue ?: @""];
+    NSString *duration = self.durationValue ?: @"";
+    if (self.needsReview) duration = [@"Review · " stringByAppendingString:duration];
+    NSArray *values = @[self.startValue ?: @"", self.endValue ?: @"", duration];
     for (NSUInteger index = 0; index < values.count; ++index) {
         style.alignment = [self textAlignmentForColumn:index];
         NSColor *color = !self.enabled ? NSColor.disabledControlTextColor :
-            (index == 1 ? NSColor.secondaryLabelColor : NSColor.labelColor);
+            (index == 2 && self.needsReview ? NSColor.systemOrangeColor :
+             (index == 1 ? NSColor.secondaryLabelColor : NSColor.labelColor));
         NSDictionary *attributes = @{NSFontAttributeName: [self textFontForColumn:index],
             NSForegroundColorAttributeName: color, NSParagraphStyleAttributeName: style};
         [values[index] drawInRect:[self columnRectForIndex:index] withAttributes:attributes];
@@ -1598,7 +1602,7 @@ static BOOL SSWorkflowPermissionPromptPending;
     NSArray<NSView *> *rows = self.cutList.arrangedSubviews;
     if (cuts.count != self.reviewCuts.count || rows.count != cuts.count ||
         self.navigateMenu.numberOfItems != (NSInteger)cuts.count + 1) return NO;
-    NSArray<NSString *> *displayedFields = @[@"id", @"start", @"end", @"duration", @"eligible", @"reason"];
+    NSArray<NSString *> *displayedFields = @[@"id", @"start", @"end", @"duration", @"eligible", @"reason", @"needsReview"];
     for (NSUInteger index = 0; index < cuts.count; ++index) {
         if (![rows[index] isKindOfClass:SSWorkflowCutRow.class] || ((SSWorkflowCutRow *)rows[index]).tag != (NSInteger)index) return NO;
         NSDictionary *previous = self.reviewCuts[index];
@@ -1675,14 +1679,18 @@ static BOOL SSWorkflowPermissionPromptPending;
             row.startValue = [cut[@"start"] description];
             row.endValue = [cut[@"end"] description];
             row.durationValue = [cut[@"duration"] description];
+            row.needsReview = [cut[@"needsReview"] boolValue];
             row.controlSize = NSControlSizeSmall;
             row.textFont = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
-            row.accessibilityLabel = title;
+            row.accessibilityLabel = row.needsReview ? [title stringByAppendingString:@", Review needed"] : title;
             row.tag = (NSInteger)index;
             row.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
             row.font = row.textFont;
             row.toolTip = [NSString stringWithFormat:@"%@%@%@", title,
                 [cut[@"reason"] length] ? @" — " : @"", cut[@"reason"] ?: @""];
+            if (row.needsReview) {
+                row.toolTip = [row.toolTip stringByAppendingString:@"\nThis pause changed after you chose to keep it. Review the new range before including it."];
+            }
             row.accessibilityHelp = row.toolTip;
             row.accessibilityIdentifier = [@"silentsnip.workflow.cut." stringByAppendingString:cut[@"id"]];
             [self.cutList addArrangedSubview:row];

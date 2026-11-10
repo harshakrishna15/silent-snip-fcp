@@ -38,6 +38,34 @@ final class TimelineTests: XCTestCase {
         TimeRange(start: RationalTime(start), end: RationalTime(end))
     }
 
+    func testReviewPreservesUnchangedChoicesAndFlagsSplitOrMergedKeptPauses() throws {
+        let doc = try parse(audioOnlyFixture())
+        let target = try doc.selectedTarget(.init(timelineRange: range(8, 16)), requireExistingMedia: false)
+        let unchanged = TimeRange(start: RationalTime(41, 5), end: RationalTime(42, 5))
+        let whole = range(10, 12)
+        var review = try ReviewPlan(jobID: UUID(), document: doc, target: target,
+            analysis: .init(candidates: [unchanged, whole, range(12, 13)], disposition: .cuts))
+        for cut in review.cuts.prefix(2) {
+            try review.setIncluded(false, cutID: cut.id)
+        }
+        let left = TimeRange(start: RationalTime(10), end: RationalTime(54, 5))
+        let right = range(11, 12)
+        let split = try SilenceAnalysisResult(candidates: [unchanged, left, right, range(12, 13), range(14, 15)], disposition: .cuts)
+        XCTAssertTrue(try review.recalculate(split, document: doc))
+        XCTAssertEqual(review.cuts.map(\.included), [false, false, false, true, true])
+        XCTAssertEqual(review.cuts.map(\.needsReview), [false, true, true, false, false])
+        XCTAssertFalse(try review.recalculate(split, document: doc))
+        XCTAssertTrue(review.cuts[2].needsReview, "An output-only refresh preserves the review flag.")
+
+        let merged = try SilenceAnalysisResult(candidates: [unchanged, range(10, 13), range(14, 15)], disposition: .cuts)
+        XCTAssertTrue(try review.recalculate(merged, document: doc))
+        XCTAssertEqual(review.cuts.map(\.included), [false, false, true])
+        XCTAssertEqual(review.cuts.map(\.needsReview), [false, true, false])
+        try review.setIncluded(true, cutID: review.cuts[1].id)
+        XCTAssertEqual(review.selectedCuts.map(\.range), [range(10, 13), range(14, 15)])
+        XCTAssertFalse(review.cuts[1].needsReview)
+    }
+
     func testProjectTimecodeAndSourceTimecodeAreIndependent() throws {
         let doc = try parse(fixture())
         XCTAssertEqual(doc.projectTimecodeStart, RationalTime(3600))

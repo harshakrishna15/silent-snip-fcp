@@ -184,10 +184,10 @@ public struct AnalyzedAudioProject: Sendable {
         let updated = try SilenceDetector.analyze(windows: audio.windows, target: target.timelineRange,
             frameDuration: cutFrameDuration ?? ProjectAudioAnalysis.cutGrid(videoFrameDuration: document.frameDuration,
                 sampleRate: audio.sampleRate), settings: settings)
-        let resetChoices = try review.recalculate(updated, document: document)
+        let changedRanges = try review.recalculate(updated, document: document)
         self.settings = settings
         self.analysis = updated
-        return resetChoices
+        return changedRanges
     }
 
     init(document: TimelineDocument, target: TimelineClip, dialogueContext: DialogueRenderContext,

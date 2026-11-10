@@ -689,7 +689,7 @@ public struct ReviewAnalysisResult: Sendable {
                 start: try timecode(cut.range.start, analysis: analysis, dropFrame: result.dropFrame),
                 end: try timecode(cut.range.end, analysis: analysis, dropFrame: result.dropFrame),
                 duration: Self.seconds(try cut.range.checkedDuration()), included: cut.included,
-                eligible: cut.isEligible, reason: cut.unavailableReason)
+                eligible: cut.isEligible, reason: cut.unavailableReason, needsReview: cut.needsReview ? true : nil)
         }
         let removed = try review.selectedDuration
         let duration = try review.target.timelineRange.checkedDuration()

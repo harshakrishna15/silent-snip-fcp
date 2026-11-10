@@ -161,11 +161,13 @@ public struct ReviewCutResponse: Codable, Equatable, Sendable {
     public let included: Bool
     public let eligible: Bool
     public let reason: String?
+    public let needsReview: Bool?
 
     public init(id: String, start: String, end: String, duration: String, included: Bool,
-                eligible: Bool, reason: String? = nil) {
+                eligible: Bool, reason: String? = nil, needsReview: Bool? = nil) {
         self.id = id; self.start = start; self.end = end; self.duration = duration
         self.included = included; self.eligible = eligible; self.reason = reason
+        self.needsReview = needsReview
     }
 }
 

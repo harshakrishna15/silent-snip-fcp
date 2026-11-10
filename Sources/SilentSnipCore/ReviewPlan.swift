@@ -5,6 +5,7 @@ public struct ReviewCut: Encodable, Identifiable, Equatable, Sendable {
     public let range: TimeRange
     public let unavailableReason: String?
     public fileprivate(set) var included: Bool
+    public fileprivate(set) var needsReview = false
     public var isEligible: Bool { unavailableReason == nil }
 }
 
@@ -43,13 +44,17 @@ public struct ReviewPlan: Encodable, Sendable {
         guard let index = cuts.firstIndex(where: { $0.id == cutID }) else { throw ReviewError.unknownCut }
         guard cuts[index].isEligible || !included else { throw ReviewError.unavailableCut }
         cuts[index].included = included
+        cuts[index].needsReview = false
     }
 
     public mutating func selectAllEligible(_ selected: Bool) {
-        for index in cuts.indices { cuts[index].included = selected && cuts[index].isEligible }
+        for index in cuts.indices {
+            cuts[index].included = selected && cuts[index].isEligible
+            cuts[index].needsReview = false
+        }
     }
 
-    /// Returns true when changed ranges reset the user's include/exclude choices.
+    /// Returns true when the detected ranges change.
     @discardableResult public mutating func recalculate(
         _ analysis: SilenceAnalysisResult, document: TimelineDocument
     ) throws -> Bool {
@@ -57,9 +62,22 @@ public struct ReviewPlan: Encodable, Sendable {
               document.fingerprint == baselineFingerprint else { throw ReviewError.staleProject }
         var refreshed = try Self.makeCuts(analysis, target: target, protected: document.automaticCutRestrictions(for: target), frame: frameDuration)
         let changed = refreshed.map(\.range) != cuts.map(\.range)
-        if !changed {
-            for index in refreshed.indices {
-                refreshed[index].included = refreshed[index].isEligible && cuts[index].included
+        let previous = Dictionary(uniqueKeysWithValues: cuts.map { ($0.id, $0) })
+        let kept = cuts.filter { $0.isEligible && !$0.included }
+        var firstKept = kept.startIndex
+        for index in refreshed.indices where refreshed[index].isEligible {
+            if let match = previous[refreshed[index].id] {
+                refreshed[index].included = match.included
+                refreshed[index].needsReview = match.needsReview
+                continue
+            }
+            let range = refreshed[index].range
+            while firstKept < kept.endIndex && kept[firstKept].range.end <= range.start {
+                firstKept += 1
+            }
+            if firstKept < kept.endIndex && kept[firstKept].range.start < range.end {
+                refreshed[index].included = false
+                refreshed[index].needsReview = true
             }
         }
         cuts = refreshed
