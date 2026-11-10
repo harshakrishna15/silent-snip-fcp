@@ -88,7 +88,7 @@ struct AnalysisCacheKey: Equatable {
         var refreshed = entry.analysis
         _ = try refreshed.recalculate(settings: settings)
         let review = try ReviewPlan(jobID: jobID, document: document, target: target,
-            analysis: refreshed.analysis, requireDialogue: false)
+            analysis: refreshed.analysis, requireDialogue: false, cutGrid: refreshed.review.cutGrid)
         return AnalyzedAudioProject(document: document, target: target,
             dialogueContext: refreshed.dialogueContext, audio: refreshed.audio,
             settings: settings, analysis: refreshed.analysis, review: review,

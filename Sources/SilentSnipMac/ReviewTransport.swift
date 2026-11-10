@@ -27,6 +27,7 @@ public enum ReviewWire {
         let command = try JSONDecoder().decode(ReviewCommand.self, from: data)
         guard command.version == version else { throw ReviewTransportError.invalidPayload }
         if command.lastCutID != nil, command.command != .includeGroup { throw ReviewTransportError.invalidPayload }
+        if command.boundaryEdit != nil, command.command != .adjustCut { throw ReviewTransportError.invalidPayload }
         if command.navigationGesture != nil || command.navigationSucceeded != nil {
             guard command.command == .prepareNavigation || command.command == .navigationFinished else {
                 throw ReviewTransportError.invalidPayload
@@ -59,6 +60,10 @@ public enum ReviewWire {
             guard let first = command.cutID, let last = command.lastCutID,
                   [first, last].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 200 }),
                   command.view != nil, command.included != nil,
+                  command.expectedRevision.map({ $0 >= 0 }) == true else { throw ReviewTransportError.invalidPayload }
+        case .adjustCut:
+            guard let id = command.cutID, !id.isEmpty, id.utf8.count <= 200,
+                  command.boundaryEdit != nil, command.view != nil,
                   command.expectedRevision.map({ $0 >= 0 }) == true else { throw ReviewTransportError.invalidPayload }
         case .preview:
             guard command.included != nil, command.expectedRevision.map({ $0 >= 0 }) == true else {
@@ -113,13 +118,14 @@ public struct ReviewWireSettings: Codable, Equatable, Sendable {
 public struct ReviewCommand: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case status, cancel, include, includeGroup, selectAll, deselectAll, highlight, apply, retryVerification, preview, recalculate
-        case prepareNavigation, navigationFinished
+        case prepareNavigation, navigationFinished, adjustCut
     }
     public let version: Int
     public let request: UUID
     public let command: Kind
     public let cutID: String?
     public let lastCutID: String?
+    public let boundaryEdit: ReviewBoundaryEdit?
     public let included: Bool?
     /// Mutations are accepted only for the revision the user saw. Retransmitted
     /// commands cannot undo a newer review choice or restart verification.
@@ -143,10 +149,12 @@ public struct ReviewCommand: Codable, Equatable, Sendable {
                 settings: ReviewWireSettings? = nil, output: String? = nil,
                 settingsEdit: UUID? = nil, settingsSequence: Int? = nil, verifySettings: Bool? = nil,
                 localPreview: Bool? = nil, automaticPreview: Bool? = nil,
-                navigationGesture: UUID? = nil, navigationSucceeded: Bool? = nil, lastCutID: String? = nil) {
+                navigationGesture: UUID? = nil, navigationSucceeded: Bool? = nil, lastCutID: String? = nil,
+                boundaryEdit: ReviewBoundaryEdit? = nil) {
         version = ReviewWire.version; self.request = request; self.command = command
         self.cutID = cutID; self.included = included
         self.lastCutID = lastCutID
+        self.boundaryEdit = boundaryEdit
         self.expectedRevision = expectedRevision
         self.view = view; self.applyGesture = applyGesture
         self.localPreview = localPreview; self.automaticPreview = automaticPreview
@@ -178,12 +186,14 @@ public struct ReviewCutResponse: Codable, Equatable, Sendable {
     public let eligible: Bool
     public let reason: String?
     public let needsReview: Bool?
+    public let editMask: Int?
 
     public init(id: String, start: String, end: String, duration: String, included: Bool,
-                eligible: Bool, reason: String? = nil, needsReview: Bool? = nil) {
+                eligible: Bool, reason: String? = nil, needsReview: Bool? = nil, editMask: Int? = nil) {
         self.id = id; self.start = start; self.end = end; self.duration = duration
         self.included = included; self.eligible = eligible; self.reason = reason
         self.needsReview = needsReview
+        self.editMask = editMask
     }
 }
 

@@ -209,6 +209,7 @@ static void unexpectedReviewBoundary(void) {
 - (BOOL)sendApplyWithGesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
 - (BOOL)setCut:(NSString *)cutID included:(BOOL)included { unexpectedReviewBoundary(); return NO; }
 - (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included { unexpectedReviewBoundary(); return NO; }
+- (BOOL)adjustCut:(NSString *)cutID edit:(SSReviewBoundaryEdit)edit { unexpectedReviewBoundary(); return NO; }
 - (BOOL)selectAll:(BOOL)included { unexpectedReviewBoundary(); return NO; }
 - (BOOL)retryVerification { unexpectedReviewBoundary(); return NO; }
 - (void)cancel { unexpectedReviewBoundary(); }
@@ -284,6 +285,7 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic, copy) NSDictionary *verifyPayload;
 @property (nonatomic, copy) NSString *highlightedCut;
 @property (nonatomic, copy) NSDictionary *groupSelection;
+@property (nonatomic, copy) NSDictionary *boundarySelection;
 @property (nonatomic) BOOL fakeNativeNavigation;
 @property (nonatomic, copy) BOOL (^nativeMove)(NSDictionary *permit);
 @property (nonatomic, copy) NSString *nativeNavigationMarker;
@@ -408,6 +410,13 @@ static void unexpectedWindowBoundary(void) {
 - (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included {
     if (!self.fakeCanChangeSelection) return NO;
     self.groupSelection = @{@"first": firstID, @"last": lastID, @"included": @(included)};
+    self.fakeCanChangeSelection = NO;
+    self.testUpdate(self.lastResponse);
+    return YES;
+}
+- (BOOL)adjustCut:(NSString *)cutID edit:(SSReviewBoundaryEdit)edit {
+    if (!self.fakeCanChangeSelection) return NO;
+    self.boundarySelection = @{@"cut": cutID, @"edit": @(edit)};
     self.fakeCanChangeSelection = NO;
     self.testUpdate(self.lastResponse);
     return YES;
@@ -1095,8 +1104,9 @@ static void inclusionAcknowledgmentsKeepExistingCutControls(void) {
         cut[edit[0]] = edit[1];
         response[@"cuts"] = @[[cut copy]];
         [client deliver:response busy:NO canApply:YES];
-        check(controller.cutList.arrangedSubviews.firstObject != priorRow,
-              @"Changed timing, reason, or identity rebuilds the row");
+        BOOL sameID = ![edit[0] isEqual:@"id"];
+        check((controller.cutList.arrangedSubviews.firstObject == priorRow) == sameID,
+              @"Changed details update an existing row, while a different cut ID replaces it");
     }
     SSWorkflowCutRow *updated = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.firstObject;
     check([updated.startValue isEqual:@"1.500"] && [updated.accessibilityHelp containsString:@"A newly protected range"] &&
@@ -1176,6 +1186,37 @@ static void shiftSelectionSendsOnlyTheChosenGroup(void) {
     [controller selectAllCuts:nil];
     check([client.groupSelection isEqual:@{@"first": @"cut-1", @"last": @"cut-2", @"included": @YES}],
           @"Cut Selected keeps the same explicit group");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void boundarySteppersPreserveTheActiveRowAndUseAcknowledgedTimes(void) {
+    SSTestWorkflowViewController *controller = openController(host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A")));
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    NSMutableDictionary *response = [reviewResponse(@"review", @"Review cut boundaries") mutableCopy];
+    NSMutableDictionary *cut = [response[@"cuts"][0] mutableCopy];
+    cut[@"editMask"] = @(SSReviewBoundaryStartLater | SSReviewBoundaryEndEarlier);
+    response[@"cuts"] = @[cut.copy];
+    [client deliver:response busy:NO canApply:YES];
+    SSWorkflowCutRow *row = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.firstObject;
+    check(!controller.boundaryActions.hidden && controller.startStepper.enabled && controller.startStepper.minValue == 0 &&
+          controller.endStepper.enabled && controller.endStepper.maxValue == 0 && !controller.resetCutButton.enabled,
+          @"Only inward movement is available on a new proposal");
+    controller.startStepper.doubleValue = 1;
+    [controller stepCutBoundary:controller.startStepper];
+    check([client.boundarySelection isEqual:@{@"cut": @"cut-1", @"edit": @(SSReviewBoundaryStartLater)}] &&
+          !controller.startStepper.enabled && [row.startValue isEqual:@"1.000"],
+          @"A step waits for the worker to acknowledge its exact time");
+    cut[@"start"] = @"1.100";
+    cut[@"editMask"] = @(SSReviewBoundaryStartEarlier | SSReviewBoundaryStartLater | SSReviewBoundaryReset);
+    response[@"cuts"] = @[cut.copy];
+    [client deliver:response busy:NO canApply:YES];
+    check(row == controller.cutList.arrangedSubviews.firstObject && row.activeRow &&
+          [row.startValue isEqual:@"1.100"] && controller.resetCutButton.enabled,
+          @"The acknowledged timing updates the same active row");
+    [controller resetCutBoundary:nil];
+    check([client.boundarySelection[@"edit"] isEqual:@(SSReviewBoundaryReset)], @"Reset is an explicit edit for this cut");
     closeController(controller);
     groupCount += 1;
 }
@@ -3526,6 +3567,7 @@ int main(void) {
         inclusionAcknowledgmentsKeepExistingCutControls();
         keyboardReviewKeepsTheActiveRowThroughAcknowledgment();
         shiftSelectionSendsOnlyTheChosenGroup();
+        boundarySteppersPreserveTheActiveRowAndUseAcknowledgedTimes();
         reviewResponsesLayOutFinalContentOnce();
         sdkNavigationRequiresExactProjectWindowAndReturnedTime();
         navigationSettlementRefreshesDeferredProjectChanges();

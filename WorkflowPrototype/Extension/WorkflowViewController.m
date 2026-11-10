@@ -444,6 +444,10 @@ static BOOL SSWorkflowPermissionPromptPending;
 @property (nonatomic, strong) NSButton *retryButton;
 @property (nonatomic, strong) NSButton *allButton;
 @property (nonatomic, strong) NSButton *noneButton;
+@property (nonatomic, strong) NSStackView *boundaryActions;
+@property (nonatomic, strong) NSStepper *startStepper;
+@property (nonatomic, strong) NSStepper *endStepper;
+@property (nonatomic, strong) NSButton *resetCutButton;
 @property (nonatomic, strong) NSTextField *reviewSummary;
 @property (nonatomic, strong) NSProgressIndicator *progressIndicator;
 @property (nonatomic, strong) SSWorkflowCutList *cutList;
@@ -841,8 +845,33 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.cutColumnHeader.edgeInsets = NSEdgeInsetsMake(0, 33, 0, 13);
     self.cutColumnHeaderWidthConstraint = [self.cutColumnHeader.widthAnchor constraintEqualToConstant:400];
     self.cutColumnHeaderWidthConstraint.active = YES;
+    self.startStepper = [NSStepper new];
+    self.endStepper = [NSStepper new];
+    self.startStepper.accessibilityLabel = @"Adjust Cut Start";
+    self.endStepper.accessibilityLabel = @"Adjust Cut End";
+    for (NSStepper *stepper in @[self.startStepper, self.endStepper]) {
+        stepper.controlSize = NSControlSizeSmall;
+        stepper.minValue = -1;
+        stepper.maxValue = 1;
+        stepper.increment = 1;
+        stepper.doubleValue = 0;
+        stepper.valueWraps = NO;
+        stepper.autorepeat = NO;
+        stepper.target = self;
+        stepper.action = @selector(stepCutBoundary:);
+        stepper.toolTip = @"Move this boundary by one valid cut-grid interval.";
+    }
+    self.resetCutButton = [NSButton buttonWithTitle:@"Reset Cut" target:self action:@selector(resetCutBoundary:)];
+    self.resetCutButton.controlSize = NSControlSizeSmall;
+    self.resetCutButton.bezelStyle = NSBezelStyleAccessoryBarAction;
+    self.boundaryActions = [NSStackView stackViewWithViews:@[
+        [self label:@"Start" size:11 weight:NSFontWeightMedium], self.startStepper,
+        [self label:@"End" size:11 weight:NSFontWeightMedium], self.endStepper, self.resetCutButton]];
+    self.boundaryActions.spacing = 7;
+    self.boundaryActions.alignment = NSLayoutAttributeCenterY;
+    self.boundaryActions.hidden = YES;
     self.reviewPanel = [self cardWithViews:@[reviewActions, self.reviewSummary,
-        self.statusDetails, self.cutColumnHeader, self.reviewScroll]];
+        self.statusDetails, self.cutColumnHeader, self.reviewScroll, self.boundaryActions]];
     self.reviewPanel.spacing = 4;
     [self.settingsPanel setHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationVertical];
     [self.reviewPanel setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
@@ -1567,6 +1596,7 @@ static BOOL SSWorkflowPermissionPromptPending;
     BOOL changed = SSWorkflowSetControlEnabled(self.applyButton, currentRanges && self.reviewClient.canApply);
     changed |= SSWorkflowSetControlEnabled(self.cancelButton, self.reviewClient.canCancel);
     changed |= [self updateGroupControls];
+    [self updateBoundaryControls];
     changed |= SSWorkflowSetControlEnabled(self.navigateButton,
         currentRanges && self.reviewClient.canHighlight && self.activeCutID.length > 0);
     BOOL previousRetryHidden = self.retryButton.hidden;
@@ -1677,19 +1707,18 @@ static BOOL SSWorkflowPermissionPromptPending;
 - (BOOL)canReuseCutRowsForCuts:(NSArray<NSDictionary *> *)cuts {
     NSArray<NSView *> *rows = self.cutList.arrangedSubviews;
     if (cuts.count != self.reviewCuts.count || rows.count != cuts.count) return NO;
-    NSArray<NSString *> *displayedFields = @[@"id", @"start", @"end", @"duration", @"eligible", @"reason"];
     for (NSUInteger index = 0; index < cuts.count; ++index) {
         if (![rows[index] isKindOfClass:SSWorkflowCutRow.class] || ((SSWorkflowCutRow *)rows[index]).tag != (NSInteger)index) return NO;
-        NSDictionary *previous = self.reviewCuts[index];
-        NSDictionary *current = cuts[index];
-        for (NSString *field in displayedFields) {
-            if (previous[field] != current[field] && ![previous[field] isEqual:current[field]]) return NO;
-        }
+        if (![cuts[index][@"id"] isEqual:self.reviewCuts[index][@"id"]]) return NO;
     }
     return YES;
 }
 
-- (void)updateReviewFlagForRow:(SSWorkflowCutRow *)row cut:(NSDictionary *)cut {
+- (void)updateDetailsForRow:(SSWorkflowCutRow *)row cut:(NSDictionary *)cut {
+    row.title = [NSString stringWithFormat:@"%@ – %@  (%@)", cut[@"start"], cut[@"end"], cut[@"duration"]];
+    row.startValue = cut[@"start"];
+    row.endValue = cut[@"end"];
+    row.durationValue = cut[@"duration"];
     row.needsReview = [cut[@"needsReview"] boolValue];
     row.accessibilityLabel = row.needsReview ? [row.title stringByAppendingString:@", Review needed"] : row.title;
     row.toolTip = [NSString stringWithFormat:@"%@%@%@", row.title,
@@ -1741,29 +1770,25 @@ static BOOL SSWorkflowPermissionPromptPending;
     NSArray *cuts = deferRanges || [state isEqual:@"navigating"] ? self.reviewCuts : (response[@"cuts"] ?: @[]);
     BOOL cutsChanged = ![cuts isEqual:self.reviewCuts];
     BOOL rebuildRows = cutsChanged && ![self canReuseCutRowsForCuts:cuts];
+    NSArray *previousCuts = self.reviewCuts;
     if (cutsChanged) self.reviewCuts = cuts;
     if (rebuildRows) {
         for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
         for (NSUInteger index = 0; index < cuts.count; ++index) {
             NSDictionary *cut = cuts[index];
-            NSString *title = [NSString stringWithFormat:@"%@ – %@  (%@)", cut[@"start"], cut[@"end"], cut[@"duration"]];
             SSWorkflowCutRow *row = [[SSWorkflowCutRow alloc] initWithFrame:NSZeroRect];
             row.cell = [SSWorkflowCutCell new];
             row.buttonType = NSButtonTypeSwitch;
             row.imagePosition = NSImageLeft;
             row.alignment = NSTextAlignmentLeft;
-            row.title = title;
             row.target = self;
             row.action = @selector(toggleCut:);
-            row.startValue = [cut[@"start"] description];
-            row.endValue = [cut[@"end"] description];
-            row.durationValue = [cut[@"duration"] description];
             row.controlSize = NSControlSizeSmall;
             row.textFont = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
             row.tag = (NSInteger)index;
             row.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
             row.font = row.textFont;
-            [self updateReviewFlagForRow:row cut:cut];
+            [self updateDetailsForRow:row cut:cut];
             row.accessibilityIdentifier = [@"silentsnip.workflow.cut." stringByAppendingString:cut[@"id"]];
             __weak SSWorkflowViewController *weakSelf = self;
             row.chooseRow = ^(NSEvent *event) {
@@ -1780,9 +1805,15 @@ static BOOL SSWorkflowPermissionPromptPending;
         [self selectReviewRow:index == NSNotFound ? 0 : index scroll:NO];
         [(SSWorkflowContentView *)self.view requestDefaultCursorRefreshForPhase:@"rows"];
     } else if (cutsChanged) {
+        NSArray *displayedFields = @[@"start", @"end", @"duration", @"reason", @"needsReview"];
         for (SSWorkflowCutRow *row in self.cutList.arrangedSubviews) {
-            NSDictionary *cut = cuts[(NSUInteger)row.tag];
-            if (row.needsReview != [cut[@"needsReview"] boolValue]) [self updateReviewFlagForRow:row cut:cut];
+            NSUInteger index = (NSUInteger)row.tag;
+            NSDictionary *cut = cuts[index], *previous = previousCuts[index];
+            for (NSString *field in displayedFields) {
+                if (cut[field] == previous[field] || [cut[field] isEqual:previous[field]]) continue;
+                [self updateDetailsForRow:row cut:cut];
+                break;
+            }
         }
     }
     NSString *summary = response[@"summary"] ?: @"";
@@ -2117,6 +2148,41 @@ static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
     return changed;
 }
 
+- (void)updateBoundaryControls {
+    BOOL hasEditableCuts = [self.reviewCuts indexOfObjectPassingTest:^BOOL(NSDictionary *cut, NSUInteger index, BOOL *stop) {
+        return [cut[@"editMask"] unsignedIntegerValue] != 0;
+    }] != NSNotFound;
+    self.boundaryActions.hidden = !hasEditableCuts;
+    NSUInteger index = [self activeCutIndex];
+    NSUInteger mask = index < self.reviewCuts.count ? [self.reviewCuts[index][@"editMask"] unsignedIntegerValue] : 0;
+    if (self.automaticUpdatePending || !self.reviewClient.canChangeSelection) mask = 0;
+    self.startStepper.minValue = (mask & SSReviewBoundaryStartEarlier) != 0 ? -1 : 0;
+    self.startStepper.maxValue = (mask & SSReviewBoundaryStartLater) != 0 ? 1 : 0;
+    self.endStepper.minValue = (mask & SSReviewBoundaryEndEarlier) != 0 ? -1 : 0;
+    self.endStepper.maxValue = (mask & SSReviewBoundaryEndLater) != 0 ? 1 : 0;
+    self.startStepper.enabled = (mask & (SSReviewBoundaryStartEarlier | SSReviewBoundaryStartLater)) != 0;
+    self.endStepper.enabled = (mask & (SSReviewBoundaryEndEarlier | SSReviewBoundaryEndLater)) != 0;
+    self.resetCutButton.enabled = (mask & SSReviewBoundaryReset) != 0;
+}
+
+- (void)sendBoundaryEdit:(SSReviewBoundaryEdit)edit {
+    if (self.automaticUpdatePending || !self.reviewClient.canChangeSelection || !self.activeCutID.length) return;
+    [self.reviewClient adjustCut:self.activeCutID edit:edit];
+    [self updateReviewControls];
+}
+
+- (void)stepCutBoundary:(NSStepper *)sender {
+    double direction = sender.doubleValue;
+    sender.doubleValue = 0;
+    if (direction == 0) return;
+    SSReviewBoundaryEdit edit = sender == self.startStepper
+        ? (direction > 0 ? SSReviewBoundaryStartLater : SSReviewBoundaryStartEarlier)
+        : (direction > 0 ? SSReviewBoundaryEndLater : SSReviewBoundaryEndEarlier);
+    [self sendBoundaryEdit:edit];
+}
+
+- (void)resetCutBoundary:(id)sender { [self sendBoundaryEdit:SSReviewBoundaryReset]; }
+
 - (void)selectReviewRow:(NSUInteger)index scroll:(BOOL)scroll extending:(BOOL)extending {
     NSArray<SSWorkflowCutRow *> *rows = (NSArray *)self.cutList.arrangedSubviews;
     NSString *previous = self.activeCutID;
@@ -2129,6 +2195,7 @@ static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
         row.groupedRow = NSLocationInRange((NSUInteger)row.tag, group);
     }
     [self updateGroupControls];
+    [self updateBoundaryControls];
     if (scroll && index < rows.count) [rows[index] scrollRectToVisible:rows[index].bounds];
 }
 

@@ -1,6 +1,10 @@
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
+typedef NS_OPTIONS(NSUInteger, SSReviewBoundaryEdit) {
+    SSReviewBoundaryStartEarlier = 1, SSReviewBoundaryStartLater = 2,
+    SSReviewBoundaryEndEarlier = 4, SSReviewBoundaryEndLater = 8, SSReviewBoundaryReset = 16
+};
 
 /// A control-only client for the existing Silent Snip worker. UUIDs are their
 /// canonical string representations. No media, XML, or Final Cut preferences
@@ -62,6 +66,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)sendApplyWithGesture:(NSString *)gesture;
 - (BOOL)setCut:(NSString *)cutID included:(BOOL)included;
 - (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included;
+- (BOOL)adjustCut:(NSString *)cutID edit:(SSReviewBoundaryEdit)edit;
 - (BOOL)selectAll:(BOOL)included;
 - (BOOL)retryVerification;
 - (void)cancel;

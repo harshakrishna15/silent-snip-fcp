@@ -105,7 +105,7 @@ static BOOL booleanValue(id value) {
             matches = NO;
             for (NSDictionary *row in value[@"cuts"]) if ([row[@"id"] isEqual:self.pendingSelection[@"cutID"]])
                 matches = [row[@"included"] isEqual:self.pendingSelection[@"included"]];
-        } else if (![kind isEqual:@"includeGroup"]) for (NSDictionary *row in value[@"cuts"]) {
+        } else if ([kind isEqual:@"selectAll"] || [kind isEqual:@"deselectAll"]) for (NSDictionary *row in value[@"cuts"]) {
             BOOL wanted = [kind isEqual:@"selectAll"] && [row[@"eligible"] boolValue];
             if ([row[@"included"] boolValue] != wanted) matches = NO;
         }

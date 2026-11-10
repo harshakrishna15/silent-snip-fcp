@@ -262,6 +262,11 @@ public struct ReviewAnalysisResult: Sendable {
                       command.expectedRevision == job.revision,
                       let first = command.cutID, let last = command.lastCutID, let included = command.included else { return }
                 try result.analyzed.review.setIncluded(included, from: first, through: last)
+            case .adjustCut:
+                guard let origin = job.request.workflowOrigin, command.view == origin.view,
+                      command.expectedRevision == job.revision,
+                      let id = command.cutID, let edit = command.boundaryEdit else { return }
+                try result.analyzed.review.editBoundary(edit, cutID: id)
             case .selectAll: result.analyzed.review.selectAllEligible(true)
             case .deselectAll: result.analyzed.review.selectAllEligible(false)
             case .highlight:
@@ -692,11 +697,13 @@ public struct ReviewAnalysisResult: Sendable {
         let review = analysis.review
         guard review.cuts.count <= Self.maximumReviewCuts else { throw CoordinatorError.tooManyCuts }
         let cuts = try review.cuts.map { cut in
-            ReviewCutResponse(id: cut.id,
+            let mask = job.request.workflowOrigin != nil ? review.boundaryEditMask(for: cut) : 0
+            return ReviewCutResponse(id: cut.id,
                 start: try timecode(cut.range.start, analysis: analysis, dropFrame: result.dropFrame),
                 end: try timecode(cut.range.end, analysis: analysis, dropFrame: result.dropFrame),
                 duration: Self.seconds(try cut.range.checkedDuration()), included: cut.included,
-                eligible: cut.isEligible, reason: cut.unavailableReason, needsReview: cut.needsReview ? true : nil)
+                eligible: cut.isEligible, reason: cut.unavailableReason, needsReview: cut.needsReview ? true : nil,
+                editMask: mask > 0 ? mask : nil)
         }
         let removed = try review.selectedDuration
         let duration = try review.target.timelineRange.checkedDuration()

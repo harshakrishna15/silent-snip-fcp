@@ -9,8 +9,13 @@ enum ReviewedCutValidation {
               reviewed.document.fingerprint == fresh.document.fingerprint,
               reviewed.target == fresh.target,
               reviewed.analysis.disposition == fresh.analysis.disposition,
-              reviewed.review.cuts.map(\.range) == fresh.review.cuts.map(\.range),
-              reviewed.review.cuts.map(\.isEligible) == fresh.review.cuts.map(\.isEligible) else {
+              reviewed.review.cuts.map(\.proposedRange) == fresh.review.cuts.map(\.proposedRange),
+              reviewed.review.cuts.map(\.isEligible) == fresh.review.cuts.map(\.isEligible),
+              try reviewed.review.selectedCuts.allSatisfy({ cut in
+                  try [cut.range.start, cut.range.end].allSatisfy {
+                      try $0.roundedDown(toFrame: fresh.review.cutGrid) == $0
+                  }
+              }) else {
             throw SnapshotPreviewError.audioChanged
         }
     }

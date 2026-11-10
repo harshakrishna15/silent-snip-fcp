@@ -88,6 +88,27 @@ final class TimelineTests: XCTestCase {
         XCTAssertEqual(review.selectedCuts.map(\.id), Array(ids.dropFirst()))
     }
 
+    func testCutBoundaryStepsStayInsideTheOriginalProposalOnTheSharedGrid() throws {
+        let doc = try parse(audioOnlyFixture())
+        let target = try doc.selectedTarget(.init(timelineRange: range(8, 16)), requireExistingMedia: false)
+        let analysis = try SilenceAnalysisResult(candidates: [range(10, 11)], disposition: .cuts)
+        var review = try ReviewPlan(jobID: UUID(), document: doc, target: target, analysis: analysis, cutGrid: RationalTime(1, 5))
+        let id = review.cuts[0].id
+        XCTAssertThrowsError(try review.editBoundary(.startEarlier, cutID: id))
+        XCTAssertThrowsError(try review.editBoundary(.endLater, cutID: id))
+        for _ in 0..<3 { try review.editBoundary(.startLater, cutID: id) }
+        try review.editBoundary(.endEarlier, cutID: id)
+        let narrowed = TimeRange(start: RationalTime(53, 5), end: RationalTime(54, 5))
+        XCTAssertEqual(review.selectedCuts.map(\.range), [narrowed])
+        XCTAssertThrowsError(try review.editBoundary(.startLater, cutID: id))
+        XCTAssertThrowsError(try review.editBoundary(.endEarlier, cutID: id))
+        XCTAssertFalse(try review.recalculate(analysis, document: doc))
+        XCTAssertEqual(review.selectedCuts.first?.id, id)
+        XCTAssertEqual(review.selectedCuts.first?.range, narrowed)
+        try review.editBoundary(.reset, cutID: id)
+        XCTAssertEqual(review.selectedCuts.map(\.range), analysis.candidates)
+    }
+
     func testProjectTimecodeAndSourceTimecodeAreIndependent() throws {
         let doc = try parse(fixture())
         XCTAssertEqual(doc.projectTimecodeStart, RationalTime(3600))

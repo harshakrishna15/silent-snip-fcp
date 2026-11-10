@@ -339,7 +339,8 @@ public enum ProjectAudioAnalysis {
             decodedSampleRate: audio.sampleRate, sourceAudio: renderContext.sourceRange != nil)
         let analysis = try SilenceDetector.analyze(windows: audio.windows, target: target.timelineRange,
             frameDuration: grid, settings: settings)
-        let review = try ReviewPlan(jobID: jobID, document: document, target: target, analysis: analysis, requireDialogue: renderContext.sourceRange == nil && renderContext.isolatedTargetID == nil)
+        let review = try ReviewPlan(jobID: jobID, document: document, target: target, analysis: analysis,
+            requireDialogue: renderContext.sourceRange == nil && renderContext.isolatedTargetID == nil, cutGrid: grid)
         return AnalyzedAudioProject(document: document, target: target, dialogueContext: renderContext,
             audio: audio, settings: settings, analysis: analysis, review: review, cutFrameDuration: grid)
     }

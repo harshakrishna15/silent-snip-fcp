@@ -749,6 +749,16 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         XCTAssertTrue(reviewed.review.selectedCuts.isEmpty)
     }
 
+    func testFreshAudioValidationChecksTheDetectionUnderANarrowedCut() async throws {
+        let fixture = try fixture()
+        var reviewed = try await analyze(fixture)
+        let fresh = try await analyze(fixture)
+        try reviewed.review.editBoundary(.startLater, cutID: reviewed.review.cuts[0].id)
+        XCTAssertNotEqual(reviewed.review.cuts.map(\.range), fresh.review.cuts.map(\.range))
+        XCTAssertNoThrow(try ReviewedCutValidation.verify(reviewed: reviewed, fresh: fresh))
+        XCTAssertEqual(reviewed.review.selectedCuts[0].range.start, try fresh.review.cuts[0].range.start.adding(fresh.review.cutGrid))
+    }
+
     func testFreshAudioValidationRejectsChangedQuietIntervalsBeforeImport() async throws {
         let fixture = try fixture()
         let reviewed = try await analyze(fixture)

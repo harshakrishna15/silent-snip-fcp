@@ -585,6 +585,9 @@ static NSString *SSResponseName(NSString *request) {
             !SSBoolean(row[@"eligible"]) || !SSBoolean(row[@"included"]) ||
             ([row[@"included"] boolValue] && ![row[@"eligible"] boolValue]) ||
             (row[@"needsReview"] && !SSBoolean(row[@"needsReview"])) ||
+            (row[@"editMask"] && (![row[@"editMask"] isKindOfClass:NSNumber.class] ||
+                !SSInteger(row[@"editMask"], [row[@"editMask"] longLongValue]) ||
+                [row[@"editMask"] longLongValue] <= 0 || [row[@"editMask"] longLongValue] > 31)) ||
             (row[@"reason"] && !SSDisplayText(row[@"reason"], 16384))) return NO;
         [ids addObject:row[@"id"]];
     }
@@ -762,6 +765,15 @@ static NSString *SSResponseName(NSString *request) {
     return [self selection:@{@"command": @"includeGroup", @"cutID": firstID, @"lastCutID": lastID,
         @"included": @(included), @"view": self.viewID}];
 }
+- (BOOL)adjustCut:(NSString *)cutID edit:(SSReviewBoundaryEdit)edit {
+    if (edit == 0 || edit > SSReviewBoundaryReset || (edit & (edit - 1)) != 0) return NO;
+    for (NSDictionary *cut in self.response[@"cuts"]) {
+        if ([cut[@"id"] isEqual:cutID] && ([cut[@"editMask"] unsignedIntegerValue] & edit) != 0) {
+            return [self selection:@{@"command": @"adjustCut", @"cutID": cutID, @"boundaryEdit": @(edit), @"view": self.viewID}];
+        }
+    }
+    return NO;
+}
 - (BOOL)selectAll:(BOOL)included { return [self selection:@{@"command": included ? @"selectAll" : @"deselectAll"}]; }
 - (void)markSettingsDirty {
     if ((self.busy && !self.updatingCuts) || self.recoveryOnly || !self.requestID || self.cancelRequested ||
@@ -788,7 +800,9 @@ static NSString *SSResponseName(NSString *request) {
     if (!self.automaticPreviewAvailable || !self.canUpdateCuts || !self.settingsDirty ||
         self.automaticSettingsEdit || !SSUUID(edit) || !SSSettings(settings) ||
         self.settingsSequence >= NSIntegerMax || ![self hostIsAlreadyFrontmost]) return NO;
-    NSDictionary *values = [settings copy];
+    NSMutableDictionary *snapshot = [settings mutableCopy];
+    snapshot[@"outputMode"] = [settings[@"outputMode"] copy];
+    NSDictionary *values = [snapshot copy];
     NSNumber *revision = self.connection.revision;
     self.settingsSequence += 1;
     self.automaticSettingsSequence = self.settingsSequence;
