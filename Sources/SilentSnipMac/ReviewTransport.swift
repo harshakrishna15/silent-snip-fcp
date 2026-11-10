@@ -44,7 +44,8 @@ public enum ReviewWire {
                   command.settingsEdit != nil, command.settingsSequence.map({ $0 > 0 }) == true,
                   command.verifySettings != nil,
                   let settings = command.settings, (try? settings.analysisSettings()) != nil,
-                  let output = command.output, SilentSnipOutputMode(rawValue: output) != nil else {
+                  let output = command.output.flatMap(SilentSnipOutputMode.init(rawValue:)),
+                  settings.pauseTarget == nil || output == .remove else {
                 throw ReviewTransportError.invalidPayload
             }
         case .retryVerification:
@@ -90,14 +91,21 @@ public struct ReviewWireSettings: Codable, Equatable, Sendable {
     public let minimum: Double
     public let before: Double
     public let after: Double
+    public let pauseTarget: Double?
 
-    public init(threshold: Double, minimum: Double, before: Double, after: Double) {
+    public init(threshold: Double, minimum: Double, before: Double, after: Double, pauseTarget: Double? = nil) {
         self.threshold = threshold; self.minimum = minimum; self.before = before; self.after = after
+        self.pauseTarget = pauseTarget
+    }
+
+    init(_ settings: AnalysisSettings) {
+        self.init(threshold: settings.thresholdDBFS, minimum: settings.minimumSilenceDuration,
+            before: settings.beforeSpeechPadding, after: settings.afterSpeechPadding, pauseTarget: settings.pauseTargetDuration)
     }
 
     public func analysisSettings() throws -> AnalysisSettings {
         try AnalysisSettings(thresholdDBFS: threshold, minimumSilenceDuration: minimum,
-            beforeSpeechPadding: before, afterSpeechPadding: after, windowDuration: 0.01)
+            beforeSpeechPadding: before, afterSpeechPadding: after, windowDuration: 0.01, pauseTargetDuration: pauseTarget)
     }
 
 }
@@ -279,9 +287,7 @@ struct ReviewReconnectReply: Encodable {
     init(view: UUID, request: AnalyzeRequest, gesture: UUID? = nil) {
         self.view = view; self.request = request.id; self.output = request.outputMode.rawValue
         self.gesture = gesture
-        let s = request.settings
-        settings = ReviewWireSettings(threshold: s.thresholdDBFS, minimum: s.minimumSilenceDuration,
-            before: s.beforeSpeechPadding, after: s.afterSpeechPadding)
+        settings = ReviewWireSettings(request.settings)
     }
 }
 

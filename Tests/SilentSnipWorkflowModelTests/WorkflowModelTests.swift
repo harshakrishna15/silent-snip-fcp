@@ -92,6 +92,17 @@ final class WorkflowModelTests: XCTestCase {
         }
     }
 
+    func testPauseTargetRoundTripsAndDefaultsOffForExistingSettings() throws {
+        let settings = try WorkflowSettings(pauseTargetDuration: 0.4)
+        XCTAssertEqual(try JSONDecoder().decode(WorkflowSettings.self, from: JSONEncoder().encode(settings)), settings)
+        let old = Data("""
+        {"thresholdDBFS":-40,"minimumSilenceDuration":0.5,"beforeSpeechPadding":0.1,"afterSpeechPadding":0.1,"outputMode":"remove"}
+        """.utf8)
+        XCTAssertNil(try JSONDecoder().decode(WorkflowSettings.self, from: old).pauseTargetDuration)
+        XCTAssertThrowsError(try WorkflowSettings(outputMode: .gaps, pauseTargetDuration: 0.4))
+        XCTAssertThrowsError(try WorkflowSettings(pauseTargetDuration: .nan))
+    }
+
     func testSettingsDecodingDoesNotBypassValidationOrGuessUnknownOutput() throws {
         let settings = try WorkflowSettings(thresholdDBFS: -31.25, minimumSilenceDuration: 0.7123,
             beforeSpeechPadding: 0.23, afterSpeechPadding: 0.41, outputMode: .gaps)

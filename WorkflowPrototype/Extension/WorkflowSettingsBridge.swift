@@ -41,13 +41,14 @@ public final class WorkflowSettingsBridge: NSObject {
                 let identity = try WorkflowProjectIdentity(libraryURL: libraryURL, projectUID: projectUID)
                 let saved = try await store.settings(for: identity)
                 let settings = saved ?? .defaults
-                let values: NSDictionary = ["thresholdDBFS": settings.thresholdDBFS,
+                var values: [String: Any] = ["thresholdDBFS": settings.thresholdDBFS,
                     "minimumSilenceDuration": settings.minimumSilenceDuration,
                     "beforeSpeechPadding": settings.beforeSpeechPadding,
                     "afterSpeechPadding": settings.afterSpeechPadding,
                     "outputMode": settings.outputMode.rawValue,
                     "wasSaved": saved != nil]
-                completion(values, nil)
+                values["pauseTargetDuration"] = settings.pauseTargetDuration
+                completion(values as NSDictionary, nil)
             } catch {
                 completion(nil, error as NSError)
             }
@@ -73,7 +74,8 @@ public final class WorkflowSettingsBridge: NSObject {
                 let settings = try WorkflowSettings(thresholdDBFS: number("thresholdDBFS"),
                     minimumSilenceDuration: number("minimumSilenceDuration"),
                     beforeSpeechPadding: number("beforeSpeechPadding"),
-                    afterSpeechPadding: number("afterSpeechPadding"), outputMode: mode)
+                    afterSpeechPadding: number("afterSpeechPadding"), outputMode: mode,
+                    pauseTargetDuration: try values["pauseTargetDuration"].map { _ in try number("pauseTargetDuration") })
                 let identity = try WorkflowProjectIdentity(libraryURL: libraryURL, projectUID: projectUID)
                 try await store.save(settings, for: identity)
                 completion(nil)

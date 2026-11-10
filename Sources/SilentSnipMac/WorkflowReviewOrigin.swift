@@ -58,6 +58,9 @@ public struct WorkflowReviewOrigin: Codable, Equatable, Sendable {
         ] {
             guard value.isFinite, range.contains(value) else { throw AudioControllerSettingsError.invalidParameter(name) }
         }
+        if let target = settings.pauseTargetDuration, !(0.001...10).contains(target) {
+            throw AudioControllerSettingsError.invalidParameter("Target Pause")
+        }
     }
 }
 

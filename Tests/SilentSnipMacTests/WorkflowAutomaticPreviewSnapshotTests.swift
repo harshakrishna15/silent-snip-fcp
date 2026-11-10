@@ -44,6 +44,22 @@ final class WorkflowAutomaticPreviewSnapshotTests: XCTestCase {
         XCTAssertTrue(matches(group, edit: edit, output: .gaps))
         XCTAssertFalse(matches(group, edit: edit, output: .remove))
     }
+    func testTargetPauseMustMatchTheVisibleDraft() {
+        let edit = UUID(), group = fixture(edit)
+        let roomTone = Node(kAXTextFieldRole, id: "silentsnip.workflow.pause-target", value: "0.400")
+        group.children?.append(roomTone)
+        let target = ReviewWireSettings(threshold: -40, minimum: 0.5, before: 0.1, after: 0.2, pauseTarget: 0.4)
+        func matchesTarget() -> Bool {
+            WorkflowAutomaticPreviewSnapshot.matches(group: group, edit: edit, settings: target, output: .remove,
+                read: { $0.read($1) }, equals: { $0 === $1 })
+        }
+        XCTAssertTrue(matchesTarget())
+        XCTAssertFalse(matches(group, edit: edit), "A positive visible target must not authorize a zero-target refresh.")
+        roomTone.value = "0.401"
+        XCTAssertFalse(matchesTarget())
+        group.children?.removeLast()
+        XCTAssertFalse(matchesTarget())
+    }
     func testOldOrMissingMarkerCannotAuthorizeDisplayedValues() {
         let edit = UUID(), group = fixture(edit)
         XCTAssertFalse(matches(group, edit: UUID()))

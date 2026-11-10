@@ -27,6 +27,26 @@ final class AnalysisTests: XCTestCase {
         XCTAssertEqual(result.removedDuration, RationalTime(4, 5))
     }
 
+    func testTargetPauseKeepsOriginalRoomToneAndLeavesShorterPausesAlone() throws {
+        let settings = try AnalysisSettings(minimumSilenceDuration: 0.05, pauseTargetDuration: 0.4)
+        let result = try analyze([window(0, 1, [0.3]), window(1, 3, [0]), window(3, 3.5, [0.3]),
+            window(3.5, 3.85, [0]), window(3.85, 4, [0.3])], target: range(0, 4), settings: settings)
+        XCTAssertEqual(result.candidates, [range(1.2, 2.8)])
+        XCTAssertEqual(try RationalTime(2).subtracting(result.removedDuration), RationalTime(2, 5))
+    }
+
+    func testTargetPauseRespectsPaddingAndRoundsInwardOnFractionalFrames() throws {
+        let frame = RationalTime(1001, 30_000)
+        let settings = try AnalysisSettings(minimumSilenceDuration: 0.5,
+            beforeSpeechPadding: 0.35, afterSpeechPadding: 0.15, pauseTargetDuration: 0.4)
+        let result = try SilenceDetector.analyze(windows: [window(0, 1, [0.3]), window(1, 3, [0]), window(3, 4, [0.3])],
+            target: range(0, 4), frameDuration: frame, settings: settings)
+        let cut = try XCTUnwrap(result.candidates.first)
+        XCTAssertEqual(cut.start, try range(1.15, 2.65).start.roundedUp(toFrame: frame))
+        XCTAssertEqual(cut.end, try range(1.15, 2.65).end.roundedDown(toFrame: frame))
+        XCTAssertGreaterThanOrEqual(try RationalTime(2).subtracting(result.removedDuration), RationalTime(1, 2))
+    }
+
     func testAsymmetricPaddingUsesTheCorrectSidesOfSpeech() throws {
         let settings = try AnalysisSettings(beforeSpeechPadding: 0.2, afterSpeechPadding: 0.05)
         let result = try analyze([window(0, 1, [0.3]), window(1, 2, [0]), window(2, 3, [0.3])], settings: settings)

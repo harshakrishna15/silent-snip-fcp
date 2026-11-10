@@ -58,7 +58,18 @@ static BOOL SSSettings(NSDictionary *settings) {
         if (![value isKindOfClass:NSNumber.class] || SSBoolean(value) || !isfinite([value doubleValue]) ||
             [value doubleValue] < lower[i] || [value doubleValue] > upper[i]) return NO;
     }
+    id target = settings[@"pauseTargetDuration"];
+    if (target && (![target isKindOfClass:NSNumber.class] || SSBoolean(target) ||
+        !isfinite([target doubleValue]) || [target doubleValue] < 0.001 || [target doubleValue] > 10 ||
+        ![settings[@"outputMode"] isEqual:@"remove"])) return NO;
     return [@[@"remove", @"gaps"] containsObject:settings[@"outputMode"]];
+}
+static NSDictionary *SSWireSettings(NSDictionary *settings) {
+    NSMutableDictionary *wire = [@{@"threshold": settings[@"thresholdDBFS"],
+        @"minimum": settings[@"minimumSilenceDuration"], @"before": settings[@"beforeSpeechPadding"],
+        @"after": settings[@"afterSpeechPadding"]} mutableCopy];
+    wire[@"pauseTarget"] = settings[@"pauseTargetDuration"];
+    return wire;
 }
 static NSURL *SSCanonicalAppURL(NSURL *url) {
     if (!SSLocalURL(url) || ![url.pathExtension isEqual:@"app"]) return nil;
@@ -407,11 +418,13 @@ static NSString *SSResponseName(NSString *request) {
     if (!SSUUID(self.viewID) || !SSUUID(gesture) || !SSProject(libraryURL, projectUID, projectName) || !SSSettings(settings)) {
         if (self.failure) self.failure(@"Open a project in Final Cut Pro and check the settings before clicking Analyze Audio."); return NO;
     }
-    return [self beginRequestWithFields:@{@"view": self.viewID, @"gesture": gesture,
+    NSMutableDictionary *payload = [@{@"view": self.viewID, @"gesture": gesture,
         @"library": libraryURL.absoluteString, @"project": projectUID, @"projectName": projectName,
         @"threshold": [settings[@"thresholdDBFS"] stringValue], @"minimum": [settings[@"minimumSilenceDuration"] stringValue],
         @"before": [settings[@"beforeSpeechPadding"] stringValue], @"after": [settings[@"afterSpeechPadding"] stringValue],
-        @"output": settings[@"outputMode"]} route:@"workflow-analyze" recovery:NO];
+        @"output": settings[@"outputMode"]} mutableCopy];
+    payload[@"pauseTarget"] = [settings[@"pauseTargetDuration"] stringValue];
+    return [self beginRequestWithFields:payload route:@"workflow-analyze" recovery:NO];
 }
 - (BOOL)verifyExistingResultURL:(NSURL *)resultURL libraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID
                   projectName:(NSString *)projectName gesture:(NSString *)gesture {
@@ -512,10 +525,11 @@ static NSString *SSResponseName(NSString *request) {
     if (!SSUUID(value[@"request"]) || ![value[@"settings"] isKindOfClass:NSDictionary.class] ||
         ![@[@"remove", @"gaps"] containsObject:value[@"output"]]) return;
     NSDictionary *wire = value[@"settings"];
-    NSDictionary *settings = @{@"thresholdDBFS": wire[@"threshold"] ?: NSNull.null,
+    NSMutableDictionary *settings = [@{@"thresholdDBFS": wire[@"threshold"] ?: NSNull.null,
         @"minimumSilenceDuration": wire[@"minimum"] ?: NSNull.null,
         @"beforeSpeechPadding": wire[@"before"] ?: NSNull.null,
-        @"afterSpeechPadding": wire[@"after"] ?: NSNull.null, @"outputMode": value[@"output"]};
+        @"afterSpeechPadding": wire[@"after"] ?: NSNull.null, @"outputMode": value[@"output"]} mutableCopy];
+    settings[@"pauseTargetDuration"] = wire[@"pauseTarget"];
     if (!SSSettings(settings)) return;
     [self endObserving];
     self.recoveryPending = NO;
@@ -774,10 +788,7 @@ static NSString *SSResponseName(NSString *request) {
     if (!self.automaticPreviewAvailable || !self.canUpdateCuts || !self.settingsDirty ||
         self.automaticSettingsEdit || !SSUUID(edit) || !SSSettings(settings) ||
         self.settingsSequence >= NSIntegerMax || ![self hostIsAlreadyFrontmost]) return NO;
-    NSDictionary *values = @{@"thresholdDBFS": settings[@"thresholdDBFS"],
-        @"minimumSilenceDuration": settings[@"minimumSilenceDuration"],
-        @"beforeSpeechPadding": settings[@"beforeSpeechPadding"],
-        @"afterSpeechPadding": settings[@"afterSpeechPadding"], @"outputMode": [settings[@"outputMode"] copy]};
+    NSDictionary *values = [settings copy];
     NSNumber *revision = self.connection.revision;
     self.settingsSequence += 1;
     self.automaticSettingsSequence = self.settingsSequence;
@@ -790,8 +801,7 @@ static NSString *SSResponseName(NSString *request) {
         @"expectedRevision": revision, @"view": self.viewID, @"settingsEdit": edit,
         @"settingsSequence": @(self.settingsSequence), @"verifySettings": @YES, @"localPreview": @YES,
         @"automaticPreview": @YES,
-        @"settings": @{@"threshold": values[@"thresholdDBFS"], @"minimum": values[@"minimumSilenceDuration"],
-            @"before": values[@"beforeSpeechPadding"], @"after": values[@"afterSpeechPadding"]},
+        @"settings": SSWireSettings(values),
         @"output": values[@"outputMode"]};
     self.connection.pendingSettings = command;
     self.connection.awaitingResponse = YES;
@@ -829,8 +839,7 @@ static NSString *SSResponseName(NSString *request) {
         self.connection.pendingSettings = @{@"version": @1, @"request": self.requestID, @"command": @"recalculate",
             @"expectedRevision": revision, @"view": self.viewID, @"settingsEdit": gesture,
             @"settingsSequence": @(self.settingsSequence), @"verifySettings": @YES, @"localPreview": @YES,
-            @"settings": @{@"threshold": values[@"thresholdDBFS"], @"minimum": values[@"minimumSilenceDuration"],
-                @"before": values[@"beforeSpeechPadding"], @"after": values[@"afterSpeechPadding"]}, @"output": values[@"outputMode"]};
+            @"settings": SSWireSettings(values), @"output": values[@"outputMode"]};
         self.connection.awaitingResponse = YES;
         self.connection.lastResponse = [self now];
         self.localMessage = @"Updating cuts from the last analyzed audio…";

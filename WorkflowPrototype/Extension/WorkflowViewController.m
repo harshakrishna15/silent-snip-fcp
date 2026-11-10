@@ -382,6 +382,8 @@ static BOOL SSWorkflowPermissionPromptPending;
 @property (nonatomic, strong) NSImageView *statusIcon;
 @property (nonatomic, strong) NSArray<NSTextField *> *fields;
 @property (nonatomic, strong) NSPopUpButton *output;
+@property (nonatomic, strong) NSTextField *pauseTargetField;
+@property (nonatomic, strong) NSStackView *pauseTargetRow;
 @property (nonatomic, strong) NSButton *saveButton;
 @property (nonatomic, strong) NSButton *connectButton;
 @property (nonatomic, strong) NSObject *permissionWaitToken;
@@ -685,8 +687,22 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.outputActions.alignment = NSLayoutAttributeLeading;
     self.outputActions.spacing = 4;
     self.outputRowWidthConstraint = [outputRow.widthAnchor constraintEqualToAnchor:self.outputActions.widthAnchor];
+    self.pauseTargetField = [NSTextField textFieldWithString:@"0"];
+    self.pauseTargetField.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium];
+    self.pauseTargetField.controlSize = NSControlSizeSmall;
+    self.pauseTargetField.alignment = NSTextAlignmentRight;
+    self.pauseTargetField.accessibilityLabel = @"Target Pause";
+    self.pauseTargetField.accessibilityIdentifier = @"silentsnip.workflow.pause-target";
+    self.pauseTargetField.toolTip = @"Keep this much original room tone in long pauses. Use 0 for standard silence removal.";
+    self.pauseTargetField.delegate = self;
+    [self.pauseTargetField.widthAnchor constraintEqualToConstant:64].active = YES;
+    NSTextField *pauseLabel = [self label:@"Target Pause" size:10.5 weight:NSFontWeightMedium];
+    NSTextField *pauseUnit = [self label:@"sec (0 = off)" size:10.5 weight:NSFontWeightRegular];
+    pauseLabel.textColor = pauseUnit.textColor = NSColor.secondaryLabelColor;
+    self.pauseTargetRow = [NSStackView stackViewWithViews:@[pauseLabel, self.pauseTargetField, pauseUnit]];
+    self.pauseTargetRow.spacing = 8;
     NSTextField *settingsHeading = [self label:@"Detection Settings" size:14 weight:NSFontWeightSemibold];
-    self.settingsPanel = [self cardWithViews:@[settingsHeading, self.settingsGroups, self.outputActions]];
+    self.settingsPanel = [self cardWithViews:@[settingsHeading, self.settingsGroups, self.outputActions, self.pauseTargetRow]];
     self.settingsPanel.accessibilityElement = YES;
     self.settingsPanel.accessibilityRole = NSAccessibilityGroupRole;
     self.settingsPanel.accessibilityIdentifier = @"silentsnip.workflow.settings";
@@ -1025,6 +1041,7 @@ static BOOL SSWorkflowPermissionPromptPending;
         (!self.reviewClient.busy || self.reviewClient.updatingCuts) && ![self.reviewResponse[@"canRetryVerification"] boolValue];
     BOOL changed = NO;
     for (NSTextField *field in self.fields) changed |= SSWorkflowSetControlEnabled(field, enabled);
+    changed |= SSWorkflowSetControlEnabled(self.pauseTargetField, enabled && self.output.indexOfSelectedItem == 0);
     changed |= SSWorkflowSetControlEnabled(self.output, enabled);
     changed |= SSWorkflowSetControlEnabled(self.saveButton, enabled && !self.settingsSavePending);
     changed |= SSWorkflowSetControlEnabled(self.analyzeButton, enabled && !self.reviewClient.busy && !self.settingsSavePending);
@@ -1266,6 +1283,8 @@ static BOOL SSWorkflowPermissionPromptPending;
         NSArray *keys = @[@"thresholdDBFS", @"minimumSilenceDuration", @"beforeSpeechPadding", @"afterSpeechPadding"];
         for (NSUInteger index = 0; index < keys.count; ++index) owner.fields[index].stringValue = [values[keys[index]] stringValue];
         [owner.output selectItemAtIndex:[values[@"outputMode"] isEqual:@"gaps"] ? 1 : 0];
+        owner.pauseTargetField.stringValue = [values[@"pauseTargetDuration"] stringValue] ?: @"0";
+        owner.pauseTargetRow.hidden = owner.output.indexOfSelectedItem == 1;
         owner.settingsLoaded = YES;
         [owner setControlsEnabled:YES];
         [owner setStatusMessage:owner.completionMessage ?: @""];
@@ -1303,7 +1322,26 @@ static BOOL SSWorkflowPermissionPromptPending;
         values[keys[index]] = @(value);
     }
     values[@"outputMode"] = self.output.indexOfSelectedItem == 1 ? @"gaps" : @"remove";
+    if (![self addPauseTargetToValues:values]) {
+        [self setStatusMessage:@"Enter a target pause between 0.001 and 10 seconds, or 0 to turn it off."];
+        return nil;
+    }
     return values;
+}
+
+- (BOOL)addPauseTargetToValues:(NSMutableDictionary *)values {
+    if (![values[@"outputMode"] isEqual:@"remove"]) return YES;
+    NSTextField *field = self.pauseTargetField;
+    NSString *text = field.currentEditor ? field.currentEditor.string : field.stringValue;
+    text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!text.length || [text hasSuffix:@"."]) return NO;
+    NSScanner *scanner = [NSScanner scannerWithString:text];
+    scanner.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    double seconds;
+    if (![scanner scanDouble:&seconds] || !scanner.isAtEnd || !isfinite(seconds) ||
+        seconds < 0 || seconds > 10 || (seconds > 0 && seconds < 0.001)) return NO;
+    if (seconds > 0) values[@"pauseTargetDuration"] = @(seconds);
+    return YES;
 }
 
 - (BOOL)observedProjectMatchesSettings {
@@ -1396,7 +1434,7 @@ static BOOL SSWorkflowPermissionPromptPending;
         values[keys[index]] = @(number);
     }
     values[@"outputMode"] = self.output.indexOfSelectedItem == 1 ? @"gaps" : @"remove";
-    return values;
+    return [self addPauseTargetToValues:values] ? values : nil;
 }
 
 - (NSDictionary *)settingsValuesFromResponse:(NSDictionary *)response {
@@ -1410,6 +1448,7 @@ static BOOL SSWorkflowPermissionPromptPending;
         values[target[index]] = wire[source[index]];
     }
     values[@"outputMode"] = response[@"output"];
+    if ([wire[@"pauseTarget"] isKindOfClass:NSNumber.class]) values[@"pauseTargetDuration"] = wire[@"pauseTarget"];
     return values;
 }
 
@@ -1474,6 +1513,10 @@ static BOOL SSWorkflowPermissionPromptPending;
     if ((self.reviewClient.busy && !self.reviewClient.updatingCuts) ||
         [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
     if (!self.handlingTextSettingsChange && ![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
+    if (sender == self.output) {
+        self.pauseTargetRow.hidden = self.output.indexOfSelectedItem == 1;
+        self.pauseTargetField.enabled = self.settingsLoaded && !self.pauseTargetRow.hidden;
+    }
     [self clearCompletionMessage];
     BOOL hadReview = self.reviewClient != nil;
     if (self.reviewClient.automaticPreviewAvailable || self.reviewClient.updatingCuts) {

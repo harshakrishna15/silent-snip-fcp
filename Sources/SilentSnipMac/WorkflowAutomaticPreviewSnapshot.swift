@@ -22,7 +22,9 @@ enum WorkflowAutomaticPreviewSnapshot {
         guard values[kAXRoleAttribute] as? String == kAXGroupRole,
               values[kAXIdentifierAttribute] as? String == identifier,
               let children = values[kAXChildrenAttribute] as? [Element], children.count <= 64 else { return false }
-        let ids = (0..<4).map { "silentsnip.workflow.setting.\($0)" } + ["silentsnip.workflow.output"]
+        let outputID = "silentsnip.workflow.output"
+        let pauseID = "silentsnip.workflow.pause-target"
+        var ids = (0..<4).map { "silentsnip.workflow.setting.\($0)" } + [outputID]
         let expected = [settings.threshold, settings.minimum, settings.before, settings.after]
         var controls: [String: [Element]] = [:]
         var queue = children.map { [group, $0] }, cursor = 0
@@ -33,7 +35,7 @@ enum WorkflowAutomaticPreviewSnapshot {
             guard path.count <= 12 else { return false }
             let value = read(element, [kAXRoleAttribute, kAXIdentifierAttribute, kAXValueAttribute, kAXChildrenAttribute])
             guard let role = value[kAXRoleAttribute] as? String else { return false }
-            if let id = value[kAXIdentifierAttribute] as? String, ids.contains(id) {
+            if let id = value[kAXIdentifierAttribute] as? String, ids.contains(id) || (id == pauseID && output == .remove) {
                 guard controls[id] == nil else { return false }
                 controls[id] = path
             }
@@ -44,6 +46,10 @@ enum WorkflowAutomaticPreviewSnapshot {
                     queue.append(path + [child])
                 }
             }
+        }
+        if controls[pauseID] != nil || settings.pauseTarget != nil {
+            guard output == .remove else { return false }
+            ids.append(pauseID)
         }
         guard controls.count == ids.count else { return false }
         // Mounts and values are fresh after discovery. A current edit may have
@@ -63,10 +69,14 @@ enum WorkflowAutomaticPreviewSnapshot {
                       let text = value[kAXValueAttribute] as? String,
                       let number = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)),
                       number.isFinite, number == expected[index] else { return false }
-            } else {
+            } else if id == outputID {
                 let title = output == .remove ? "Remove Silence" : "Replace with 1-Second Gaps"
                 guard value[kAXRoleAttribute] as? String == kAXPopUpButtonRole,
                       value[kAXValueAttribute] as? String == title else { return false }
+            } else {
+                guard value[kAXRoleAttribute] as? String == kAXTextFieldRole,
+                      let text = value[kAXValueAttribute] as? String,
+                      Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) == (settings.pauseTarget ?? 0) else { return false }
             }
         }
         let final = read(group, [kAXRoleAttribute, kAXIdentifierAttribute])

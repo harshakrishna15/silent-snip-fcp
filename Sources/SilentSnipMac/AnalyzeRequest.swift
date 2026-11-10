@@ -23,7 +23,7 @@ public struct AnalyzeRequest: Equatable, Sendable {
         }
         let workflow = parts.host == "workflow-analyze"
         var allowed = Set(["request", "threshold", "minimum", "before", "after", "output"])
-        if workflow { allowed.formUnion(["view", "gesture", "library", "project", "projectName"]) }
+        if workflow { allowed.formUnion(["view", "gesture", "library", "project", "projectName", "pauseTarget"]) }
         var values: [String: String] = [:]
         for item in parts.queryItems ?? [] {
             guard allowed.contains(item.name), values[item.name] == nil, let value = item.value else {
@@ -39,6 +39,8 @@ public struct AnalyzeRequest: Equatable, Sendable {
             throw RequestError.invalidURL
         }
         guard let mode = SilentSnipOutputMode(rawValue: values["output"] ?? "remove") else { throw RequestError.invalidURL }
+        let pauseTarget = values["pauseTarget"].flatMap(Double.init)
+        guard values["pauseTarget"] == nil || (mode == .remove && pauseTarget != nil) else { throw RequestError.invalidURL }
         self.outputMode = mode
         self.id = id
         if workflow {
@@ -52,7 +54,7 @@ public struct AnalyzeRequest: Equatable, Sendable {
         } else { workflowOrigin = nil }
         self.settings = try AnalysisSettings(
             thresholdDBFS: threshold, minimumSilenceDuration: minimum,
-            beforeSpeechPadding: before, afterSpeechPadding: after, windowDuration: 0.01
+            beforeSpeechPadding: before, afterSpeechPadding: after, windowDuration: 0.01, pauseTargetDuration: pauseTarget
         )
         if workflow { try WorkflowReviewOrigin.validate(settings: settings) }
     }

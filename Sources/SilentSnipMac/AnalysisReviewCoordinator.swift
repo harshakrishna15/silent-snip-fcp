@@ -325,7 +325,9 @@ public struct ReviewAnalysisResult: Sendable {
               let expected = command.expectedRevision, expected >= 0, expected <= job.revision,
               !local || expected == job.revision,
               let values = command.settings, let settings = try? values.analysisSettings(),
-              let output = command.output.flatMap(SilentSnipOutputMode.init(rawValue:)) else { rejectAutomaticPreview(job, command: command); return }
+              let output = command.output.flatMap(SilentSnipOutputMode.init(rawValue:)),
+              settings.pauseTargetDuration == nil || (job.request.workflowOrigin != nil && output == .remove)
+              else { rejectAutomaticPreview(job, command: command); return }
         if job.settingsView == view && sequence <= job.settingsSequence { rejectAutomaticPreview(job, command: command); return }
         guard authorizeRecalculation(command) else { rejectAutomaticPreview(job, command: command); return }
         do {
@@ -711,8 +713,7 @@ public struct ReviewAnalysisResult: Sendable {
             canApply: accepted && ready && applyOperation != nil && Self.applyUnavailableReason(result) == nil,
             canChangeSelection: accepted && ready, canCancel: true, canHighlight: accepted && ready && (highlightOperation != nil || sdkNavigation), previewVisible: !job.previewSuspended,
             settingsEdit: job.settingsEdit,
-            settings: ReviewWireSettings(threshold: job.request.settings.thresholdDBFS, minimum: job.request.settings.minimumSilenceDuration,
-                before: job.request.settings.beforeSpeechPadding, after: job.request.settings.afterSpeechPadding),
+            settings: ReviewWireSettings(job.request.settings),
             output: job.request.outputMode.rawValue, provisional: job.state == .recalculating,
             canUpdateCuts: ready && result.canUpdateCuts && localPreviewOperation != nil,
             usesAudioSnapshot: result.usesAudioSnapshot, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture,

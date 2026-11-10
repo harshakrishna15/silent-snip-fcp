@@ -22,6 +22,7 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
     public let beforeSpeechPadding: Double
     public let afterSpeechPadding: Double
     public let windowDuration: Double
+    public let pauseTargetDuration: Double?
 
     public static let defaults = try! AnalysisSettings()
 
@@ -30,10 +31,17 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
         minimumSilenceDuration: Double = 0.5,
         beforeSpeechPadding: Double = 0.1,
         afterSpeechPadding: Double = 0.1,
-        windowDuration: Double = 0.01
+        windowDuration: Double = 0.01,
+        pauseTargetDuration: Double? = nil
     ) throws {
         guard thresholdDBFS.isFinite, (-120...0).contains(thresholdDBFS) else {
             throw AnalysisError.invalidSetting("threshold must be between −120 and 0 dBFS")
+        }
+        if let pauseTargetDuration {
+            guard pauseTargetDuration.isFinite, pauseTargetDuration > 0,
+                  let time = try? RationalTime(seconds: pauseTargetDuration), time > .zero else {
+                throw AnalysisError.invalidSetting("pause target duration")
+            }
         }
         for (name, value, zeroAllowed) in [
             ("minimum silence duration", minimumSilenceDuration, false),
@@ -51,10 +59,11 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
         self.beforeSpeechPadding = beforeSpeechPadding
         self.afterSpeechPadding = afterSpeechPadding
         self.windowDuration = windowDuration
+        self.pauseTargetDuration = pauseTargetDuration
     }
 
     private enum CodingKeys: String, CodingKey {
-        case thresholdDBFS, minimumSilenceDuration, beforeSpeechPadding, afterSpeechPadding, windowDuration
+        case thresholdDBFS, minimumSilenceDuration, beforeSpeechPadding, afterSpeechPadding, windowDuration, pauseTargetDuration
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,7 +73,8 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
             minimumSilenceDuration: values.decode(Double.self, forKey: .minimumSilenceDuration),
             beforeSpeechPadding: values.decode(Double.self, forKey: .beforeSpeechPadding),
             afterSpeechPadding: values.decode(Double.self, forKey: .afterSpeechPadding),
-            windowDuration: values.decode(Double.self, forKey: .windowDuration)
+            windowDuration: values.decode(Double.self, forKey: .windowDuration),
+            pauseTargetDuration: values.decodeIfPresent(Double.self, forKey: .pauseTargetDuration)
         )
     }
 }
@@ -151,6 +161,8 @@ public enum SilenceDetector {
         let beforeSpeech = try RationalTime(seconds: settings.beforeSpeechPadding)
         let afterSpeech = try RationalTime(seconds: settings.afterSpeechPadding)
         let totalPadding = try beforeSpeech.adding(afterSpeech)
+        let pauseTarget = try settings.pauseTargetDuration.map { try RationalTime(seconds: $0) }
+        let roomTonePerSide = try pauseTarget.map { try max(.zero, $0.subtracting(totalPadding)).multiplied(by: RationalTime(1, 2)) }
         var quietRuns: [TimeRange] = []
         var coverageEnd = target.start
         var coverageHasGap = false
@@ -182,14 +194,20 @@ public enum SilenceDetector {
         for quiet in quietRuns {
             let duration = try quiet.checkedDuration()
             // Padding is retained at both boundaries, including target edges and gaps
-            // in the measurements. Minimum Silence limits the actual removal,
-            // after padding and inward frame rounding, not the raw quiet run.
+            // in the measurements. Minimum Silence qualifies the padded cut
+            // on the grid before any target-length shortening.
             guard duration > totalPadding else { continue }
-            let start = try quiet.start.adding(afterSpeech).roundedUp(toFrame: frameDuration)
-            let end = try quiet.end.subtracting(beforeSpeech).roundedDown(toFrame: frameDuration)
-            if end > start, try end.subtracting(start) >= minimum {
-                candidates.append(TimeRange(start: start, end: end))
+            let paddedStart = try quiet.start.adding(afterSpeech)
+            let paddedEnd = try quiet.end.subtracting(beforeSpeech)
+            var start = try paddedStart.roundedUp(toFrame: frameDuration)
+            var end = try paddedEnd.roundedDown(toFrame: frameDuration)
+            guard end > start, try end.subtracting(start) >= minimum else { continue }
+            if let pauseTarget, let roomTonePerSide {
+                guard duration > pauseTarget else { continue }
+                start = try paddedStart.adding(roomTonePerSide).roundedUp(toFrame: frameDuration)
+                end = try paddedEnd.subtracting(roomTonePerSide).roundedDown(toFrame: frameDuration)
             }
+            if end > start { candidates.append(TimeRange(start: start, end: end)) }
         }
         return try SilenceAnalysisResult(candidates: candidates, disposition: candidates.isEmpty ? .noSilence : .cuts)
     }
