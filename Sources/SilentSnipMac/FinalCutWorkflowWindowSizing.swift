@@ -17,10 +17,15 @@ struct WorkflowSizingHost: Equatable {
     func writeSize(_ target: AnyObject, size: CGSize) -> Int32
     func observe(_ target: AnyObject, resized: @escaping () -> Void, destroyed: @escaping () -> Void) -> Int32
     func stopObserving()
+    func selectedClipTitle(host: WorkflowSizingHost, projectName: String) -> String?
 }
 
-/// Controls only the size of the requesting native Workflow window. This is
-/// separate from analysis/edit authorization and never activates an app.
+extension WorkflowSizingDriver {
+    func selectedClipTitle(host: WorkflowSizingHost, projectName: String) -> String? { nil }
+}
+
+/// Sizes the requesting native Workflow window and supplies its clip title.
+/// Presentation observations never authorize Analyze or Apply.
 @MainActor public final class FinalCutWorkflowWindowSizing: NSObject {
     static let queryName = "local.silentsnip.workflow.window.v1"
     static let desired = CGSize(width: 615, height: 736)
@@ -38,6 +43,7 @@ struct WorkflowSizingHost: Equatable {
     private var nextDiscovery = -Double.infinity
     private var nextCorrection = -Double.infinity
     private var nextIdentityCheck = -Double.infinity
+    private var nextTitleRead = -Double.infinity
     private var needsCorrection = true
     private var failures = 0
     private var lastReadback: CGSize?
@@ -201,16 +207,25 @@ struct WorkflowSizingHost: Equatable {
         let command: String
         let view: UUID
         let nonce: UUID
+        let selectionEpoch: UUID?
+        let projectName: String?
         static func decode(_ object: Any?, userInfo: [AnyHashable: Any]?) -> Self? {
             guard userInfo == nil, let object = object as? String, let data = object.data(using: .utf8), data.count <= 2048,
                   let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  Set(value.keys) == ["version", "command", "view", "nonce"],
                   let version = value["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(),
                   "cCsSiIlLqQ".contains(String(cString: version.objCType)), version.int64Value == 1, version.doubleValue == 1,
-                  let command = value["command"] as? String, ["attach", "renew", "detach"].contains(command),
+                  let command = value["command"] as? String, ["attach", "renew", "detach", "selection"].contains(command),
                   let rawView = value["view"] as? String, let view = UUID(uuidString: rawView), view.uuidString == rawView,
                   let rawNonce = value["nonce"] as? String, let nonce = UUID(uuidString: rawNonce), nonce.uuidString == rawNonce else { return nil }
-            return Self(command: command, view: view, nonce: nonce)
+            let base: Set<String> = ["version", "command", "view", "nonce"]
+            if command != "selection", Set(value.keys) == base {
+                return Self(command: command, view: view, nonce: nonce, selectionEpoch: nil, projectName: nil)
+            }
+            guard command == "selection", Set(value.keys) == base.union(["selectionEpoch", "projectName"]),
+                  let raw = value["selectionEpoch"] as? String, let epoch = UUID(uuidString: raw), epoch.uuidString == raw,
+                  let name = value["projectName"] as? String, !name.isEmpty, name.utf8.count <= 1024,
+                  name.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+            return Self(command: command, view: view, nonce: nonce, selectionEpoch: epoch, projectName: name)
         }
     }
 
@@ -226,12 +241,24 @@ struct WorkflowSizingHost: Equatable {
         switch query.command {
         case "attach": accepted = attach(view: query.view, nonce: query.nonce)
         case "renew": accepted = renew(view: query.view, nonce: query.nonce)
+        case "selection": accepted = running
         default: accepted = detach(view: query.view, nonce: query.nonce)
         }
         var value: [String: Any] = ["version": 1, "protocol": 1, "command": query.command,
             "view": query.view.uuidString, "nonce": query.nonce.uuidString, "accepted": accepted,
             "state": accepted ? state : "unavailable", "width": 615, "height": 736, "corrections": corrections]
         if let axCode { value["axCode"] = axCode }
+        if let selectionEpoch = query.selectionEpoch, let name = query.projectName {
+            value["selectionEpoch"] = selectionEpoch.uuidString
+            if accepted, !isBusy(), driver.trusted, now() >= nextTitleRead, let host = driver.host() {
+                nextTitleRead = now() + 0.35
+                let retained = lease?.view == query.view && lease?.nonce == query.nonce ? target : nil
+                if let owner = retained ?? driver.discover(host: host, view: query.view),
+                   driver.valid(owner, host: host, view: query.view) {
+                    value["clipTitle"] = driver.selectedClipTitle(host: host, projectName: name)
+                }
+            }
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: value), data.count <= 2048,
               let object = String(data: data, encoding: .utf8) else { return }
         DistributedNotificationCenter.default().postNotificationName(
@@ -340,6 +367,58 @@ struct WorkflowSizingHost: Equatable {
         return (a == "silentsnip.workflow.analyze" || a.hasPrefix("silentsnip.workflow.analyze.requested."))
             && (b == "silentsnip.workflow.apply" || b.hasPrefix("silentsnip.workflow.apply.requested."))
             && belongs(target.marker, to: target.window) && belongs(target.analyze, to: target.window) && belongs(target.apply, to: target.window)
+    }
+
+    func selectedClipTitle(host: WorkflowSizingHost, projectName: String) -> String? {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == host.pid else { return nil }
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.16
+        readDeadline = deadline
+        defer { readDeadline = nil }
+        let root = AXUIElementCreateApplication(host.pid)
+        func find(in window: AXUIElement, _ query: FinalCutAXQuery) -> AXUIElement? {
+            FinalCutAXSearch.find(root: window, query: query, maxDepth: 16, maxNodes: 160,
+                read: { element, names in
+                    Dictionary(uniqueKeysWithValues: names.compactMap { name in
+                        self.attribute(element, name).map { (name, $0) }
+                    })
+                },
+                children: { self.attribute($0, kAXChildrenAttribute) as? [AXUIElement] ?? [] },
+                equals: { CFEqual($0, $1) },
+                shouldContinue: { ProcessInfo.processInfo.systemUptime < deadline })?.element
+        }
+        let project = FinalCutAXQuery(identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton",
+            title: projectName, containersOnly: true)
+        let main = element(root, kAXMainWindowAttribute)
+        let windows = attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
+        guard let window = FinalCutProjectWindow.resolve(main: main, windows: windows,
+            equals: { CFEqual($0, $1) }, isWorkspace: { candidate in
+                FinalCutProjectWindow.isWorkspace(role: text(candidate, kAXRoleAttribute),
+                    subrole: text(candidate, kAXSubroleAttribute),
+                    modal: (attribute(candidate, kAXModalAttribute) as? NSNumber)?.boolValue,
+                    title: text(candidate, kAXTitleAttribute))
+            }),
+              let projectControl = find(in: window, project),
+              let timeline = find(in: window, .init(role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true))
+        else { return nil }
+        let selected = attribute(timeline, kAXSelectedChildrenAttribute) as? [AXUIElement]
+        guard let items = selected?.isEmpty == false ? selected : attribute(timeline, kAXChildrenAttribute) as? [AXUIElement],
+              items.count <= 2_000 else { return nil }
+        var clip: AXUIElement?
+        for item in items {
+            guard ProcessInfo.processInfo.systemUptime < deadline, let role = text(item, kAXRoleAttribute) else { return nil }
+            guard role == kAXLayoutItemRole, text(item, kAXDescriptionAttribute) != "Range Selection",
+                  (attribute(item, kAXSelectedAttribute) as? NSNumber)?.boolValue == true else { continue }
+            guard clip == nil, (attribute(item, kAXEnabledAttribute) as? NSNumber)?.boolValue != false else { return nil }
+            clip = item
+        }
+        guard let clip, let children = attribute(clip, kAXChildrenAttribute) as? [AXUIElement], children.count <= 100 else { return nil }
+        let titles = children.filter { text($0, kAXRoleAttribute) == kAXTextFieldRole && text($0, kAXDescriptionAttribute) == "Title" }
+        guard titles.count == 1, let title = text(titles[0], kAXValueAttribute), !title.isEmpty, title.utf8.count <= 512,
+              title.rangeOfCharacter(from: .controlCharacters) == nil,
+              (attribute(clip, kAXSelectedAttribute) as? NSNumber)?.boolValue == true,
+              text(projectControl, kAXTitleAttribute) == projectName,
+              element(root, kAXMainWindowAttribute).map({ current in main.map { CFEqual(current, $0) } ?? false }) == true else { return nil }
+        return title
     }
     func readSize(_ target: AnyObject) -> CGSize? {
         guard let target = target as? Target, let raw = attribute(target.window, kAXSizeAttribute),

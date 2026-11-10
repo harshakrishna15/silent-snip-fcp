@@ -376,8 +376,9 @@ static BOOL SSWorkflowPermissionPromptPending;
 @property (nonatomic) BOOL windowClientRunning;
 @property (nonatomic, strong) FCPXTimeline *timeline;
 @property (nonatomic, strong) SSWorkflowSettingsBridge *settings;
-@property (nonatomic, strong) NSTextField *projectLabel;
-@property (nonatomic, strong) NSTextField *playheadLabel;
+@property (nonatomic, strong) NSTextField *selectedClipLabel;
+@property (nonatomic, copy) NSDictionary *selectionContext;
+@property (nonatomic, copy) NSString *selectionEpoch;
 @property (nonatomic, strong) NSTextField *statusLabel;
 @property (nonatomic, strong) NSImageView *statusIcon;
 @property (nonatomic, strong) NSArray<NSTextField *> *fields;
@@ -570,20 +571,11 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.connectButton = [NSButton buttonWithTitle:@"Connect to Final Cut Pro" target:self action:@selector(requestConnection:)];
     self.connectButton.accessibilityIdentifier = @"silentsnip.workflow.connect";
     self.connectButton.hidden = YES;
-    self.projectLabel = [self label:@"Connecting to Final Cut Pro…" size:15 weight:NSFontWeightSemibold];
-    self.projectLabel.maximumNumberOfLines = 1;
-    self.projectLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    self.projectLabel.accessibilityIdentifier = @"silentsnip.workflow.project";
-    [self.projectLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    self.playheadLabel = [self label:@"Playhead —" size:11 weight:NSFontWeightRegular];
-    self.playheadLabel.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
-    self.playheadLabel.textColor = NSColor.secondaryLabelColor;
-    self.playheadLabel.maximumNumberOfLines = 1;
-    self.playheadLabel.accessibilityIdentifier = @"silentsnip.workflow.playhead";
-    NSStackView *project = [NSStackView stackViewWithViews:@[self.projectLabel, self.playheadLabel]];
-    project.orientation = NSUserInterfaceLayoutOrientationVertical;
-    project.alignment = NSLayoutAttributeLeading;
-    project.spacing = 3;
+    self.selectedClipLabel = [self label:@"Connecting to Final Cut Pro…" size:15 weight:NSFontWeightSemibold];
+    self.selectedClipLabel.maximumNumberOfLines = 1;
+    self.selectedClipLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.selectedClipLabel.accessibilityIdentifier = @"silentsnip.workflow.selected-clip";
+    [self.selectedClipLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSMutableArray *headerItems = [NSMutableArray new];
     NSImage *icon = [NSImage imageWithSystemSymbolName:@"waveform" accessibilityDescription:nil];
     if (icon) {
@@ -594,9 +586,10 @@ static BOOL SSWorkflowPermissionPromptPending;
         [image.heightAnchor constraintEqualToConstant:18].active = YES;
         [headerItems addObject:image];
     }
-    [headerItems addObjectsFromArray:@[project, self.connectButton]];
+    [headerItems addObjectsFromArray:@[self.selectedClipLabel, self.connectButton]];
     NSStackView *header = [NSStackView stackViewWithViews:headerItems];
     header.spacing = 8;
+    header.alignment = NSLayoutAttributeCenterY;
     header.translatesAutoresizingMaskIntoConstraints = NO;
     [self.headerView addSubview:header];
     NSBox *headerRule = [NSBox new];
@@ -917,7 +910,6 @@ static BOOL SSWorkflowPermissionPromptPending;
         [header.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:12],
         [header.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-12],
         [header.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
-        [self.projectLabel.widthAnchor constraintEqualToAnchor:project.widthAnchor],
         [self.footerView.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor],
         [self.footerView.widthAnchor constraintEqualToAnchor:self.headerView.widthAnchor],
         [self.footerView.bottomAnchor constraintEqualToAnchor:self.contentColumn.bottomAnchor],
@@ -1167,7 +1159,8 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.connectButton.enabled = !promptPending || !self.permissionCheckToken;
     self.connectButton.title = promptPending ? @"Check Permission" : @"Connect to Final Cut Pro";
     self.connectButton.action = promptPending ? @selector(recheckConnection:) : @selector(requestConnection:);
-    self.projectLabel.stringValue = @"Connect to Final Cut Pro";
+    self.selectedClipLabel.stringValue = @"Connect to Final Cut Pro";
+    self.selectedClipLabel.toolTip = nil;
     [self setStatusMessage:(timedOut || promptPending)
         ? @"Check the macOS permission dialog or allow access in System Settings > Privacy & Security > Automation."
         : @"Allow Silent Snip to access Final Cut Pro to show the open project and playhead."];
@@ -1227,6 +1220,9 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.verificationPanelPending = NO;
     self.verificationPanelToken += 1;
     [self stopWindowClient];
+    self.selectionContext = nil;
+    self.selectionEpoch = nil;
+    [self.windowClient observeSelectionInProject:nil epoch:nil update:nil];
     [self clearCompletionMessage];
     [self invalidateReview];
     [self.timeline removeTimelineObserver:self];
@@ -1242,8 +1238,6 @@ static BOOL SSWorkflowPermissionPromptPending;
 }
 
 - (void)activeSequenceChanged { [self onMain:^{ if (self.timeline) [self refreshProject]; }]; }
-- (void)sequenceTimeRangeChanged { [self onMain:^{ if (self.timeline) [self refreshPlayhead]; }]; }
-- (void)playheadTimeChanged { [self onMain:^{ if (self.timeline) [self refreshPlayhead]; }]; }
 - (void)onMain:(dispatch_block_t)block {
     if (NSThread.isMainThread) block(); else dispatch_async(dispatch_get_main_queue(), block);
 }
@@ -1284,9 +1278,7 @@ static BOOL SSWorkflowPermissionPromptPending;
     if (!context && (self.handlingTextSettingsChange || ownsPendingAutomaticReview)) return;
     if (self.completionMessage && (![context[@"projectUID"] isEqual:self.completionContext[@"projectUID"]] ||
         ![context[@"libraryURL"] isEqual:self.completionContext[@"libraryURL"]])) [self clearCompletionMessage];
-    self.projectLabel.stringValue = context[@"projectName"] ?: @"Open a project in Final Cut Pro";
-    self.projectLabel.toolTip = self.projectLabel.stringValue;
-    [self refreshPlayhead];
+    [self refreshClipHeaderForContext:context];
     // Proxy refreshes can repeat for the same project. Preserve unsaved edits
     // and an in-flight load instead of replacing either with saved defaults.
     if (context && [context[@"projectUID"] isEqual:self.projectUID] &&
@@ -1326,22 +1318,21 @@ static BOOL SSWorkflowPermissionPromptPending;
     }];
 }
 
-- (void)refreshPlayhead {
-    if (self.verificationPanelPending) return;
-    if (self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
-    if (!self.timeline || !self.timeline.activeSequence) {
-        self.playheadLabel.stringValue = @"Playhead —";
-        return;
-    }
-    CMTime time = [self.timeline playheadTime];
-    CMTime start = self.timeline.activeSequence.startTime;
-    CMTime relative = CMTimeSubtract(time, start);
-    if (!CMTIME_IS_NUMERIC(time) || !CMTIME_IS_NUMERIC(start) || !isfinite(CMTimeGetSeconds(relative))) {
-        self.playheadLabel.stringValue = @"Playhead —";
-        return;
-    }
-    double seconds = CMTimeGetSeconds(relative);
-    self.playheadLabel.stringValue = [NSString stringWithFormat:@"Playhead %.3f sec", seconds];
+- (void)refreshClipHeaderForContext:(NSDictionary *)context {
+    if (context && [context isEqual:self.selectionContext]) return;
+    self.selectionContext = context;
+    self.selectionEpoch = context ? NSUUID.UUID.UUIDString : nil;
+    self.selectedClipLabel.stringValue = context ? @"Select a timeline clip" : @"Open a project in Final Cut Pro";
+    self.selectedClipLabel.toolTip = nil;
+    NSString *epoch = self.selectionEpoch;
+    __weak SSWorkflowViewController *weakSelf = self;
+    [self.windowClient observeSelectionInProject:context[@"projectName"] epoch:epoch update:^(NSString *title) {
+        SSWorkflowViewController *owner = weakSelf;
+        if (!owner.viewVisible || ![owner.selectionEpoch isEqual:epoch] ||
+            ![[owner observedProjectContext] isEqual:context]) return;
+        owner.selectedClipLabel.stringValue = title.length ? title : @"Select a timeline clip";
+        owner.selectedClipLabel.toolTip = title;
+    }];
 }
 
 - (NSDictionary *)currentSettingsValues {
@@ -1878,7 +1869,9 @@ static BOOL SSWorkflowPermissionPromptPending;
 
 - (void)analyzeAudio:(id)sender {
     if (!self.settingsLoaded || self.settingsSavePending || self.reviewClient.busy || [self.reviewResponse[@"canRetryVerification"] boolValue]) return;
-    if (![self observedProjectMatchesSettings]) { [self refreshProject]; return; }
+    NSDictionary *context = [self observedProjectContext];
+    if (![self projectContext:context hasSameIdentityAs:@{@"projectUID": self.projectUID ?: @"",
+        @"libraryURL": self.libraryURL ?: NSNull.null}]) { [self refreshProject]; return; }
     NSDictionary *values = [self currentSettingsValues];
     if (!values) return;
     [self clearCompletionMessage];
@@ -1900,7 +1893,7 @@ static BOOL SSWorkflowPermissionPromptPending;
     [self setControlsEnabled:NO];
     [self setStatusMessage:@"Analyzing the selected timeline clip…"];
     [self.reviewClient startWithLibraryURL:self.libraryURL projectUID:self.projectUID
-        projectName:self.projectLabel.stringValue settings:values gesture:gesture];
+        projectName:context[@"projectName"] settings:values gesture:gesture];
     [self updateReviewControls];
 }
 

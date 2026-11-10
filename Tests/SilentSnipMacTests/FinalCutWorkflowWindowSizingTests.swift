@@ -184,5 +184,17 @@ import XCTest
             XCTAssertNil(FinalCutWorkflowWindowSizing.Query.decode(try encode(invalid), userInfo: nil))
         }
         XCTAssertNil(FinalCutWorkflowWindowSizing.Query.decode(String(repeating: "x", count: 2049), userInfo: nil))
+
+        let epoch = UUID()
+        var selection = valid
+        selection["command"] = "selection"
+        selection["selectionEpoch"] = epoch.uuidString
+        selection["projectName"] = "A"
+        let titleQuery = FinalCutWorkflowWindowSizing.Query.decode(try encode(selection), userInfo: nil)
+        XCTAssertEqual(titleQuery?.selectionEpoch, epoch)
+        XCTAssertEqual(titleQuery?.projectName, "A")
+        selection["command"] = "renew"
+        XCTAssertNil(FinalCutWorkflowWindowSizing.Query.decode(try encode(selection), userInfo: nil),
+            "Presentation fields cannot change the sizing lease.")
     }
 }

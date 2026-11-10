@@ -228,7 +228,8 @@ static void unexpectedWindowBoundary(void) {
 - (NSString *)state { unexpectedWindowBoundary(); return nil; }
 - (void)start { unexpectedWindowBoundary(); }
 - (void)stop { unexpectedWindowBoundary(); }
-- (void)updateProjectName:(NSString *)projectName { unexpectedWindowBoundary(); }
+- (void)observeSelectionInProject:(NSString *)projectName epoch:(NSString *)epoch
+                         update:(void (^)(NSString *))update { unexpectedWindowBoundary(); }
 @end
 
 @interface SSFakeWorkflowWindowClient : SSWorkflowWindowClient
@@ -236,6 +237,8 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic) NSUInteger startCount;
 @property (nonatomic) NSUInteger stopCount;
 @property (nonatomic) BOOL active;
+@property (nonatomic, copy) NSString *testSelectionProject;
+@property (nonatomic, copy) void (^testSelectionUpdate)(NSString *);
 @end
 @implementation SSFakeWorkflowWindowClient
 - (instancetype)initWithViewID:(NSString *)viewID {
@@ -245,6 +248,11 @@ static void unexpectedWindowBoundary(void) {
 }
 - (void)start { if (!self.active) { self.startCount += 1; self.active = YES; } }
 - (void)stop { if (self.active) { self.stopCount += 1; self.active = NO; } }
+- (void)observeSelectionInProject:(NSString *)projectName epoch:(NSString *)epoch
+                         update:(void (^)(NSString *))update {
+    self.testSelectionProject = projectName;
+    self.testSelectionUpdate = update;
+}
 @end
 
 @interface SSFakeWorkflowReviewClient : SSWorkflowReviewClient
@@ -673,8 +681,9 @@ static void sameProjectPreservesDraft(void) {
     check(controller.settings.loads.count == 1, @"A rebuilt proxy with the same identity does not reload the archive");
     check([controller.fields[0].stringValue isEqual:@"-42"], @"Repeated same-project observations preserve unsaved numeric edits");
     check(controller.output.indexOfSelectedItem == 1, @"Repeated same-project observations preserve the output draft");
-    check([controller.projectLabel.stringValue isEqual:@"Renamed project"], @"A name refresh does not change the persistence key");
-    check([controller.playheadLabel.stringValue containsString:@"12.500"], @"Playhead is shown relative to sequence start");
+    check([controller.windowClients.lastObject.testSelectionProject isEqual:@"Renamed project"] &&
+          [controller.selectedClipLabel.stringValue isEqual:@"Select a timeline clip"],
+          @"A name refresh requests a new title without displaying the project name");
     closeController(controller);
     check(current.testTimeline.observer == nil && current.testTimeline.removeCount == 1, @"Closing removes the observer");
     groupCount += 1;
@@ -787,7 +796,7 @@ static void invalidHostAndIdentityNeverLoad(void) {
     closeController(controller);
     SSHost *empty = host(nil);
     controller = openController(empty);
-    check(controller.settings.loads.count == 0 && [controller.playheadLabel.stringValue isEqual:@"Playhead —"], @"No active sequence remains unbound without a manufactured playhead");
+    check(controller.settings.loads.count == 0 && [controller.selectedClipLabel.stringValue isEqual:@"Open a project in Final Cut Pro"], @"No active sequence remains unbound without a clip title");
     closeController(controller);
     groupCount += 1;
 }
@@ -1353,9 +1362,8 @@ static void navigationSettlementRefreshesDeferredProjectChanges(void) {
         [client deliver:reviewResponse(@"review", @"Playhead moved") busy:NO canApply:YES];
         check(controller.reviewClient == client && controller.cutList.arrangedSubviews.firstObject == originalRow &&
               controller.settings.loads.count == 1 && controller.applyButton.enabled &&
-              [controller.playheadLabel.stringValue isEqual:@"Playhead 14.500 sec"] &&
               [controller.statusLabel.stringValue isEqual:@"Playhead moved"],
-              @"Settlement in the same project refreshes its playhead without rebuilding the review or overriding feedback");
+              @"Settlement in the same project preserves its review and feedback");
 
         [controller goToCut:controller.navigateButton];
         // Also cover a declined SDK request that never gets a navigating reply.
@@ -2029,7 +2037,7 @@ static void busyWorkerDefersTemporarySDKBinding(void) {
     NSUInteger generation = controller.contextGeneration;
     current.testTimeline.sequence = sequence(@"temporary-analysis", @"/Test/Library-A.fcpbundle", @"Temporary analysis");
     [current.testTimeline notifySequenceChanged];
-    check([controller.projectUID isEqual:@"project-A"] && [controller.projectLabel.stringValue isEqual:@"A"] &&
+    check([controller.projectUID isEqual:@"project-A"] && [controller.selectionContext[@"projectName"] isEqual:@"A"] &&
           controller.contextGeneration == generation && controller.settings.loads.count == 1 && client.detachCount == 0,
           @"A busy Analyze defers temporary sequence callbacks without changing its pinned project or settings");
     current.testTimeline.sequence = sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A");
@@ -2120,17 +2128,15 @@ static void retryableResultRetainsRecoveryUntilVerified(void) {
     check(!controller.retryButton.hidden && controller.retryButton.enabled && !controller.applyButton.enabled &&
           !controller.analyzeButton.enabled && !controller.saveButton.enabled && !controller.fields[0].enabled && !controller.output.enabled,
           @"Retry remains available while new analysis, Apply, and setting edits stay disabled during recovery");
-    NSString *playhead = controller.playheadLabel.stringValue;
+    NSString *clipTitle = controller.selectedClipLabel.stringValue;
     NSUInteger generation = controller.contextGeneration;
     current.testTimeline.currentPlayhead = CMTimeMake(3619, 1);
     [current.testTimeline notifySequenceChanged];
-    [controller playheadTimeChanged];
-    [controller sequenceTimeRangeChanged];
     [controller settingsChanged:controller.output];
     [controller analyzeAudio:controller.analyzeButton];
     check(controller.reviewClient == client && client.detachCount == 0 && controller.reviewClients.count == 1 &&
           controller.contextGeneration == generation && controller.settings.loads.count == 1 &&
-          [controller.playheadLabel.stringValue isEqual:playhead],
+          [controller.selectedClipLabel.stringValue isEqual:clipTitle],
           @"Deferred SDK/result callbacks and stale edit or Analyze actions cannot discard a pending result-verification request");
     [controller retryVerification:controller.retryButton];
     [controller retryVerification:controller.retryButton];
@@ -2153,36 +2159,28 @@ static void retryableResultRetainsRecoveryUntilVerified(void) {
     groupCount += 1;
 }
 
-static void busyPlayheadWaitsForTheSettledProject(void) {
-    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+static void verifiedClipTitleIsPresentationOnlyAndExpiresOnProjectChange(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Same name"));
     SSTestWorkflowViewController *controller = openController(current);
     completeLoad(controller.settings.loads[0], values(-50, YES), nil);
-    NSString *originalPlayhead = controller.playheadLabel.stringValue;
-    [controller analyzeAudio:controller.analyzeButton];
-    SSFakeWorkflowReviewClient *client = controller.reviewClients.lastObject;
-    current.testTimeline.sequence = sequence(@"temporary-analysis", @"/Test/Library-A.fcpbundle", @"Temporary");
-    current.testTimeline.sequence.startTime = CMTimeMake(0, 1);
-    current.testTimeline.currentPlayhead = CMTimeMake(9, 1);
-    [controller playheadTimeChanged];
-    [controller sequenceTimeRangeChanged];
+    SSFakeWorkflowWindowClient *windowClient = controller.windowClients.lastObject;
+    void (^oldTitle)(NSString *) = windowClient.testSelectionUpdate;
+    check(oldTitle != nil && [controller.selectedClipLabel.stringValue isEqual:@"Select a timeline clip"],
+          @"Before a native title report the header shows the selection prompt");
+    oldTitle(@"Verified Narration");
+    check([controller.selectedClipLabel.stringValue isEqual:@"Verified Narration"] &&
+          [controller.selectedClipLabel.toolTip isEqual:@"Verified Narration"], @"The header displays the reported clip name");
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    check([client.startPayload[@"projectName"] isEqual:@"Same name"], @"Analyze still uses the SDK project name");
+    current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-B.fcpbundle", @"Same name");
     [current.testTimeline notifySequenceChanged];
-    check([controller.projectLabel.stringValue isEqual:@"A"] && [controller.playheadLabel.stringValue isEqual:originalPlayhead],
-          @"Busy SDK time and range callbacks cannot display a temporary project's playhead under the pinned original name");
-    current.testTimeline.sequence = sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A");
-    current.testTimeline.currentPlayhead = CMTimeMake(7229, 2); // 14.5 seconds in the settled original project.
-    [client deliver:reviewResponse(@"review", @"Review ready") busy:NO canApply:YES];
-    [controller playheadTimeChanged];
-    check([controller.playheadLabel.stringValue isEqual:@"Playhead 14.500 sec"] && controller.reviewClient == client,
-          @"Once analysis settles, a current-project time callback updates the playhead without discarding its review");
-    [controller applyCuts:controller.applyButton];
-    current.testTimeline.sequence = sequence(@"result-project", @"/Test/Library-A.fcpbundle", @"Cleaned A");
-    current.testTimeline.sequence.startTime = CMTimeMake(0, 1);
-    current.testTimeline.currentPlayhead = CMTimeMake(7, 1);
-    [controller playheadTimeChanged];
-    check([controller.playheadLabel.stringValue isEqual:@"Playhead 14.500 sec"], @"Apply also freezes the original playhead while its result is opening");
-    [client deliver:reviewResponse(@"completed", @"Verified result") busy:NO canApply:NO];
-    check([controller.projectLabel.stringValue isEqual:@"Cleaned A"] && [controller.playheadLabel.stringValue isEqual:@"Playhead 7.000 sec"],
-          @"Terminal completion updates project identity and playhead together from the settled SDK context");
+    oldTitle(@"Stale clip");
+    check([controller.selectedClipLabel.stringValue isEqual:@"Select a timeline clip"],
+          @"The old project's reply cannot populate the header even when names match");
+    windowClient.testSelectionUpdate(@"New clip");
+    check([controller.selectedClipLabel.stringValue isEqual:@"New clip"], @"The current project's clip is displayed");
+    windowClient.testSelectionUpdate(nil);
+    check([controller.selectedClipLabel.stringValue isEqual:@"Select a timeline clip"], @"An empty or expired observation clears the title");
     closeController(controller);
     groupCount += 1;
 }
@@ -2311,7 +2309,7 @@ static void delayedTerminalCannotClaimTheNewSDKProject(void) {
     check([controller.projectUID isEqual:@"project-A"] && controller.settings.loads.count == 1 && client.busy,
           @"The unrelated SDK switch is deferred while A's actual request is still busy");
     [client deliver:reviewResponse(@"completed", @"Verified result for A") busy:NO canApply:NO];
-    check([controller.projectUID isEqual:@"project-B"] && [controller.projectLabel.stringValue isEqual:@"Unrelated B"] &&
+    check([controller.projectUID isEqual:@"project-B"] && [controller.selectionContext[@"projectName"] isEqual:@"Unrelated B"] &&
           !controller.completionMessage && !controller.completionContext && !controller.reviewClient && !controller.applyButton.enabled &&
           [controller.statusLabel.stringValue isEqual:@"Loading project settings…"],
           @"Delayed completion for A cannot attach a verified notice or edit authority to the unrelated SDK project B");
@@ -3262,7 +3260,7 @@ static void checkReviewTextHierarchy(SSWorkflowViewController *controller, NSDic
           @"Changing numeric totals keeps digit widths stable instead of moving the review metrics");
     NSTextField *settingName = labelWithTextInSubtree(controller.settingsPanel, @"Silence Threshold");
     NSTextField *sectionName = labelWithTextInSubtree(controller.reviewPanel, @"Cut Review");
-    check(settingName && sectionName && controller.projectLabel.font.pointSize > controller.playheadLabel.font.pointSize &&
+    check(settingName && sectionName && controller.selectedClipLabel.font.pointSize > settingName.font.pointSize &&
           sectionName.font.pointSize > settingName.font.pointSize &&
           controller.fields[0].font.pointSize > settingName.font.pointSize,
           @"Project and section headings, editable values, and descriptive labels have visibly different type roles");
@@ -3591,7 +3589,7 @@ int main(void) {
         closingReviewRejectsLateCallbacksAfterReopen();
         malformedAnalyzeAndCurrentFailureStayLocal();
         retryableResultRetainsRecoveryUntilVerified();
-        busyPlayheadWaitsForTheSettledProject();
+        verifiedClipTitleIsPresentationOnlyAndExpiresOnProjectChange();
         pendingSaveCannotReplaceWorkerProgressOrRecovery();
         synchronousApplyActivationFailureKeepsReviewUsable();
         terminalNoticeStaysWithItsPinnedProject();

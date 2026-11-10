@@ -239,11 +239,41 @@ static void negativeAcknowledgmentsBackOffAndFixedAcknowledgmentsResetBudget(voi
     rejectAndCheckRetryDelay(value, 1);
     [value stop]; groups += 1;
 }
+static void titleReportsCannotClaimTheLeaseOrAnOlderProject(void) {
+    SSOfflineWindowClient *value = readyClient();
+    NSString *first = NSUUID.UUID.UUIDString, *second = NSUUID.UUID.UUIDString;
+    __block NSString *title = nil;
+    void (^update)(NSString *) = ^(NSString *name) { title = name; };
+    [value observeSelectionInProject:@"First" epoch:first update:update];
+    require([packet(value,1)[@"command"] isEqual:@"selection"] &&
+        [packet(value,1)[@"projectName"] isEqual:@"First"], @"Title queries use a separate presentation command");
+    NSMutableDictionary *report = reply(value);
+    report[@"command"] = @"selection";
+    report[@"selectionEpoch"] = first;
+    report[@"clipTitle"] = @"First clip";
+    receiveReply(value, report);
+    require([title isEqual:@"First clip"] && ![value.state isEqual:@"fixed"], @"A title reply cannot acknowledge the size lease");
+    [value observeSelectionInProject:@"Second" epoch:second update:update];
+    title = nil;
+    receiveReply(value, report);
+    require(title == nil, @"Delayed titles from an earlier project epoch are ignored");
+    report[@"selectionEpoch"] = second;
+    report[@"clipTitle"] = @"Second clip";
+    receiveReply(value, report);
+    require([title isEqual:@"Second clip"], @"The current title observation is delivered");
+    value.clock += 3;
+    [value tick];
+    require(title == nil, @"A missing reply expires the last verified clip title");
+    [value stop];
+    groups += 1;
+}
+
 int main(void) {
     @autoreleasepool {
         attachRenewDetachAndFreshNonce(); delayedLaunchAndOldGenerationCannotAttach(); launchFailureIsQuietAndRetryable();
         invalidViewIdentityNeverLaunches(); replyEnvelopeAndPayloadValidation(); staleRepliesAndTimeoutCannotClaimCurrentSizing();
         negativeAcknowledgmentsBackOffAndFixedAcknowledgmentsResetBudget();
+        titleReportsCannotClaimTheLeaseOrAnOlderProject();
     }
     require(cleanupCalls > 0, @"Deallocation also uses the offline notification-center replacement");
     printf("Passed %lu window-client groups (%lu assertions); no helpers, notifications, timers, windows, or Final Cut used.\n", (unsigned long)groups,(unsigned long)checks);

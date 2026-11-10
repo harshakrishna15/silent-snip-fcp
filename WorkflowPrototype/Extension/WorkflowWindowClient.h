@@ -10,5 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)init NS_UNAVAILABLE;
 - (void)start;
 - (void)stop;
+/// Read-only title reports are bound to this visible project's epoch.
+- (void)observeSelectionInProject:(nullable NSString *)projectName epoch:(nullable NSString *)epoch
+                         update:(void (^ _Nullable)(NSString * _Nullable title))update;
 @end
 NS_ASSUME_NONNULL_END
