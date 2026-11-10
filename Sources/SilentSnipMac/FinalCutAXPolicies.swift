@@ -125,7 +125,7 @@ enum FinalCutPreviewGeometry {
 
 /// WindowServer returns front-to-back rectangles without requiring pixel capture.
 /// Identify the pinned project for native window ordering.
-struct FinalCutPreviewSurface {
+struct FinalCutPreviewSurface: Sendable {
     let pid: Int32
     let frame: CGRect
     let layer: Int

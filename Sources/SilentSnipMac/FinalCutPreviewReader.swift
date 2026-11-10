@@ -33,7 +33,6 @@ enum PreviewEffectRemovalPolicy {
 final class FinalCutPreviewReader: @unchecked Sendable {
     let observationTargets: [AXUIElement]
     let scrollBarTargets: [AXUIElement]
-    let clipGeometryTarget: AXUIElement?
     let pid: pid_t
     let root: AXUIElement
     let mainWindow: AXUIElement
@@ -90,19 +89,6 @@ final class FinalCutPreviewReader: @unchecked Sendable {
         let controls = scroll.flatMap { Self.rawAttribute($0, kAXChildrenAttribute) as? [AXUIElement] } ?? []
         scrollBarTargets = controls.filter { Self.rawAttribute($0, kAXRoleAttribute) as? String == kAXScrollBarRole }
         observationTargets = [root, mainWindow] + [timeline, scroll].compactMap { $0 } + scrollBarTargets
-        // Timeline viewport bounds can stay fixed during zoom. The selected
-        // clip's own geometry notifications can shorten the next read deadline.
-        let selection = timeline.flatMap { Self.rawAttribute($0, kAXSelectedChildrenAttribute) as? [AXUIElement] } ?? []
-        let items = selection.isEmpty ? timeline.flatMap { Self.rawAttribute($0, kAXChildrenAttribute) as? [AXUIElement] } ?? [] : selection
-        let candidates = items.prefix(32).filter { element in
-            let values = FinalCutAXAttributes.read(element, names: [kAXRoleAttribute, kAXDescriptionAttribute,
-                kAXValueAttribute, kAXSelectedAttribute])
-            return values[kAXRoleAttribute] as? String == kAXLayoutItemRole &&
-                values[kAXDescriptionAttribute] as? String != "Range Selection" &&
-                (values[kAXSelectedAttribute] as? NSNumber)?.boolValue == true &&
-                values[kAXValueAttribute] as? String == expected.durationTimecode
-        }
-        clipGeometryTarget = items.count <= 32 && candidates.count == 1 ? candidates.first : nil
     }
 
     func sample(completion: @escaping @Sendable (Result<PreviewGeometry, Error>, Double) -> Void) {

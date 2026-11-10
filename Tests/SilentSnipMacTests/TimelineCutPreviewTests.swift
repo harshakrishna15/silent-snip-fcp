@@ -251,6 +251,22 @@ final class TimelineCutPreviewTests: XCTestCase {
         XCTAssertTrue(gate.finish(next))
     }
 
+    func testUrgentOrderRepairCanRetireAQueuedSnapshot() throws {
+        let start = Date(timeIntervalSince1970: 100)
+        var pacer = PreviewPresentationPacer()
+        var reads = PreviewRequestGate()
+        XCTAssertTrue(pacer.begin(at: start))
+        let pending = try XCTUnwrap(reads.begin())
+        pacer.finish()
+        XCTAssertTrue(pacer.begin(at: start.addingTimeInterval(0.002), urgent: true))
+        reads.reset()
+        XCTAssertFalse(pacer.begin(at: start.addingTimeInterval(0.003), urgent: true),
+            "An order change can notify again while repairing the panel.")
+        pacer.finish()
+        XCTAssertFalse(reads.finish(pending), "The earlier background snapshot cannot undo the immediate repair.")
+        XCTAssertNotNil(reads.begin())
+    }
+
     func testClickTimeReadGapsNeverExpireVerifiedPreview() {
         let now = Date(timeIntervalSince1970: 100)
         var visibility = PreviewVisibility()

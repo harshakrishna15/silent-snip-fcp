@@ -68,11 +68,6 @@ struct PreviewSamplePacer {
                 if AXObserverAddNotification(result, element, name as CFString, context) == .success { registrations += 1 }
             }
         }
-        if let clip = reader.clipGeometryTarget {
-            for name in [kAXMovedNotification, kAXResizedNotification, kAXLayoutChangedNotification] {
-                if AXObserverAddNotification(result, clip, name as CFString, context) == .success { registrations += 1 }
-            }
-        }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(result), .commonModes)
     }
     func stop() {
@@ -80,6 +75,29 @@ struct PreviewSamplePacer {
         observer = nil
     }
     deinit { if let observer { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) } }
+}
+
+private struct PreviewWindowOrderSnapshot: Sendable {
+    let order: [Int]
+    let surfaces: [FinalCutPreviewSurface]
+    let began: TimeInterval
+
+    static func capture() -> Self? {
+        let began = ProcessInfo.processInfo.systemUptime
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let order = windows.compactMap { $0[kCGWindowNumber as String] as? Int }
+        let surfaces = windows.compactMap { info -> FinalCutPreviewSurface? in
+            guard let pid = info[kCGWindowOwnerPID as String] as? Int32,
+                  let number = info[kCGWindowNumber as String] as? Int,
+                  let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+                  let frame = CGRect(dictionaryRepresentation: bounds) else { return nil }
+            return FinalCutPreviewSurface(pid: pid, frame: frame,
+                layer: info[kCGWindowLayer as String] as? Int ?? 0,
+                alpha: info[kCGWindowAlpha as String] as? Double ?? 1, number: number)
+        }
+        return Self(order: order, surfaces: surfaces, began: began)
+    }
 }
 
 /// Drawing stays on the main thread; all repeated Final Cut reads run off it.
@@ -97,6 +115,7 @@ struct PreviewSamplePacer {
     private weak var removedEffectSession: FinalCutAXSession?
     private var lastGeometry: PreviewGeometry?
     private var presentationPacer = PreviewPresentationPacer()
+    private var orderReadGate = PreviewRequestGate()
     private var presentationObserver: NSObjectProtocol?
     private let workspaceNotifications = NSWorkspace.shared.notificationCenter
     private var activationObserver: NSObjectProtocol?
@@ -190,6 +209,7 @@ struct PreviewSamplePacer {
                 "drawing": diagnosticLayerState()])
         }
         gate.reset(); observer?.stop(); observer = nil
+        orderReadGate.reset()
         sampleTimer?.invalidate(); sampleTimer = nil
         presentationTimer?.invalidate(); presentationTimer = nil
         reader = nil; session = nil
@@ -219,6 +239,7 @@ struct PreviewSamplePacer {
         if !foregroundSuspended {
             foregroundSuspended = true
             foregroundEpoch &+= 1
+            orderReadGate.reset()
             lastGeometry = nil
             sampleTimer?.invalidate(); sampleTimer = nil
             if diagnosticEnabled {
@@ -362,17 +383,39 @@ struct PreviewSamplePacer {
         defer { presentationPacer.finish() }
         guard permitsForegroundPresentation() else { return }
         let epoch = foregroundEpoch
-        guard let window = panel, (window.isVisible || urgent), let geometry = lastGeometry,
-              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                  kCGNullWindowID) as? [[String: Any]] else { return }
-        let order = windows.compactMap { $0[kCGWindowNumber as String] as? Int }
+        guard let window = panel, (window.isVisible || urgent), let geometry = lastGeometry else { return }
+        if urgent {
+            orderReadGate.reset()
+            guard let snapshot = PreviewWindowOrderSnapshot.capture() else { return }
+            applyWindowOrder(snapshot, window: window, geometry: geometry, epoch: epoch, urgent: true)
+            return
+        }
+        guard let token = orderReadGate.begin() else { return }
+        let project = geometry.projectWindowNumber
+        Task { [weak self] in
+            let snapshot = await Task.detached(priority: .userInitiated) { PreviewWindowOrderSnapshot.capture() }.value
+            guard let self, self.orderReadGate.finish(token), let snapshot,
+                  ProcessInfo.processInfo.systemUptime - snapshot.began <= 0.05,
+                  self.permitsForegroundPresentation(), self.foregroundEpoch == epoch,
+                  let current = self.lastGeometry, current.projectWindowNumber == project,
+                  let panel = self.panel, panel.isVisible,
+                  self.presentationPacer.begin(at: Date(), urgent: true) else { return }
+            defer { self.presentationPacer.finish() }
+            self.applyWindowOrder(snapshot, window: panel, geometry: current, epoch: epoch, urgent: false)
+        }
+    }
+
+    private func applyWindowOrder(_ snapshot: PreviewWindowOrderSnapshot, window: NSPanel, geometry: PreviewGeometry,
+                                  epoch: Int, urgent: Bool) {
+        guard epoch == foregroundEpoch, !foregroundSuspended else { return }
+        let order = snapshot.order
         guard order.contains(geometry.projectWindowNumber) else {
             if diagnosticEnabled { trace("orderOut", ["reason": "maintenance:projectWindowMissing"]) }
             lastGeometry = nil
             window.orderOut(nil)
             return
         }
-        let level = updatePresentationLevel(window, geometry: geometry, windows: windows)
+        let level = updatePresentationLevel(window, geometry: geometry, surfaces: snapshot.surfaces)
         guard epoch == foregroundEpoch, !foregroundSuspended else { return }
         let needsOrdering = !level.elevated && (level.changed ||
             PreviewVisibility.needsOrdering(visible: window.isVisible, overlay: window.windowNumber,
@@ -450,18 +493,9 @@ struct PreviewSamplePacer {
     /// uncovered at normal window levels. Floating editors/menus stay above
     /// this level. A covering normal window restores project-relative ordering.
     private func updatePresentationLevel(_ window: NSPanel, geometry: PreviewGeometry,
-                                         windows: [[String: Any]]) -> (elevated: Bool, changed: Bool) {
+                                         surfaces: [FinalCutPreviewSurface]) -> (elevated: Bool, changed: Bool) {
         guard permitsForegroundPresentation() else { return (false, false) }
         let epoch = foregroundEpoch
-        let surfaces = windows.compactMap { info -> FinalCutPreviewSurface? in
-            guard let pid = info[kCGWindowOwnerPID as String] as? Int32,
-                  let number = info[kCGWindowNumber as String] as? Int,
-                  let bounds = info[kCGWindowBounds as String] as? NSDictionary,
-                  let frame = CGRect(dictionaryRepresentation: bounds) else { return nil }
-            return FinalCutPreviewSurface(pid: pid, frame: frame,
-                layer: info[kCGWindowLayer as String] as? Int ?? 0,
-                alpha: info[kCGWindowAlpha as String] as? Double ?? 1, number: number)
-        }
         let elevated = PreviewWindowLevelPolicy.shouldElevate(
             hostPID: session?.application.processIdentifier ?? -1,
             project: geometry.projectWindowNumber, overlay: window.windowNumber,
