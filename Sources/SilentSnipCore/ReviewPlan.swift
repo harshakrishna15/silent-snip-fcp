@@ -25,10 +25,11 @@ public struct ReviewPlan: Encodable, Sendable {
     public let target: TimelineClip
     public let frameDuration: RationalTime
     public let cutGrid: RationalTime
+    public let analysisRange: TimeRange
     public private(set) var cuts: [ReviewCut]
 
     public init(jobID: UUID, document: TimelineDocument, target: TimelineClip, analysis: SilenceAnalysisResult,
-                requireDialogue: Bool = true, cutGrid: RationalTime? = nil) throws {
+                requireDialogue: Bool = true, cutGrid: RationalTime? = nil, analysisRange: TimeRange? = nil) throws {
         guard !requireDialogue || !document.dialogueRoles.isEmpty else { throw ReviewError.noDialogue }
         let selected = try document.selectedTarget(.init(timelineRange: target.timelineRange,
             sourceURL: target.mediaURL, sourceStart: target.sourceStart), requireExistingMedia: false)
@@ -40,11 +41,14 @@ public struct ReviewPlan: Encodable, Sendable {
         self.target = target
         self.frameDuration = document.frameDuration
         self.cutGrid = cutGrid ?? document.frameDuration
+        self.analysisRange = analysisRange ?? target.timelineRange
         guard self.cutGrid >= document.frameDuration,
-              try self.cutGrid.roundedDown(toFrame: document.frameDuration) == self.cutGrid else {
+              try self.cutGrid.roundedDown(toFrame: document.frameDuration) == self.cutGrid,
+              target.timelineRange.intersection(self.analysisRange) == self.analysisRange else {
             throw ReviewError.invalidRange
         }
-        self.cuts = try Self.makeCuts(analysis, target: target, protected: document.automaticCutRestrictions(for: target), frame: self.cutGrid)
+        self.cuts = try Self.makeCuts(analysis, target: target, scope: self.analysisRange,
+            protected: document.automaticCutRestrictions(for: target), frame: self.cutGrid)
     }
 
     public var selectedCuts: [ReviewCut] { cuts.filter { $0.included && $0.isEligible } }
@@ -108,7 +112,8 @@ public struct ReviewPlan: Encodable, Sendable {
     ) throws -> Bool {
         guard document.projectName == projectName, document.projectUID == projectUID,
               document.fingerprint == baselineFingerprint else { throw ReviewError.staleProject }
-        var refreshed = try Self.makeCuts(analysis, target: target, protected: document.automaticCutRestrictions(for: target), frame: cutGrid)
+        var refreshed = try Self.makeCuts(analysis, target: target, scope: analysisRange,
+            protected: document.automaticCutRestrictions(for: target), frame: cutGrid)
         let changed = refreshed.map(\.proposedRange) != cuts.map(\.proposedRange)
         let previous = Dictionary(uniqueKeysWithValues: cuts.map { ($0.id, $0) })
         let kept = cuts.filter { $0.isEligible && (!$0.included || $0.range != $0.proposedRange) }
@@ -133,10 +138,10 @@ public struct ReviewPlan: Encodable, Sendable {
         return changed
     }
 
-    private static func makeCuts(_ analysis: SilenceAnalysisResult, target: TimelineClip,
+    private static func makeCuts(_ analysis: SilenceAnalysisResult, target: TimelineClip, scope: TimeRange,
                                  protected: [TimelineProtectedRange], frame: RationalTime) throws -> [ReviewCut] {
         let cuts = try analysis.candidates.map { range in
-            guard !range.isEmpty, range.start >= target.timelineRange.start, range.end <= target.timelineRange.end,
+            guard !range.isEmpty, range.start >= scope.start, range.end <= scope.end,
                   try range.start.roundedDown(toFrame: frame) == range.start,
                   try range.end.roundedDown(toFrame: frame) == range.end else { throw ReviewError.invalidRange }
             let reason: String?

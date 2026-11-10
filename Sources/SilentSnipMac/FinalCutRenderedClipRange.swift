@@ -1,5 +1,6 @@
 import ApplicationServices
 import Foundation
+import SilentSnipCore
 
 struct FinalCutRenderedClipRange: Equatable {
     let start: String
@@ -19,14 +20,47 @@ struct FinalCutRenderedClipRange: Equatable {
         guard let start = edge("Range Start"), let end = edge("Range End") else { return nil }
         self.start = start; self.end = end; self.duration = duration
     }
+
+    func resolve(in document: TimelineDocument, clip: TimelineClip) throws -> TimeRange {
+        let frame = document.frameDuration
+        let lower = try FinalCutTimecode.time(start, frameDuration: frame).subtracting(document.projectTimecodeStart)
+        let upper = try FinalCutTimecode.time(end, frameDuration: frame).subtracting(document.projectTimecodeStart)
+        guard lower >= clip.timelineRange.start, upper <= clip.timelineRange.end, lower < upper,
+              !duration.contains(";"),
+              try FinalCutTimecode.time(duration, frameDuration: frame) == upper.subtracting(lower) else {
+            throw FinalCutCaptureError.invalidSelection("Select a single timeline range within one supported clip.")
+        }
+        return TimeRange(start: lower, end: upper)
+    }
+
+    static func unique(_ ranges: [AccessibilityNode]) throws -> Self? {
+        guard !ranges.isEmpty else { return nil }
+        guard let selected = Self(timeline: .init(role: kAXLayoutAreaRole, identifier: nil, title: nil,
+            description: "Project Timeline", value: nil, selected: nil, enabled: nil, children: ranges)) else {
+            throw FinalCutCaptureError.invalidSelection("Select a single timeline range with readable start and end times.")
+        }
+        return selected
+    }
 }
 
 extension FinalCutAXSession {
+    func readTimelineRangeNode(_ element: AXUIElement, duration: String?) -> AccessibilityNode {
+        let handles = children(element).prefix(16).map { handle -> AccessibilityNode in
+            let fields = FinalCutAXAttributes.read(handle, names: [kAXRoleAttribute, kAXDescriptionAttribute, kAXValueAttribute])
+            return .init(role: fields[kAXRoleAttribute] as? String, identifier: nil, title: nil,
+                description: fields[kAXDescriptionAttribute] as? String, value: fields[kAXValueAttribute] as? String,
+                selected: nil, enabled: nil, children: [])
+        }
+        return .init(role: kAXLayoutItemRole, identifier: nil, title: nil, description: "Range Selection",
+            value: duration, selected: nil, enabled: nil, children: handles)
+    }
+
     func renderedClipRange() throws -> FinalCutRenderedClipRange? {
         try assertCurrentProject()
         try refreshTimeline()
-        let raw = children(timeline)
-        guard raw.count <= 10_000 else { throw FinalCutCaptureError.invalidSelection("The timeline range cannot be bounded.") }
+        guard let raw = attribute(timeline, kAXChildrenAttribute) as? [AXUIElement], raw.count <= 10_000 else {
+            throw FinalCutCaptureError.invalidSelection("The timeline range could not be read.")
+        }
         var ranges: [AccessibilityNode] = []
         let deadline = Date().addingTimeInterval(3)
         for element in raw {
@@ -34,22 +68,16 @@ extension FinalCutAXSession {
             let values = FinalCutAXAttributes.read(element, names: [kAXRoleAttribute, kAXDescriptionAttribute, kAXValueAttribute])
             guard values[kAXRoleAttribute] as? String == kAXLayoutItemRole,
                   values[kAXDescriptionAttribute] as? String == "Range Selection" else { continue }
-            let handles = children(element).prefix(16).map { handle -> AccessibilityNode in
-                let fields = FinalCutAXAttributes.read(handle, names: [kAXRoleAttribute, kAXDescriptionAttribute, kAXValueAttribute])
-                return .init(role: fields[kAXRoleAttribute] as? String, identifier: nil, title: nil,
-                    description: fields[kAXDescriptionAttribute] as? String, value: fields[kAXValueAttribute] as? String,
-                    selected: nil, enabled: nil, children: [])
-            }
-            ranges.append(.init(role: kAXLayoutItemRole, identifier: nil, title: nil, description: "Range Selection",
-                value: values[kAXValueAttribute] as? String, selected: nil, enabled: nil, children: handles))
+            ranges.append(readTimelineRangeNode(element, duration: values[kAXValueAttribute] as? String))
         }
-        return FinalCutRenderedClipRange(timeline: .init(role: kAXLayoutAreaRole, identifier: nil, title: nil,
-            description: "Project Timeline", value: nil, selected: nil, enabled: nil, children: ranges))
+        return try FinalCutRenderedClipRange.unique(ranges)
     }
 
     func prepareRenderedClipRange(selection: FinalCutSelectionSnapshot) async throws {
         guard try selectionSnapshot() == selection else { throw AudioControllerSettingsError.targetChanged }
-        try await clearTimelineRanges()
+        if let range = try renderedClipRange() {
+            try await clearRenderedClipRange(selection: selection, expectedRange: range)
+        }
         // Go to Range Start also operates on a full clip selection. This avoids
         // choosing whichever clip happens to be under a stale skimmer/playhead.
         try await pressMenu(path: ["Mark", "Go to", "Range Start"])
@@ -64,13 +92,13 @@ extension FinalCutAXSession {
         guard try selectionSnapshot() == selection else { throw AudioControllerSettingsError.targetChanged }
     }
 
-    func clearRenderedClipRange(selection: FinalCutSelectionSnapshot) async throws {
-        guard try renderedClipRange() == FinalCutRenderedClipRange(selection: selection),
+    func clearRenderedClipRange(selection: FinalCutSelectionSnapshot, expectedRange: FinalCutRenderedClipRange? = nil) async throws {
+        guard try renderedClipRange() == (expectedRange ?? FinalCutRenderedClipRange(selection: selection)),
               try selectionSnapshot() == selection else {
             throw FinalCutCaptureError.invalidSelection("The analysis render range changed. No unrelated range was cleared.")
         }
         let selected = children(timeline).filter {
-            string($0, kAXRoleAttribute) == kAXLayoutItemRole &&
+            string($0, kAXRoleAttribute) == kAXLayoutItemRole && string($0, kAXDescriptionAttribute) != "Range Selection" &&
                 (attribute($0, kAXSelectedAttribute) as? NSNumber)?.boolValue == true
         }
         guard selected.count == 1, let original = selected.first else { throw AudioControllerSettingsError.targetChanged }

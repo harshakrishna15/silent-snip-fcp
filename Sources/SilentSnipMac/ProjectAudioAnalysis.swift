@@ -181,9 +181,9 @@ public struct AnalyzedAudioProject: Sendable {
         guard settings.windowDuration == self.settings.windowDuration else {
             throw ProjectAnalysisError.changedWindowDuration
         }
-        let updated = try SilenceDetector.analyze(windows: audio.windows, target: target.timelineRange,
+        let updated = try SilenceDetector.analyze(windows: audio.windows, target: review.analysisRange,
             frameDuration: cutFrameDuration ?? ProjectAudioAnalysis.cutGrid(videoFrameDuration: document.frameDuration,
-                sampleRate: audio.sampleRate), settings: settings)
+                sampleRate: audio.sampleRate), settings: settings, allowsEntireScope: review.analysisRange != target.timelineRange)
         let changedRanges = try review.recalculate(updated, document: document)
         self.settings = settings
         self.analysis = updated
@@ -238,6 +238,7 @@ public enum ProjectAudioAnalysis {
     static func analyze(projectData: Data, selection: TimelineSelection, dialogueAudio: URL,
                         renderContext: DialogueRenderContext, settings: AnalysisSettings, jobID: UUID,
                         capturedMedia: MediaContentSnapshot?,
+                        analysisRange: TimeRange? = nil,
                         progress: @Sendable (Double) -> Void = { _ in },
                         validating: @Sendable () async -> Void = {},
                         detecting: @Sendable () async -> Void = {}) async throws -> AnalyzedAudioProject {
@@ -253,6 +254,13 @@ public enum ProjectAudioAnalysis {
             throw ProjectAnalysisError.incorrectRoles
         }
         let target = try document.selectedTarget(selection)
+        let scope = analysisRange ?? target.timelineRange
+        guard target.timelineRange.intersection(scope) == scope else { throw ReviewError.invalidRange }
+        let scoped = scope != target.timelineRange
+        func fileScope(clipStart: RationalTime) throws -> TimeRange {
+            let first = try clipStart.adding(scope.start.subtracting(target.timelineRange.start))
+            return TimeRange(start: first, end: try first.adding(scope.checkedDuration()))
+        }
         // The app verifies a required controller before driving Final Cut's
         // export. The read-only verifier also accepts audio-only fixtures with
         // no controller, but must validate any Silent Snip AU that is present.
@@ -279,9 +287,13 @@ public enum ProjectAudioAnalysis {
                   try DirectAudioRender.isEligible(projectData: projectData, selection: selection) else {
                 throw ProjectAnalysisError.staleRender
             }
-            audio = try await SourceAudioReader.read(url: dialogueAudio, range: target.timelineRange,
-                timelineStart: target.timelineRange.start, windowDuration: settings.windowDuration,
+            audio = try await SourceAudioReader.read(url: dialogueAudio, range: scope,
+                timelineStart: scope.start, windowDuration: settings.windowDuration,
                 expectedMediaDuration: document.projectRange.checkedDuration(), progress: progress)
+        } else if scoped, renderContext.isolatedTargetID == target.id {
+            audio = try await SourceAudioReader.read(url: dialogueAudio, range: fileScope(clipStart: .zero),
+                timelineStart: scope.start, windowDuration: settings.windowDuration,
+                expectedMediaDuration: target.timelineRange.checkedDuration(), progress: progress)
         } else if let isolatedID = renderContext.isolatedTargetID {
             guard isolatedID == target.id else { throw ProjectAnalysisError.staleRender }
             let decoded = try await DialogueAudioReader.read(url: dialogueAudio,
@@ -321,8 +333,9 @@ public enum ProjectAudioAnalysis {
             guard sourceRange == expectedRange,
                   target.mediaURL?.standardizedFileURL.resolvingSymlinksInPath() == renderContext.audioURL,
                   renderContext.renderedRoles.isEmpty else { throw ProjectAnalysisError.staleRender }
-            audio = try await SourceAudioReader.read(url: dialogueAudio, range: sourceRange,
-                timelineStart: target.timelineRange.start, windowDuration: settings.windowDuration, progress: progress)
+            audio = try await SourceAudioReader.read(url: dialogueAudio,
+                range: scoped ? fileScope(clipStart: sourceRange.start) : sourceRange,
+                timelineStart: scope.start, windowDuration: settings.windowDuration, progress: progress)
         } else {
             audio = try await DialogueAudioReader.read(url: dialogueAudio,
                 expectedDuration: document.projectRange.checkedDuration(), frameDuration: document.frameDuration,
@@ -337,10 +350,11 @@ public enum ProjectAudioAnalysis {
         await detecting()
         let grid = try analysisCutGrid(projectData: projectData, frameDuration: document.frameDuration,
             decodedSampleRate: audio.sampleRate, sourceAudio: renderContext.sourceRange != nil)
-        let analysis = try SilenceDetector.analyze(windows: audio.windows, target: target.timelineRange,
-            frameDuration: grid, settings: settings)
+        let analysis = try SilenceDetector.analyze(windows: audio.windows, target: scope,
+            frameDuration: grid, settings: settings, allowsEntireScope: scoped)
         let review = try ReviewPlan(jobID: jobID, document: document, target: target, analysis: analysis,
-            requireDialogue: renderContext.sourceRange == nil && renderContext.isolatedTargetID == nil, cutGrid: grid)
+            requireDialogue: renderContext.sourceRange == nil && renderContext.isolatedTargetID == nil,
+            cutGrid: grid, analysisRange: scope)
         return AnalyzedAudioProject(document: document, target: target, dialogueContext: renderContext,
             audio: audio, settings: settings, analysis: analysis, review: review, cutFrameDuration: grid)
     }

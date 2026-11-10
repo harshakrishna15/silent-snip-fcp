@@ -138,7 +138,8 @@ public enum SilenceDetector {
         windows: [AudioLevelWindow],
         target: TimeRange,
         frameDuration: RationalTime,
-        settings: AnalysisSettings = .defaults
+        settings: AnalysisSettings = .defaults,
+        allowsEntireScope: Bool = false
     ) throws -> SilenceAnalysisResult {
         guard frameDuration > .zero else { throw AnalysisError.invalidFrameDuration }
         _ = try target.checkedDuration()
@@ -186,7 +187,7 @@ public enum SilenceDetector {
             }
         }
         if coverageEnd < target.end { coverageHasGap = true }
-        if !coverageHasGap && !hasAudibleWindow {
+        if !allowsEntireScope && !coverageHasGap && !hasAudibleWindow {
             return try SilenceAnalysisResult(candidates: [], disposition: .entirelySilent)
         }
 

@@ -449,6 +449,7 @@ static BOOL SSWorkflowPermissionPromptPending;
 @property (nonatomic, strong) NSStepper *endStepper;
 @property (nonatomic, strong) NSButton *resetCutButton;
 @property (nonatomic, strong) NSTextField *reviewSummary;
+@property (nonatomic, strong) NSTextField *analyzedSpanLabel;
 @property (nonatomic, strong) NSProgressIndicator *progressIndicator;
 @property (nonatomic, strong) SSWorkflowCutList *cutList;
 @property (nonatomic, copy) NSString *activeCutID;
@@ -787,6 +788,11 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.reviewSummary.accessibilityIdentifier = @"silentsnip.workflow.summary";
     self.reviewSummary.maximumNumberOfLines = 2;
     self.reviewSummary.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.analyzedSpanLabel = [self label:@"" size:11 weight:NSFontWeightMedium];
+    self.analyzedSpanLabel.accessibilityIdentifier = @"silentsnip.workflow.analysis-span";
+    self.analyzedSpanLabel.textColor = NSColor.secondaryLabelColor;
+    self.analyzedSpanLabel.maximumNumberOfLines = 1;
+    self.analyzedSpanLabel.hidden = YES;
     [self styleReviewSummary];
     self.allButton = [NSButton buttonWithTitle:@"Select All" target:self action:@selector(selectAllCuts:)];
     self.noneButton = [NSButton buttonWithTitle:@"Deselect All" target:self action:@selector(deselectAllCuts:)];
@@ -870,7 +876,7 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.boundaryActions.spacing = 7;
     self.boundaryActions.alignment = NSLayoutAttributeCenterY;
     self.boundaryActions.hidden = YES;
-    self.reviewPanel = [self cardWithViews:@[reviewActions, self.reviewSummary,
+    self.reviewPanel = [self cardWithViews:@[reviewActions, self.reviewSummary, self.analyzedSpanLabel,
         self.statusDetails, self.cutColumnHeader, self.reviewScroll, self.boundaryActions]];
     self.reviewPanel.spacing = 4;
     [self.settingsPanel setHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationVertical];
@@ -1397,6 +1403,8 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.reviewCuts = @[];
     for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
     self.reviewSummary.stringValue = @"Select a clip to analyze.";
+    self.analyzedSpanLabel.hidden = YES;
+    self.analyzedSpanLabel.stringValue = @"";
     [self styleReviewSummary];
     self.reviewSummary.toolTip = self.reviewSummary.stringValue;
     self.analyzeButton.title = @"Analyze Audio";
@@ -1820,6 +1828,10 @@ static BOOL SSWorkflowPermissionPromptPending;
     NSString *target = response[@"targetClipName"];
     // The controls update below lays out the complete response once.
     if (!deferRanges) {
+        if (![state isEqual:@"navigating"]) {
+            self.analyzedSpanLabel.stringValue = response[@"analyzedSpan"] ?: @"";
+            self.analyzedSpanLabel.hidden = self.analyzedSpanLabel.stringValue.length == 0;
+        }
         self.reviewSummary.stringValue = target.length ? [NSString stringWithFormat:@"Clip: %@\n%@", target, summary] : summary;
         [self styleReviewSummary];
         self.reviewSummary.toolTip = self.reviewSummary.stringValue;

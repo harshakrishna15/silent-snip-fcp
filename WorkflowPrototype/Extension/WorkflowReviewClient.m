@@ -565,7 +565,7 @@ static NSString *SSResponseName(NSString *request) {
         for (NSString *key in @[@"time", @"sequenceStart", @"sequenceDuration", @"frameDuration"])
             if (!SSNavigationTime(permit[key])) return NO;
     }
-    for (NSString *key in @[@"summary", @"targetClipName"])
+    for (NSString *key in @[@"summary", @"targetClipName", @"analyzedSpan"])
         if (value[key] && !SSDisplayText(value[key], 16384)) return NO;
     if (value[@"settingsEdit"] && !SSUUID(value[@"settingsEdit"])) return NO;
     if ((value[@"rejectedSettingsEdit"] != nil) != (value[@"rejectedSettingsSequence"] != nil)) return NO;

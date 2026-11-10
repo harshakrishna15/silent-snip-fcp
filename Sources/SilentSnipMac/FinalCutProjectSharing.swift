@@ -79,6 +79,12 @@ extension FinalCutAXSession {
             if let renderSelection {
                 try await timing.measure("share.render.selectClipRange") { try await prepareRenderedClipRange(selection: renderSelection) }
                 preparedRange = true
+            } else if let expected = reviewOwnership.active {
+                if let range = try renderedClipRange() {
+                    try await timing.measure("share.render.clearRanges") {
+                        try await clearRenderedClipRange(selection: expected, expectedRange: range)
+                    }
+                }
             } else {
                 try await timing.measure("share.render.clearRanges") { try await clearTimelineRanges() }
             }

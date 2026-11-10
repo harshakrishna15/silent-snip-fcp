@@ -225,6 +225,7 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     public let rejectedSettingsSequence: Int?
     public let usesAudioSnapshot: Bool?
     public let targetClipName: String?
+    public let analyzedSpan: String?
     /// A Workflow-origin operation keeps its native action identity on every
     /// publication. Recovery reuses a saved request ID, so revisions alone do
     /// not distinguish late packets from its previous Apply/verification.
@@ -240,7 +241,7 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
                 canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil, targetClipName: String? = nil, workflowGesture: UUID? = nil,
                 automaticPreviewAvailable: Bool? = nil, rejectedSettingsEdit: UUID? = nil, rejectedSettingsSequence: Int? = nil,
                 canNavigateWithSDK: Bool? = nil, navigationPermit: ReviewNavigationPermit? = nil,
-                canSelectGroup: Bool? = nil) {
+                canSelectGroup: Bool? = nil, analyzedSpan: String? = nil) {
         version = ReviewWire.version; self.request = request; self.revision = revision
         self.state = state; self.message = message; self.progress = progress
         self.summary = summary; self.cuts = cuts
@@ -254,6 +255,7 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
         self.automaticPreviewAvailable = automaticPreviewAvailable
         self.rejectedSettingsEdit = rejectedSettingsEdit; self.rejectedSettingsSequence = rejectedSettingsSequence
         self.targetClipName = targetClipName; self.workflowGesture = workflowGesture
+        self.analyzedSpan = analyzedSpan
         self.canNavigateWithSDK = canNavigateWithSDK; self.navigationPermit = navigationPermit
     }
 }

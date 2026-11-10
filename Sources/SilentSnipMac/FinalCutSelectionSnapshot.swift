@@ -13,7 +13,7 @@ struct FinalCutSelectionSnapshot: Equatable, Codable, Sendable {
         guard timeline.role == kAXLayoutAreaRole, timeline.description == "Project Timeline" else {
             throw FinalCutCaptureError.invalidSelection("The project timeline is not accessible.")
         }
-        let selected = timeline.children.filter { $0.role == kAXLayoutItemRole && $0.selected == true }
+        let selected = timeline.children.filter { $0.role == kAXLayoutItemRole && $0.selected == true && $0.description != "Range Selection" }
         guard selected.count == 1, let clip = selected.first, clip.enabled != false else {
             throw FinalCutCaptureError.invalidSelection("The selection must contain one enabled clip with audio in the Final Cut Pro timeline.")
         }

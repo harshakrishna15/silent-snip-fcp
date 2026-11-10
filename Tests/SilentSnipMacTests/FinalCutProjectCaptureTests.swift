@@ -11,11 +11,41 @@ final class FinalCutProjectCaptureTests: XCTestCase {
             _ = try FinalCutSelectionSnapshot(projectName: "Workflow project", timeline: timeline)
             XCTFail("A missing selection must still fail before capture")
         } catch {
-            XCTAssertTrue(error.localizedDescription.hasPrefix("Select one whole clip with audio in the primary storyline."))
+            XCTAssertTrue(error.localizedDescription.hasPrefix("Select one clip with audio in the primary storyline."))
             XCTAssertTrue(error.localizedDescription.contains("one enabled clip with audio in the Final Cut Pro timeline"))
             XCTAssertFalse(error.localizedDescription.contains("carrying Silent Snip Audio"))
             XCTAssertFalse(error.localizedDescription.contains("Reopen"))
         }
+    }
+
+    func testNativeRangeUsesTheProjectClockAndMustFitOneExactClip() throws {
+        let data = Data("""
+        <fcpxml version="1.14"><resources><format id="f" frameDuration="1/30s"/>
+        <asset id="a" start="0s" duration="24s" hasAudio="1"><media-rep kind="original-media" src="file:///tmp/a.wav"/></asset></resources>
+        <library><event><project name="Scoped" uid="test"><sequence format="f" duration="24s" tcStart="3600s"><spine>
+        <asset-clip ref="a" offset="3600s" start="0s" duration="24s" audioRole="dialogue"/>
+        </spine></sequence></project></event></library></fcpxml>
+        """.utf8)
+        let document = try TimelineParser.parse(data: data)
+        let clip = try document.selectedTarget(.init(timelineRange: document.projectRange), requireExistingMedia: false)
+        func rangeNode(_ start: String, _ end: String, _ duration: String) -> AccessibilityNode {
+            let handles = zip(["Range Start", "Range End"], [start, end]).map {
+                AccessibilityNode(role: "AXHandle", identifier: nil, title: nil, description: $0.0,
+                    value: $0.1, selected: nil, enabled: nil, children: [])
+            }
+            return AccessibilityNode(role: "AXLayoutItem", identifier: nil, title: nil, description: "Range Selection",
+                value: duration, selected: nil, enabled: nil, children: handles)
+        }
+        // The native fixture reports these same frame labels at a zero origin.
+        let node = rangeNode("01:00:02:27", "01:00:09:29", "00:00:07:02")
+        let range = try XCTUnwrap(FinalCutRenderedClipRange.unique([node]))
+        XCTAssertEqual(try range.resolve(in: document, clip: clip),
+            TimeRange(start: RationalTime(87, 30), end: RationalTime(299, 30)))
+        XCTAssertThrowsError(try FinalCutRenderedClipRange.unique([node, node]))
+        let outside = try XCTUnwrap(FinalCutRenderedClipRange.unique([rangeNode("01:00:22:00", "01:00:25:00", "00:00:03:00")]))
+        XCTAssertThrowsError(try outside.resolve(in: document, clip: clip))
+        let inconsistent = try XCTUnwrap(FinalCutRenderedClipRange.unique([rangeNode("01:00:02:27", "01:00:09:29", "00:00:07:01")]))
+        XCTAssertThrowsError(try inconsistent.resolve(in: document, clip: clip))
     }
 
     func testRetainedRemoteEditorShellNeverExemptsAnotherWindowOrRealModalDialog() {

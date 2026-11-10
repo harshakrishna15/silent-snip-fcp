@@ -715,6 +715,14 @@ public struct ReviewAnalysisResult: Sendable {
             : "\(review.selectedCuts.count) gaps × \(Self.seconds(gap!)) · \(Self.seconds(duration)) → \(Self.seconds(after))"
         let ready = job.state == .review
         let accepted = rejectedEdit == nil && !job.previewSuspended
+        let analyzedSpan: String?
+        if review.analysisRange != review.target.timelineRange {
+            let start = try timecode(review.analysisRange.start, analysis: analysis, dropFrame: result.dropFrame)
+            let end = try timecode(review.analysisRange.end, analysis: analysis, dropFrame: result.dropFrame)
+            analyzedSpan = "Analyzed range \(start) – \(end)"
+        } else {
+            analyzedSpan = nil
+        }
         return ReviewResponse(request: job.request.id, revision: job.revision, state: job.state.rawValue,
             message: job.message, progress: job.state == .recalculating ? job.progress : 1, summary: summary, cuts: cuts,
             canApply: accepted && ready && applyOperation != nil && Self.applyUnavailableReason(result) == nil,
@@ -727,7 +735,7 @@ public struct ReviewAnalysisResult: Sendable {
             automaticPreviewAvailable: job.request.workflowOrigin != nil && result.canUpdateCuts && localPreviewOperation != nil,
             rejectedSettingsEdit: rejectedEdit, rejectedSettingsSequence: rejectedSequence,
             canNavigateWithSDK: sdkNavigation ? true : nil,
-            canSelectGroup: job.request.workflowOrigin != nil ? true : nil)
+            canSelectGroup: job.request.workflowOrigin != nil ? true : nil, analyzedSpan: analyzedSpan)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {

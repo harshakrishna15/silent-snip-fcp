@@ -11,6 +11,7 @@ import Foundation
     public let projectName: String
     public let controllerEffectUIDs: Set<String>
     public let dropFrame: Bool
+    let analysisRange: TimeRange?
     let session: FinalCutAXSession
     var renderedAudio: ShareDestinationReceipt? = nil
     var renderedMedia: MediaContentSnapshot? = nil
@@ -53,11 +54,20 @@ import Foundation
         // Cut omit the timeline's active selection until the timeline regains
         // focus. Direct AX focus preserves the existing clip/range selection;
         // the menu command is only a compatibility fallback.
-        let selectionBeforeFocus = try? timing.measure("capture.selectionBeforeFocus") { try session.selectionSnapshot() }
+        let includingRange = workflowOrigin != nil
+        let beforeFocus = try timing.measure("capture.selectionBeforeFocus") {
+            try session.readTimelineSelection(includingRange: includingRange)
+        }
+        let selectionBeforeFocus = try? beforeFocus.clip.get()
         progress("Focusing the project timeline…")
         try await timing.measure("capture.focusBeforeExport") { try await session.focusTimeline() }
         progress("Reading the selected timeline clip…")
-        let selected = try timing.measure("capture.selection") { try session.selectionSnapshot() }
+        let initial = try timing.measure("capture.selection") { try session.readTimelineSelection(includingRange: includingRange) }
+        let selected = try initial.clip.get()
+        let selectedRange = initial.range
+        guard selectedRange == beforeFocus.range else {
+            throw FinalCutCaptureError.invalidSelection("The selected timeline range changed while restoring timeline focus.")
+        }
         try session.rememberReviewSelection(selected)
         onSession(session)
         if let selectionBeforeFocus, selectionBeforeFocus != selected {
@@ -87,7 +97,8 @@ import Foundation
         // Only the freshly authorized AX selection may consume a hint. Other
         // projects and clips keep their routes for a later manual Analyze.
         let directRenderHint = await timing.measure("capture.routingHintLookup") {
-            await routingHintStore?.consume(matching: selected, workflowOrigin: workflowOrigin)
+            guard selectedRange == nil else { return nil as DirectAudioRenderHint? }
+            return await routingHintStore?.consume(matching: selected, workflowOrigin: workflowOrigin)
         }
         try Task.checkCancellation()
         try session.assertCurrentProject()
@@ -144,10 +155,15 @@ import Foundation
         }
         try timing.measure("capture.finalProjectCheck") { try session.assertCurrentProject() }
         try await timing.measure("capture.focusAfterExport") { try await session.focusTimeline() }
-        guard try timing.measure("capture.selectionAfterExport", operation: { try session.selectionSnapshot() }) == selected else {
+        let final = try timing.measure("capture.selectionAfterExport") { try session.readTimelineSelection(includingRange: includingRange) }
+        guard try final.clip.get() == selected else {
             throw FinalCutCaptureError.invalidSelection("The selected timeline clip changed during export.")
         }
         let (selection, target) = try selected.resolve(in: document)
+        if final.range != selectedRange {
+            throw FinalCutCaptureError.invalidSelection("The selected timeline range changed during export.")
+        }
+        let scope = try selectedRange?.resolve(in: document, clip: target)
         if let receipt = rendered, let hint = directRenderHint, let sourceMedia = media,
            !(try hint.accepts(projectData: data, selection: selection, media: sourceMedia, workflowOrigin: workflowOrigin)) {
             // The hint was stale. These fresh XML bytes still provide the normal
@@ -160,7 +176,8 @@ import Foundation
         transferred = true
         return CapturedFinalCutProject(xmlURL: xml, document: document, selection: selection,
             target: target, projectName: document.projectName, controllerEffectUIDs: controllerEffectUIDs,
-            dropFrame: formats.first == "DF", session: session, renderedAudio: rendered, renderedMedia: media)
+            dropFrame: formats.first == "DF", analysisRange: scope == target.timelineRange ? nil : scope,
+            session: session, renderedAudio: rendered, renderedMedia: media)
         } catch {
             if let guidance = await session.restoreReviewWindow() {
                 throw FinalCutCaptureError.reviewRestoration(original: error.localizedDescription, guidance: guidance)

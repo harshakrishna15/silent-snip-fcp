@@ -8,6 +8,7 @@ enum ReviewedCutValidation {
         guard reviewed.settings == fresh.settings,
               reviewed.document.fingerprint == fresh.document.fingerprint,
               reviewed.target == fresh.target,
+              reviewed.review.analysisRange == fresh.review.analysisRange,
               reviewed.analysis.disposition == fresh.analysis.disposition,
               reviewed.review.cuts.map(\.proposedRange) == fresh.review.cuts.map(\.proposedRange),
               reviewed.review.cuts.map(\.isEligible) == fresh.review.cuts.map(\.isEligible),

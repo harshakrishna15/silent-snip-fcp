@@ -203,6 +203,39 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         XCTAssertEqual(try result.review.selectedDuration, RationalTime(4, 5))
     }
 
+    func testSelectedSourceSpanMeasuresAndRemovesOnlyItsOwnFrames() async throws {
+        let source = try wave(frames: 384_000, channels: 1) { frame, _ in
+            (144_000..<240_000).contains(frame) ? 0 : 8_192
+        }
+        let data = Data("""
+        <fcpxml version="1.14"><resources><format id="f" frameDuration="1/30s"/>
+        <asset id="a" start="10s" duration="8s" hasAudio="1" audioSources="1" audioChannels="1" audioRate="48000">
+        <media-rep kind="original-media" src="\(source.absoluteString)"/></asset></resources>
+        <library><event><project name="Range" uid="scope"><sequence format="f" duration="7s" tcStart="3600s"><spine>
+        <gap offset="3600s" duration="2s"/><asset-clip ref="a" offset="3602s" start="12s" duration="5s" audioRole="dialogue"/>
+        </spine></sequence></project></event></library></fcpxml>
+        """.utf8)
+        let document = try TimelineParser.parse(data: data)
+        let selection = TimelineSelection(timelineRange: .init(start: RationalTime(2), end: RationalTime(7)))
+        let scope = TimeRange(start: RationalTime(3), end: RationalTime(5))
+        let context = try DialogueRenderContext(projectFingerprint: document.fingerprint, projectUID: document.projectUID,
+            projectName: document.projectName, projectRange: document.projectRange, renderedRoles: [], audioURL: source,
+            sourceRange: .init(start: RationalTime(2), end: RationalTime(7)))
+        let settings = try AnalysisSettings(beforeSpeechPadding: 0, afterSpeechPadding: 0)
+        var analyzed = try await ProjectAudioAnalysis.analyze(projectData: data, selection: selection, dialogueAudio: source,
+            renderContext: context, settings: settings, jobID: UUID(), capturedMedia: nil, analysisRange: scope)
+        XCTAssertEqual(analyzed.audio.windows.first?.range.start, scope.start)
+        XCTAssertEqual(analyzed.audio.windows.last?.range.end, scope.end)
+        XCTAssertEqual(analyzed.review.selectedCuts.map(\.range), [scope])
+        try analyzed.recalculate(settings: settings)
+        XCTAssertEqual(analyzed.review.analysisRange, scope)
+        let output = try EditedProjectWriter.write(projectData: data, selection: selection,
+            selectedRanges: analyzed.review.selectedCuts.map(\.range), outputName: "Scoped output")
+        let edited = try TimelineParser.parse(data: output.xmlData)
+        XCTAssertEqual(edited.clips.filter(\.hasAudio).map(\.sourceStart), [RationalTime(12), RationalTime(15)])
+        XCTAssertEqual(edited.projectRange.duration, RationalTime(5))
+    }
+
     func testFractionalVideoInitialAndRecalculatedCutsUseTheSameNativeSampleGrid() async throws {
         let fixture = try fixture()
         let data = Data(try String(contentsOf: fixture.xml)

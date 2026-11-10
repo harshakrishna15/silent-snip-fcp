@@ -204,7 +204,8 @@ import Foundation
             timing.begin("cacheValidationAndRecalculation")
             let key = try earlyMedia.flatMap { media in try AnalysisCacheKey.make(data: projectData, document: capture.document, target: capture.target,
                 media: media, windowDuration: request.settings.windowDuration,
-                hostSession: "\(capture.session.application.processIdentifier):\(capture.session.application.launchDate?.timeIntervalSince1970 ?? 0)") }
+                hostSession: "\(capture.session.application.processIdentifier):\(capture.session.application.launchDate?.timeIntervalSince1970 ?? 0)",
+                analysisRange: capture.analysisRange) }
             let cached = try await analysisCache.reuse(key: key, document: capture.document, target: capture.target,
                 settings: request.settings, jobID: request.id)
             timing.cache = key == nil ? "ineligible: processing state cannot be verified" : (cached == nil ? "miss" : "hit")
@@ -317,6 +318,7 @@ import Foundation
                     selection: capture.selection, dialogueAudio: audioURL,
                     renderContext: boundContext, settings: request.settings, jobID: request.id,
                     capturedMedia: route == .source ? try await pendingMedia : nil,
+                    analysisRange: capture.analysisRange,
                     progress: { fraction in
                         Task { @MainActor in progress(route == .source
                             ? "Measuring selected source audio…" : "Measuring audio rendered by Final Cut Pro…", fraction) }
@@ -511,6 +513,9 @@ import Foundation
         do {
             let removals = result.analyzed.review.selectedCuts.map(\.range)
             guard !removals.isEmpty else { throw EditedProjectWriterError.noSelectedCuts }
+            let scope = capture.analysisRange ?? capture.target.timelineRange
+            guard result.analyzed.review.analysisRange == scope,
+                  removals.allSatisfy({ scope.intersection($0) == $0 }) else { throw ReviewError.invalidRange }
             let exclusions = result.analyzed.dialogueContext.fingerprintExclusions
             try await session.activate()
             try validateReviewSelection(capture)
@@ -605,7 +610,7 @@ import Foundation
                             target: target, audioURL: fullMix, receipt: receipt, projectSlice: true, workflowOrigin: request.workflowOrigin)
                         fresh = try await ProjectAudioAnalysis.analyze(projectData: finalData,
                             selection: capture.selection, dialogueAudio: fullMix, renderContext: bound,
-                            settings: request.settings, jobID: request.id, capturedMedia: nil)
+                            settings: request.settings, jobID: request.id, capturedMedia: nil, analysisRange: capture.analysisRange)
                     } else {
                         fresh = try await freshTargetForApply(projectData: finalData, document: final,
                             capture: capture, directory: context.directory, request: request,
@@ -897,7 +902,7 @@ import Foundation
         try ShareDestinationManager.shared.validateReceipt(receipt)
         return try await ProjectAudioAnalysis.analyze(projectData: projectData, selection: capture.selection,
             dialogueAudio: audio, renderContext: bound, settings: request.settings,
-            jobID: request.id, capturedMedia: nil)
+            jobID: request.id, capturedMedia: nil, analysisRange: capture.analysisRange)
     }
 
     public func loadVerification(_ verification: ReviewVerificationRequest) throws -> AnalyzeRequest {

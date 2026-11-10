@@ -532,6 +532,11 @@ import Foundation
     }
 
     func selectionSnapshot() throws -> FinalCutSelectionSnapshot {
+        try readTimelineSelection(includingRange: false).clip.get()
+    }
+
+    func readTimelineSelection(includingRange: Bool) throws
+        -> (clip: Result<FinalCutSelectionSnapshot, Error>, range: FinalCutRenderedClipRange?) {
         try assertCurrentProject()
         try refreshTimeline()
         func node(_ element: AXUIElement, children childNodes: [AccessibilityNode] = []) -> AccessibilityNode {
@@ -543,19 +548,27 @@ import Foundation
                 selected: (values[kAXSelectedAttribute] as? NSNumber)?.boolValue,
                 enabled: (values[kAXEnabledAttribute] as? NSNumber)?.boolValue, children: childNodes)
         }
-        let items = children(timeline)
-        guard items.count <= 10_000 else { throw FinalCutCaptureError.invalidSelection("This timeline has too many accessible items.") }
+        guard let items = attribute(timeline, kAXChildrenAttribute) as? [AXUIElement], items.count <= 10_000 else {
+            throw FinalCutCaptureError.invalidSelection("The project timeline selection could not be read.")
+        }
         var clips: [AccessibilityNode] = []
+        var ranges: [AccessibilityNode] = []
+        let names = [kAXRoleAttribute, kAXSelectedAttribute] + (includingRange ? [kAXDescriptionAttribute, kAXValueAttribute] : [])
         let deadline = Date().addingTimeInterval(5)
         for item in items {
             try Task.checkCancellation()
             guard Date() < deadline else { throw FinalCutCaptureError.unavailable("Reading the timeline selection took too long.") }
-            let values = FinalCutAXAttributes.read(item, names: [kAXRoleAttribute, kAXSelectedAttribute])
-            guard values[kAXRoleAttribute] as? String == kAXLayoutItemRole,
-                  (values[kAXSelectedAttribute] as? NSNumber)?.boolValue == true else { continue }
+            let values = FinalCutAXAttributes.read(item, names: names)
+            guard values[kAXRoleAttribute] as? String == kAXLayoutItemRole else { continue }
+            if includingRange, values[kAXDescriptionAttribute] as? String == "Range Selection" {
+                ranges.append(readTimelineRangeNode(item, duration: values[kAXValueAttribute] as? String))
+                continue
+            }
+            guard (values[kAXSelectedAttribute] as? NSNumber)?.boolValue == true else { continue }
             clips.append(node(item, children: children(item).prefix(100).map { node($0) }))
         }
-        return try FinalCutSelectionSnapshot(projectName: projectName, timeline: node(timeline, children: clips))
+        let clip = Result { try FinalCutSelectionSnapshot(projectName: projectName, timeline: node(timeline, children: clips)) }
+        return (clip, try FinalCutRenderedClipRange.unique(ranges))
     }
 
     /// Start and confirm the configured Share destination through host UI.

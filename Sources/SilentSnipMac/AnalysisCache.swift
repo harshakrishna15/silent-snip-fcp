@@ -12,12 +12,15 @@ struct AnalysisCacheKey: Equatable {
     let media: MediaContentSnapshot
     let windowDuration: Double
     let hostSession: String
+    let analysisRange: TimeRange?
 
     static func make(data: Data, document: TimelineDocument, target: TimelineClip,
-                     media: MediaContentSnapshot, windowDuration: Double, hostSession: String = "") throws -> Self? {
+                     media: MediaContentSnapshot, windowDuration: Double, hostSession: String = "",
+                     analysisRange: TimeRange? = nil) throws -> Self? {
         guard try isEligible(data: data, target: target) else { return nil }
         return Self(fingerprint: document.fingerprint, projectUID: document.projectUID,
-            projectName: document.projectName, targetID: target.id, media: media, windowDuration: windowDuration, hostSession: hostSession)
+            projectName: document.projectName, targetID: target.id, media: media, windowDuration: windowDuration,
+            hostSession: hostSession, analysisRange: analysisRange)
     }
 
     /// Independent of file IO so an ineligible effect chain can start its host
@@ -88,7 +91,8 @@ struct AnalysisCacheKey: Equatable {
         var refreshed = entry.analysis
         _ = try refreshed.recalculate(settings: settings)
         let review = try ReviewPlan(jobID: jobID, document: document, target: target,
-            analysis: refreshed.analysis, requireDialogue: false, cutGrid: refreshed.review.cutGrid)
+            analysis: refreshed.analysis, requireDialogue: false, cutGrid: refreshed.review.cutGrid,
+            analysisRange: refreshed.review.analysisRange)
         return AnalyzedAudioProject(document: document, target: target,
             dialogueContext: refreshed.dialogueContext, audio: refreshed.audio,
             settings: settings, analysis: refreshed.analysis, review: review,
