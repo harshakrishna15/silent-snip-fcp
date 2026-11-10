@@ -4,16 +4,20 @@ import QuartzCore
 
 /// One geometry request at a time; an old result cannot revive a dismissed job.
 struct PreviewRequestGate {
-    private(set) var generation = 0
+    private var generation = 0
     private var active: Int?
-    mutating func reset() { generation += 1; active = nil }
+    var isIdle: Bool { active == nil }
+
+    mutating func reset() { generation += 1 }
     mutating func begin() -> Int? {
-        guard active == nil else { return nil }
+        guard isIdle else { return nil }
+        generation += 1
         active = generation; return generation
     }
     mutating func finish(_ token: Int) -> Bool {
-        guard token == generation, active == token else { return false }
-        active = nil; return true
+        guard active == token else { return false }
+        active = nil
+        return token == generation
     }
 }
 
@@ -75,7 +79,8 @@ struct PreviewSamplePacer {
 @MainActor final class TimelineCutPreview {
     private var panel: NSPanel?
     private let drawing = CutBoundaryView(frame: .zero)
-    private var timer: Timer?
+    private var sampleTimer: Timer?
+    private var presentationTimer: Timer?
     private var session: FinalCutAXSession?
     private var reader: FinalCutPreviewReader?
     private var observer: PreviewChangeObserver?
@@ -143,14 +148,20 @@ struct PreviewSamplePacer {
             if diagnosticEnabled { diagnosticObserverRegistrations = observer?.registrations ?? 0 }
         }
         observeForegroundChanges()
-        wake()
-        if timer == nil {
-            timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.tick() }
+        if presentationTimer == nil {
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.maintainPresentation()
+                    // Retry foreground restoration if activation arrived before
+                    // Final Cut actually became frontmost.
+                    if self.sampleTimer == nil { self.scheduleSample() }
+                }
             }
-            RunLoop.main.add(timer!, forMode: .common)
+            presentationTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
         }
-        tick()
+        wake()
     }
 
     static func boundaries(for review: ReviewPlan) -> [CutBoundaryView.Boundary] {
@@ -172,7 +183,9 @@ struct PreviewSamplePacer {
                 "drawing": diagnosticLayerState()])
         }
         gate.reset(); observer?.stop(); observer = nil
-        timer?.invalidate(); timer = nil; reader = nil; session = nil
+        sampleTimer?.invalidate(); sampleTimer = nil
+        presentationTimer?.invalidate(); presentationTimer = nil
+        reader = nil; session = nil
         pacer.reset()
         panel?.level = .normal
         panel?.orderOut(nil)
@@ -184,7 +197,10 @@ struct PreviewSamplePacer {
         presentationPacer.reset()
         foregroundSuspended = false
     }
-    private func wake() { pacer.wake(at: Date()) }
+    private func wake() {
+        pacer.wake(at: Date())
+        scheduleSample()
+    }
 
     /// Suspend presentation without discarding the review, its geometry reader
     /// or its outstanding request. The epoch makes that old request unpaintable.
@@ -197,6 +213,7 @@ struct PreviewSamplePacer {
             foregroundSuspended = true
             foregroundEpoch &+= 1
             lastGeometry = nil
+            sampleTimer?.invalidate(); sampleTimer = nil
             if diagnosticEnabled {
                 trace("foregroundSuspended", ["reason": reason, "epoch": foregroundEpoch,
                     "panelBefore": diagnosticPanelState(panel)])
@@ -234,9 +251,7 @@ struct PreviewSamplePacer {
                     MainActor.assumeIsolated {
                         guard let self, self.session != nil else { return }
                         if self.diagnosticEnabled { self.trace("foregroundActivationNotification") }
-                        guard self.permitsForegroundPresentation() else { return }
                         self.wake()
-                        self.tick()
                     }
                 }
         }
@@ -253,16 +268,33 @@ struct PreviewSamplePacer {
         }
     }
 
-    private func tick() {
-        guard permitsForegroundPresentation() else { return }
-        maintainPresentation()
+    private func scheduleSample() {
+        guard let reader, permitsForegroundPresentation(), gate.isIdle else { return }
         let now = Date()
-        guard let reader, pacer.isDue(at: now), let token = gate.begin() else { return }
+        guard pacer.isDue(at: now) else {
+            let deadline = pacer.nextRead
+            guard sampleTimer?.fireDate != deadline else { return }
+            sampleTimer?.invalidate()
+            let timer = Timer(fire: deadline, interval: 0, repeats: false) { [weak self] timer in
+                MainActor.assumeIsolated {
+                    guard let self, self.sampleTimer === timer else { return }
+                    self.sampleTimer = nil
+                    self.scheduleSample()
+                }
+            }
+            sampleTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+            return
+        }
+        guard let token = gate.begin() else { return }
+        sampleTimer?.invalidate(); sampleTimer = nil
         pacer.didStartRead(at: now)
         let epoch = foregroundEpoch
         reader.sample { [weak self] result, duration in
             Task { @MainActor in
-                guard let self, self.gate.finish(token) else { return }
+                guard let self else { return }
+                defer { self.scheduleSample() }
+                guard self.gate.finish(token) else { return }
                 guard epoch == self.foregroundEpoch else {
                     if self.diagnosticEnabled { self.trace("foregroundDiscardedRead", ["epoch": epoch]) }
                     return
@@ -299,6 +331,7 @@ struct PreviewSamplePacer {
                                     "detail": String(error.localizedDescription.prefix(240)),
                                     "panelBefore": self.diagnosticPanelState(self.panel)])
                             }
+                            self.lastGeometry = nil
                             self.panel?.orderOut(nil)
                             self.record("Hidden: " + error.localizedDescription)
                         }
@@ -317,20 +350,20 @@ struct PreviewSamplePacer {
         let epoch = foregroundEpoch
         guard presentationPacer.begin(at: Date(), urgent: urgent) else { return }
         defer { presentationPacer.finish() }
-        guard let window = panel, window.isVisible, let geometry = lastGeometry,
+        guard let window = panel, (window.isVisible || urgent), let geometry = lastGeometry,
               let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                   kCGNullWindowID) as? [[String: Any]] else { return }
         let order = windows.compactMap { $0[kCGWindowNumber as String] as? Int }
-        let level = updatePresentationLevel(window, geometry: geometry, windows: windows)
-        guard epoch == foregroundEpoch, !foregroundSuspended else { return }
         guard order.contains(geometry.projectWindowNumber) else {
             if diagnosticEnabled { trace("orderOut", ["reason": "maintenance:projectWindowMissing"]) }
+            lastGeometry = nil
             window.orderOut(nil)
             return
         }
-        let needsOrdering = !level.elevated && order.contains(geometry.projectWindowNumber) &&
-            (level.changed ||
-            PreviewVisibility.needsOrdering(visible: true, overlay: window.windowNumber,
+        let level = updatePresentationLevel(window, geometry: geometry, windows: windows)
+        guard epoch == foregroundEpoch, !foregroundSuspended else { return }
+        let needsOrdering = !level.elevated && (level.changed ||
+            PreviewVisibility.needsOrdering(visible: window.isVisible, overlay: window.windowNumber,
                 project: geometry.projectWindowNumber, windowOrder: order))
         if diagnosticEnabled {
             trace("maintenance", ["urgent": urgent, "panel": diagnosticPanelState(window),
@@ -352,18 +385,17 @@ struct PreviewSamplePacer {
                         overlay: window.windowNumber), "drawing": diagnosticLayerState()])
             }
         }
-        // Ordering or resizing can replace AppKit's backing layer after the
-        // last geometry paint. The drawing checks attachment before returning.
-        drawing.updateLayer()
+        // Ordering may replace AppKit's backing layer.
+        if needsOrdering || level.changed || urgent { drawing.updateLayer() }
         if diagnosticEnabled { _ = diagnosticLayerState() }
     }
 
     private func present(_ geometry: PreviewGeometry) {
         guard permitsForegroundPresentation() else { return }
         let epoch = foregroundEpoch
-        guard presentationPacer.begin(at: Date(), urgent: true) else { return }
-        defer { presentationPacer.finish() }
         let changed = geometry.frame != lastGeometry?.frame || geometry.visibleFrame != lastGeometry?.visibleFrame
+        let needsOrderCheck = panel?.isVisible != true ||
+            geometry.projectWindowNumber != lastGeometry?.projectWindowNumber
         if changed { pacer.wake(at: Date()) }
         visibility.verified()
         let window = panel ?? makePanel()
@@ -374,22 +406,16 @@ struct PreviewSamplePacer {
         let panelBefore = diagnosticEnabled ? diagnosticPanelState(window) : [:]
         let drawingBefore = diagnosticEnabled ? diagnosticLayerState() : [:]
         if setFrame { window.setFrame(targetFrame, display: false) }
-        drawing.frame = CGRect(origin: .zero, size: visible.size)
+        if drawing.frame.size != visible.size { drawing.frame = CGRect(origin: .zero, size: visible.size) }
         drawing.clipWidth = geometry.frame.width
         drawing.clipOriginX = geometry.frame.minX - visible.minX
         drawing.occlusions = geometry.occlusions.map {
             CGRect(x: $0.minX - visible.minX, y: visible.maxY - $0.maxY, width: $0.width, height: $0.height)
         }
         drawing.updateLayer()
-        let currentWindows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID) as? [[String: Any]] ?? []
-        let level = updatePresentationLevel(window, geometry: geometry, windows: currentWindows)
         guard epoch == foregroundEpoch, !foregroundSuspended else { return }
-        guard currentWindows.contains(where: { $0[kCGWindowNumber as String] as? Int == geometry.projectWindowNumber }) else {
-            if diagnosticEnabled { trace("orderOut", ["reason": "present:projectWindowMissing"]) }
-            window.orderOut(nil)
-            return
-        }
+        lastGeometry = geometry
+        if needsOrderCheck { maintainPresentation(urgent: true) }
         if diagnosticEnabled {
             if setFrame { diagnosticCounters["setFrameIssued", default: 0] += 1 }
             if changed { diagnosticCounters["geometryChanged", default: 0] += 1 }
@@ -401,33 +427,11 @@ struct PreviewSamplePacer {
                 "panelAfter": diagnosticPanelState(window), "drawingBefore": drawingBefore,
                 "drawingAfter": diagnosticLayerState(),
                 "readerWindowOrder": diagnosticWindowOrder(geometry.windowOrder,
-                    project: geometry.projectWindowNumber, overlay: window.windowNumber),
-                "currentWindowOrder": diagnosticWindowOrder(project: geometry.projectWindowNumber,
-                    overlay: window.windowNumber)])
+                    project: geometry.projectWindowNumber, overlay: window.windowNumber)])
         }
-        if !level.elevated && (level.changed || PreviewVisibility.needsOrdering(visible: window.isVisible, overlay: window.windowNumber,
-            project: geometry.projectWindowNumber, windowOrder: currentWindows.compactMap { $0[kCGWindowNumber as String] as? Int })) {
-            guard epoch == foregroundEpoch, !foregroundSuspended else { return }
-            guard geometry.projectWindowNumber > 0 else {
-                if diagnosticEnabled { trace("orderOut", ["reason": "present:invalidProjectWindow"]) }
-                window.orderOut(nil); return
-            }
-            if diagnosticEnabled {
-                trace("orderAbove", ["reason": window.isVisible ? "present:readerOverlayMissingOrBehindProject" : "present:panelNotVisible",
-                    "panelBefore": diagnosticPanelState(window),
-                    "windowOrderBefore": diagnosticWindowOrder(project: geometry.projectWindowNumber,
-                        overlay: window.windowNumber)])
-            }
-            window.order(.above, relativeTo: geometry.projectWindowNumber)
-            if diagnosticEnabled {
-                trace("orderAboveCompleted", ["reason": "present", "panelAfter": diagnosticPanelState(window),
-                    "windowOrderAfter": diagnosticWindowOrder(project: geometry.projectWindowNumber,
-                        overlay: window.windowNumber), "drawing": diagnosticLayerState()])
-            }
+        if diagnosticEnabled, window.isVisible {
+            record("Visible: clip=\(geometry.frame), panel=\(window.frame), vector boundaries=\(drawing.boundaries.count)")
         }
-        guard epoch == foregroundEpoch, !foregroundSuspended else { return }
-        lastGeometry = geometry
-        if diagnosticEnabled { record("Visible: clip=\(geometry.frame), panel=\(window.frame), vector boundaries=\(drawing.boundaries.count)") }
     }
 
     /// Final Cut repeatedly raises its normal-level project during skimming.

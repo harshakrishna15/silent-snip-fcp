@@ -463,6 +463,8 @@ final class TimelineCutPreviewTests: XCTestCase {
         let old = gate.begin()!
         XCTAssertNil(gate.begin())
         gate.reset()
+        XCTAssertNil(gate.begin(), "A new session waits for the retired reader to finish.")
+        XCTAssertFalse(gate.finish(old))
         let fresh = gate.begin()!
         XCTAssertFalse(gate.finish(old))
         XCTAssertNil(gate.begin())
