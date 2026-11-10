@@ -2,7 +2,7 @@
 
 This record tracks export reliability, isolated clip rendering, verified imports, settings retention, and local build/registration work. All Final Cut tests must use disposable projects in the workspace `Cutdown Integration.fcpbundle`. See [setup](setup.md#integration-test-library) for a fresh checkout.
 
-Earlier entries describe the original development environment. Their installed/staged app state and logs under `build/` are not part of a Git checkout. The project currently provides local ad hoc builds; no release installer or updater is included.
+Earlier entries describe the original development environment. Their installed/staged app state and logs under `build/` are not part of a Git checkout. See the [setup guide](setup.md) for the current local installer and build instructions.
 
 ## September 23 live preview validation
 

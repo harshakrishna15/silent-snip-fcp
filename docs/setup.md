@@ -1,8 +1,12 @@
 # Install and first-time setup
 
-## Copy and open the apps
+## Install and open the apps
 
-Extract **Silent Snip.zip** and copy both **Silent Snip.app** and **Silent Snip Workflow Prototype.app** from its `Silent Snip` folder into the same Applications folder (`/Applications` or `~/Applications`). Keep one active copy of each. Users of the prebuilt apps do not need Xcode, Terminal, or the source checkout.
+Quit Final Cut Pro and both Silent Snip apps before installing an update. Double-click **Silent Snip.pkg** and follow the macOS Installer prompts to install **Silent Snip.app** and **Silent Snip Workflow Prototype.app** in your home Applications folder (`~/Applications`). To open that folder in Finder, press **Command–Shift–G** and enter `~/Applications`.
+
+If you already have the apps in `/Applications` or another folder, extract **Silent Snip.zip** and replace both apps at their existing paths. This keeps the worker at the path used by your Final Cut Share destination. Keep one active copy of each app in the same folder.
+
+The locally built installer is unsigned, and macOS can block downloaded copies. Public distribution requires Developer ID signing and Apple notarization. See [Apple’s distribution guide](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution).
 
 Open **Silent Snip.app** once. It runs in the background without a Dock or menu bar icon. Open **Silent Snip Workflow Prototype.app** once and choose **Done** in its instructions window. In Final Cut, choose **Window → Extensions → Silent Snip** for the working interface. The frontend's filename retains “Workflow Prototype”; the visible Final Cut extension is **Silent Snip**.
 
@@ -30,7 +34,7 @@ The worker retains Apple's [Media Asset Protocol](https://developer.apple.com/do
 
 ## Upgrade from the audio-effect version
 
-Quit Final Cut and both Silent Snip apps, then replace the worker at its existing installed path and add or replace the Workflow frontend beside it. Open both once and reopen Final Cut. Keep the existing Share destination and worker control-access entry; refresh the entry only if macOS reports it stale.
+Quit Final Cut and both Silent Snip apps. If the worker is in `~/Applications`, use **Silent Snip.pkg**. For a worker elsewhere, use **Silent Snip.zip** to replace it at its existing path and add or replace the Workflow frontend beside it. Open both once and reopen Final Cut. Keep the existing Share destination and worker control-access entry, and refresh the entry if macOS reports it stale.
 
 The new worker no longer embeds or registers **Silent Snip Audio**. Installation does not edit your projects or remove their saved effect instances. Existing processing effects, libraries, original media, results, recovery XML, and durable processed audio remain on disk. Remove a legacy Silent Snip effect from an original recording in Final Cut when you no longer need that instance; the button workflow does not require it. Legacy source and compatibility tests remain in the repository.
 
@@ -47,16 +51,17 @@ Quit Final Cut and both Silent Snip apps, then run:
 ```sh
 xcode-select -p
 xcodebuild -version
-Scripts/build-app.sh
+Scripts/build-app.sh && Scripts/build-installer.sh
 ```
 
-The default Release build produces:
+The default Release build and installer packaging produce:
 
 - `build/App/Silent Snip.app`: the worker with its existing Share and URL identity, without an Audio Unit.
 - `build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app`: the separate frontend with its nested Workflow extension.
 - `dist/Silent Snip.zip`: a `Silent Snip` folder containing both complete apps.
+- `dist/Silent Snip.pkg`: the home-folder installer for the same app pair from the ZIP.
 
-The build reuses `build/swift`, checks package compatibility and signatures, stages complete products, and refuses to replace running apps. It does not copy apps into Applications, launch them, configure Final Cut, or grant permissions. Copy both apps and follow the setup above. Local signing defaults to ad hoc; `SILENT_SNIP_SIGNING_IDENTITY` and `SILENT_SNIP_DEVELOPMENT_TEAM` accept existing developer settings. No component downloads or external Swift package dependencies are required.
+The build reuses `build/swift`, checks package compatibility and signatures, stages complete products, and refuses to replace running apps. To install the result, open the package and follow the setup above. Local signing defaults to ad hoc for the apps. `SILENT_SNIP_SIGNING_IDENTITY` and `SILENT_SNIP_DEVELOPMENT_TEAM` accept existing developer settings. No component downloads or external Swift package dependencies are required.
 
 For in-place development, `Scripts/build.sh` builds a Debug worker and Release frontend and registers the pair. `Scripts/build.sh --release` makes the worker Release as well. `Scripts/build.sh --stage` assembles only `build/Candidate/App/Silent Snip.app`, with live URL, Share, document, and Workflow capability routes removed. Staging does not build or register a frontend or replace published apps or the ZIP; a candidate is not distributable.
 

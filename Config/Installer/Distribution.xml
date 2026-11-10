@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Silent Snip</title>
+    <welcome file="Welcome.txt" uti="public.plain-text"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+    <allowed-os-versions>
+        <os-version min="14.0"/>
+    </allowed-os-versions>
+    <choices-outline>
+        <line choice="apps"/>
+    </choices-outline>
+    <choice id="apps" title="Silent Snip" description="The worker and its Final Cut Pro workflow extension.">
+        <pkg-ref id="local.silentsnip.pkg"/>
+    </choice>
+    <pkg-ref id="local.silentsnip.pkg">Apps.pkg</pkg-ref>
+    <pkg-ref id="local.silentsnip.pkg">
+        <must-close>
+            <app id="com.apple.FinalCut"/>
+            <app id="local.silentsnip.app"/>
+            <app id="local.silentsnip.workflowprototype"/>
+            <app id="local.silentsnip.workflowprototype.extension"/>
+        </must-close>
+    </pkg-ref>
+</installer-gui-script>

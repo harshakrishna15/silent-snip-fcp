@@ -1,0 +1,10 @@
+This package installs both Silent Snip apps into the Applications folder in your home folder (~/Applications).
+
+Quit Final Cut Pro and both Silent Snip apps before continuing. If your existing copies are in /Applications or another folder, use the ZIP to replace them there so Final Cut keeps using the same Share receiver.
+
+After installation
+
+1. Open both apps from ~/Applications and choose Done in the Workflow app.
+2. Enable Silent Snip.app under Privacy & Security in System Settings. Look for Device Control and Data Access or Accessibility.
+3. In Final Cut’s Destinations settings, add an Export File destination named Silent Snip. Choose Audio Only and WAV, then set Action to the installed Silent Snip.app.
+4. Choose Window → Extensions → Silent Snip. If prompted, click Connect to Final Cut Pro and approve Automation access.

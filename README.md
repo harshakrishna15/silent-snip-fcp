@@ -108,20 +108,18 @@ Targets must be normal-speed direct asset clips with enabled audio in the primar
 
 Recorded builds used Xcode 27.0 / Swift 6.4. Current development checks use Final Cut Pro 12.4 on macOS 27.2; historical reports used earlier macOS releases and Final Cut Pro 12.3. Other combinations have not been verified here.
 
-The prebuilt apps need no Xcode, repository, or Terminal. Building from source requires full Xcode with first-launch setup completed and Apple’s Workflow Extensions SDK as documented in the [frontend guide](docs/workflow-extension-prototype.md). There are no external Swift package dependencies. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
+Installing the prebuilt apps takes only Finder and macOS Installer. Building from source requires full Xcode with first-launch setup completed and Apple’s Workflow Extensions SDK as documented in the [frontend guide](docs/workflow-extension-prototype.md). There are no external Swift package dependencies. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
 
 ## Install
 
-Start with **Silent Snip.zip**. You do not need the repository, Xcode, Terminal, or a separate installer.
-
 1. **Quit Final Cut Pro and both Silent Snip apps** before replacing an earlier copy.
-2. **Extract the ZIP** and copy **Silent Snip.app** and **Silent Snip Workflow Prototype.app** into the same Applications folder. Keep one active copy of each.
+2. **Open Silent Snip.pkg** and follow the macOS Installer prompts. It installs both apps in `~/Applications`. If you already keep Silent Snip elsewhere, use **Silent Snip.zip** and replace both apps in their existing folder.
 3. **Open both apps once.** Silent Snip runs in the background without a Dock or menu bar icon. The Workflow frontend shows instructions; choose **Done**.
 4. **Grant worker control access.** In **System Settings → Privacy & Security → Device Control and Data Access** (called **Accessibility** on earlier macOS versions), enable the copied **Silent Snip.app**.
 5. **Set up Final Cut Share.** In **Final Cut Pro → Settings → Destinations**, add **Export File**, name it **Silent Snip**, choose **Audio Only → WAV**, and set **Action → Other…** to that same **Silent Snip.app**. Existing users keep the same worker identity and Share action.
 6. In Final Cut, choose **Window → Extensions → Silent Snip**. Use **Connect to Final Cut Pro** if shown and approve the frontend's Automation request. Select a supported clip, Analyze, review, then Apply.
 
-The default worker contains no Audio Unit. Existing projects and saved effect instances are not rewritten by installing the new apps. See [setup and migration](docs/setup.md) for details.
+The locally built installer is unsigned. Public distribution requires Developer ID signing and Apple notarization. See [setup and migration](docs/setup.md) for detailed steps.
 
 <details>
 <summary>Build from source</summary>
@@ -129,10 +127,10 @@ The default worker contains no Audio Unit. Existing projects and saved effect in
 With full Xcode and Apple’s Workflow Extensions SDK installed, quit Final Cut and both Silent Snip apps, then run:
 
 ```sh
-Scripts/build-app.sh
+Scripts/build-app.sh && Scripts/build-installer.sh
 ```
 
-This produces **`build/App/Silent Snip.app`**, **`build/WorkflowPrototype/Products/Silent Snip Workflow Prototype.app`**, and **`dist/Silent Snip.zip`**. The ZIP contains both apps under a `Silent Snip` folder. The worker retains its background executable and Share definitions; the separate frontend hosts the sandboxed Workflow interface. No Audio Unit is embedded. Both builds use Release by default. Local builds are ad hoc signed; packaging does not bypass macOS security checks.
+The first command builds the Release worker and Workflow frontend and packages them in **`dist/Silent Snip.zip`**. The second packages the same apps in **`dist/Silent Snip.pkg`**. The local app bundles are ad hoc signed by default.
 
 For development, `Scripts/build.sh` builds a Debug worker plus the Release frontend and registers the pair in place. Add `--release` for a Release worker, or `--stage` to create only an inert worker candidate without changing the published apps, ZIP, or registrations. `Scripts/register-local.sh --check-only` checks the pair without changing registrations. Keep registered build products in place. See [developer setup](docs/setup.md#build-from-source).
 
