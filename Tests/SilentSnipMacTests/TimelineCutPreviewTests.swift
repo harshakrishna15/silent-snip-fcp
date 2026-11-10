@@ -217,7 +217,7 @@ final class TimelineCutPreviewTests: XCTestCase {
         XCTAssertTrue(pacer.isDue(at: start))
         pacer.didStartRead(at: start)
         XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(0.02)))
-        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.034)))
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.023)))
         for step in 1...10 { pacer.wake(at: start.addingTimeInterval(Double(step) / 1000)) }
         XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(0.015)))
         XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.017)),
@@ -228,8 +228,8 @@ final class TimelineCutPreviewTests: XCTestCase {
         XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(0.034)))
         pacer.didStartRead(at: start.addingTimeInterval(1))
         XCTAssertFalse(pacer.isDue(at: start.addingTimeInterval(1.02)))
-        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(1.034)),
-            "Polling continues at 30 Hz when Final Cut sends no notifications.")
+        XCTAssertTrue(pacer.isDue(at: start.addingTimeInterval(1.023)),
+            "Polling continues at 45 Hz when Final Cut sends no notifications.")
         pacer.reset()
         XCTAssertTrue(pacer.isDue(at: start))
     }

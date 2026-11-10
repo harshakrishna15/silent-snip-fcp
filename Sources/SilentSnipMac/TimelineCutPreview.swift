@@ -37,7 +37,9 @@ struct PreviewSamplePacer {
     func isDue(at now: Date) -> Bool { now >= nextRead }
     mutating func didStartRead(at now: Date) {
         lastRead = now
-        nextRead = now.addingTimeInterval(now < activeUntil ? 1.0 / 60 : 1.0 / 30)
+        // Final Cut can zoom without an AX change notification. Keep the
+        // quiet poll close to a display frame while capping active reads.
+        nextRead = now.addingTimeInterval(now < activeUntil ? 1.0 / 60 : 1.0 / 45)
     }
 }
 
@@ -152,10 +154,10 @@ struct PreviewSamplePacer {
             let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.maintainPresentation()
                     // Retry foreground restoration if activation arrived before
                     // Final Cut actually became frontmost.
                     if self.sampleTimer == nil { self.scheduleSample() }
+                    self.maintainPresentation()
                 }
             }
             presentationTimer = timer
@@ -346,10 +348,10 @@ struct PreviewSamplePacer {
     /// panel order on the display timer rather than waiting for a geometry
     /// read, which can be busy validating the Inspector during a scrub.
     private func maintainPresentation(urgent: Bool = false) {
-        guard permitsForegroundPresentation() else { return }
-        let epoch = foregroundEpoch
         guard presentationPacer.begin(at: Date(), urgent: urgent) else { return }
         defer { presentationPacer.finish() }
+        guard permitsForegroundPresentation() else { return }
+        let epoch = foregroundEpoch
         guard let window = panel, (window.isVisible || urgent), let geometry = lastGeometry,
               let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                   kCGNullWindowID) as? [[String: Any]] else { return }
