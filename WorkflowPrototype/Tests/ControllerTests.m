@@ -498,6 +498,7 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic, strong) NSMutableArray<SSFakeWorkflowReviewClient *> *reviewClients;
 @property (nonatomic, strong) NSMutableArray<SSFakeWorkflowWindowClient *> *windowClients;
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *verificationCompletions;
+@property (nonatomic, copy) dispatch_block_t navigationContextCheck;
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *automaticUpdateCompletions;
 @property (nonatomic) BOOL fakeOwnsNavigationWindow;
 @property (nonatomic, copy) void (^didLayoutDocument)(SSTestWorkflowViewController *controller);
@@ -517,6 +518,9 @@ static void unexpectedWindowBoundary(void) {
 - (void)schedulePermissionWaitDeadline:(dispatch_block_t)completion {
     if (!self.permissionDeadlines) self.permissionDeadlines = [NSMutableArray new];
     [self.permissionDeadlines addObject:[completion copy]];
+}
+- (void)scheduleNavigationContextCheck:(dispatch_block_t)completion {
+    self.navigationContextCheck = completion;
 }
 - (void)scheduleAutomaticUpdate:(dispatch_block_t)completion afterDelay:(NSTimeInterval)delay {
     if (!self.automaticUpdateCompletions) self.automaticUpdateCompletions = [NSMutableArray new];
@@ -1385,7 +1389,8 @@ static void sdkNavigationRequiresExactProjectWindowAndReturnedTime(void) {
 
 static void navigationSettlementRefreshesDeferredProjectChanges(void) {
     for (NSNumber *sdk in @[@NO, @YES]) {
-        SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Same name"));
+        SSProxy *source = sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Same name");
+        SSHost *current = host(source);
         SSTestWorkflowViewController *controller = openController(current);
         completeLoad(controller.settings.loads[0], values(-50, YES), nil);
         SSFakeWorkflowReviewClient *client = beginReview(controller);
@@ -1400,6 +1405,20 @@ static void navigationSettlementRefreshesDeferredProjectChanges(void) {
               controller.settings.loads.count == 1 && controller.applyButton.enabled &&
               [controller.statusLabel.stringValue isEqual:@"Playhead moved"],
               @"Settlement in the same project preserves its review and feedback");
+
+        [controller goToCut:controller.navigateButton];
+        [client deliver:reviewResponse(@"navigating", @"Moving") busy:YES canApply:NO];
+        current.testTimeline.sequence = nil;
+        [client deliver:reviewResponse(@"review", @"Playhead moved") busy:NO canApply:YES];
+        check(controller.navigationContextCheck && controller.reviewClient == client &&
+              controller.cutList.arrangedSubviews.firstObject == originalRow && !controller.applyButton.enabled,
+              @"A transient missing sequence keeps the exact rows and locks Apply during one recheck");
+        current.testTimeline.sequence = source;
+        controller.navigationContextCheck();
+        controller.navigationContextCheck = nil;
+        check(controller.reviewClient == client && controller.cutList.arrangedSubviews.firstObject == originalRow &&
+              controller.applyButton.enabled && controller.settings.loads.count == 1,
+              @"The same sequence after navigation restores Apply without rebuilding the cut list");
 
         [controller goToCut:controller.navigateButton];
         // Also cover a declined SDK request that never gets a navigating reply.

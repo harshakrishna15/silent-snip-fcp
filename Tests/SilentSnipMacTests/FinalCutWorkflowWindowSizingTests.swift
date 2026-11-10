@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import XCTest
 @testable import SilentSnipMac
 
@@ -196,5 +197,38 @@ import XCTest
         selection["command"] = "renew"
         XCTAssertNil(FinalCutWorkflowWindowSizing.Query.decode(try encode(selection), userInfo: nil),
             "Presentation fields cannot change the sizing lease.")
+    }
+
+    func testClipTitleFollowsTheProjectTimelineWhenTheExtensionIsMain() {
+        let standardWindow: [String: Any] = [kAXRoleAttribute: kAXWindowRole, kAXSubroleAttribute: kAXStandardWindowSubrole]
+        let clip: [String: Any] = [kAXRoleAttribute: kAXLayoutItemRole, kAXDescriptionAttribute: "Audio-Clip:Selected speech",
+            kAXSelectedAttribute: true, kAXChildrenAttribute: [5]]
+        var tree: [Int: [String: Any]] = [
+            0: standardWindow.merging([kAXTitleAttribute: "Silent Snip", kAXChildrenAttribute: [7]]) { _, new in new },
+            1: standardWindow.merging([kAXTitleAttribute: "Final Cut Pro", kAXChildrenAttribute: [2, 3]]) { _, new in new },
+            2: [kAXRoleAttribute: kAXPopUpButtonRole, kAXIdentifierAttribute: "editor/timelineContainer/toolbar/projectNamePopUpButton",
+                kAXTitleAttribute: "Disposable project"],
+            3: [kAXRoleAttribute: kAXLayoutAreaRole, kAXDescriptionAttribute: "Project Timeline", kAXChildrenAttribute: [4, 6]],
+            4: clip,
+            5: [kAXRoleAttribute: kAXTextFieldRole, kAXDescriptionAttribute: "Title", kAXValueAttribute: "Selected speech"],
+            6: [kAXRoleAttribute: kAXLayoutItemRole, kAXDescriptionAttribute: "Range Selection", kAXSelectedAttribute: true],
+            7: [kAXRoleAttribute: kAXTextFieldRole, kAXDescriptionAttribute: "Title", kAXValueAttribute: "Extension label"],
+        ]
+        func title(in name: String = "Disposable project", windows: [Int] = [0, 1]) -> String? {
+            WorkflowClipTitleLookup.read(projectName: name, mainWindow: { 0 }, windows: { windows },
+                attributes: { node, keys in tree[node, default: [:]].filter { keys.contains($0.key) } },
+                equals: ==, shouldContinue: { true })
+        }
+        XCTAssertEqual(title(), "Selected speech")
+        XCTAssertNil(title(in: "Another project"))
+        XCTAssertNil(title(windows: [0]))
+        tree[8] = tree[1]
+        XCTAssertNil(title(windows: [0, 1, 8]), "A floating extension cannot choose between project windows.")
+        tree[8] = clip
+        tree[3]?[kAXChildrenAttribute] = [4, 6, 8]
+        XCTAssertNil(title(), "Multiple selected clips cannot supply a single name.")
+        tree[3]?[kAXChildrenAttribute] = [4, 6]
+        tree[4]?[kAXSelectedAttribute] = false
+        XCTAssertNil(title(), "A range marker is not a selected clip.")
     }
 }

@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-struct WorkflowSizingHost: Equatable {
+struct WorkflowSizingHost: Equatable, Sendable {
     let pid: pid_t
     let launched: Date
 }
@@ -17,11 +17,11 @@ struct WorkflowSizingHost: Equatable {
     func writeSize(_ target: AnyObject, size: CGSize) -> Int32
     func observe(_ target: AnyObject, resized: @escaping () -> Void, destroyed: @escaping () -> Void) -> Int32
     func stopObserving()
-    func selectedClipTitle(host: WorkflowSizingHost, projectName: String) -> String?
+    func selectedClipTitle(host: WorkflowSizingHost, projectName: String) async -> String?
 }
 
 extension WorkflowSizingDriver {
-    func selectedClipTitle(host: WorkflowSizingHost, projectName: String) -> String? { nil }
+    func selectedClipTitle(host: WorkflowSizingHost, projectName: String) async -> String? { nil }
 }
 
 /// Sizes the requesting native Workflow window and supplies its clip title.
@@ -44,6 +44,7 @@ extension WorkflowSizingDriver {
     private var nextCorrection = -Double.infinity
     private var nextIdentityCheck = -Double.infinity
     private var nextTitleRead = -Double.infinity
+    private var titleReadInFlight = false
     private var needsCorrection = true
     private var failures = 0
     private var lastReadback: CGSize?
@@ -237,27 +238,51 @@ extension WorkflowSizingDriver {
     }
 
     private func handle(_ query: Query) {
+        if query.command == "selection" {
+            readSelection(for: query)
+            return
+        }
         let accepted: Bool
         switch query.command {
         case "attach": accepted = attach(view: query.view, nonce: query.nonce)
         case "renew": accepted = renew(view: query.view, nonce: query.nonce)
-        case "selection": accepted = running
         default: accepted = detach(view: query.view, nonce: query.nonce)
         }
+        reply(to: query, accepted: accepted)
+    }
+
+    private func readSelection(for query: Query) {
+        guard running, !titleReadInFlight, !isBusy(), driver.trusted,
+              now() >= nextTitleRead, let name = query.projectName, let host = driver.host() else { return }
+        nextTitleRead = now() + 0.35
+        expire()
+        // The sizing lease already verifies the attached native window. On
+        // hosts that cannot size it, verify the same markers for this read.
+        let attached = lease?.view == query.view && lease?.nonce == query.nonce && pinnedHost == host && target != nil
+        if !attached {
+            guard let owner = driver.discover(host: host, view: query.view),
+                  driver.valid(owner, host: host, view: query.view) else { return }
+        }
+        let requestEpoch = epoch
+        titleReadInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.titleReadInFlight = false }
+            let title = await self.driver.selectedClipTitle(host: host, projectName: name)
+            guard self.running, self.epoch == requestEpoch, !self.isBusy(),
+                  self.driver.trusted, self.driver.host() == host else { return }
+            self.reply(to: query, accepted: true, title: title)
+        }
+    }
+
+    private func reply(to query: Query, accepted: Bool, title: String? = nil) {
         var value: [String: Any] = ["version": 1, "protocol": 1, "command": query.command,
             "view": query.view.uuidString, "nonce": query.nonce.uuidString, "accepted": accepted,
             "state": accepted ? state : "unavailable", "width": 615, "height": 736, "corrections": corrections]
         if let axCode { value["axCode"] = axCode }
-        if let selectionEpoch = query.selectionEpoch, let name = query.projectName {
+        if let selectionEpoch = query.selectionEpoch {
             value["selectionEpoch"] = selectionEpoch.uuidString
-            if accepted, !isBusy(), driver.trusted, now() >= nextTitleRead, let host = driver.host() {
-                nextTitleRead = now() + 0.35
-                let retained = lease?.view == query.view && lease?.nonce == query.nonce ? target : nil
-                if let owner = retained ?? driver.discover(host: host, view: query.view),
-                   driver.valid(owner, host: host, view: query.view) {
-                    value["clipTitle"] = driver.selectedClipTitle(host: host, projectName: name)
-                }
-            }
+            value["clipTitle"] = title
         }
         guard let data = try? JSONSerialization.data(withJSONObject: value), data.count <= 2048,
               let object = String(data: data, encoding: .utf8) else { return }
@@ -266,6 +291,67 @@ extension WorkflowSizingDriver {
     }
 
     deinit { timer?.invalidate() }
+}
+
+enum WorkflowClipTitleLookup {
+    static func read<Element>(projectName: String, mainWindow: () -> Element?, windows: () -> [Element],
+                              attributes: (Element, [String]) -> [String: Any], equals: (Element, Element) -> Bool,
+                              shouldContinue: () -> Bool) -> String? {
+        func children(_ element: Element) -> [Element] {
+            attributes(element, [kAXChildrenAttribute])[kAXChildrenAttribute] as? [Element] ?? []
+        }
+        func find(_ query: FinalCutAXQuery, in window: Element) -> FinalCutAXMatch<Element>? {
+            FinalCutAXSearch.find(root: window, query: query, maxDepth: 16, maxNodes: 160,
+                read: attributes, children: children, equals: equals, shouldContinue: shouldContinue)
+        }
+        let main = mainWindow()
+        var controls: (project: FinalCutAXMatch<Element>, timeline: Element)?
+        guard let workspace = FinalCutProjectWindow.resolve(main: main, windows: windows(), equals: equals, isWorkspace: { candidate in
+            guard shouldContinue() else { return false }
+            let values = attributes(candidate, [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXModalAttribute])
+            guard FinalCutProjectWindow.isWorkspace(role: values[kAXRoleAttribute] as? String,
+                subrole: values[kAXSubroleAttribute] as? String, modal: (values[kAXModalAttribute] as? NSNumber)?.boolValue,
+                title: values[kAXTitleAttribute] as? String),
+                let project = find(.init(identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton",
+                    containersOnly: true, additionalAttributes: [kAXTitleAttribute]), in: candidate),
+                let timeline = find(.init(role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true), in: candidate)
+            else { return false }
+            controls = (project, timeline.element)
+            return true
+        }), let controls, controls.project.values[kAXTitleAttribute] as? String == projectName else { return nil }
+
+        let selected = attributes(controls.timeline, [kAXSelectedChildrenAttribute])[kAXSelectedChildrenAttribute] as? [Element] ?? []
+        let items = selected.isEmpty ? children(controls.timeline) : selected
+        guard items.count <= 2_000 else { return nil }
+        var clip: Element?
+        for item in items {
+            guard shouldContinue() else { return nil }
+            let values = attributes(item, [kAXRoleAttribute, kAXDescriptionAttribute, kAXSelectedAttribute, kAXEnabledAttribute])
+            guard values[kAXRoleAttribute] as? String == kAXLayoutItemRole,
+                  values[kAXDescriptionAttribute] as? String != "Range Selection",
+                  (values[kAXSelectedAttribute] as? NSNumber)?.boolValue == true else { continue }
+            guard clip == nil, (values[kAXEnabledAttribute] as? NSNumber)?.boolValue != false else { return nil }
+            clip = item
+        }
+        guard let clip else { return nil }
+        let contents = children(clip)
+        guard contents.count <= 100 else { return nil }
+        let titles = contents.compactMap { item -> String? in
+            let values = attributes(item, [kAXRoleAttribute, kAXDescriptionAttribute, kAXValueAttribute])
+            guard values[kAXRoleAttribute] as? String == kAXTextFieldRole,
+                  values[kAXDescriptionAttribute] as? String == "Title" else { return nil }
+            return (values[kAXValueAttribute] as? String) ?? ""
+        }
+        guard titles.count == 1, let title = titles.first, !title.isEmpty, title.utf8.count <= 512,
+              title.rangeOfCharacter(from: .controlCharacters) == nil,
+              attributes(controls.project.element, [kAXTitleAttribute])[kAXTitleAttribute] as? String == projectName,
+              (attributes(clip, [kAXSelectedAttribute])[kAXSelectedAttribute] as? NSNumber)?.boolValue == true else { return nil }
+        if let current = mainWindow() {
+            guard equals(current, workspace) || main.map({ equals(current, $0) }) == true else { return nil }
+        }
+        guard shouldContinue() else { return nil }
+        return title
+    }
 }
 
 @MainActor private final class NativeWorkflowSizingDriver: WorkflowSizingDriver {
@@ -369,56 +455,26 @@ extension WorkflowSizingDriver {
             && belongs(target.marker, to: target.window) && belongs(target.analyze, to: target.window) && belongs(target.apply, to: target.window)
     }
 
-    func selectedClipTitle(host: WorkflowSizingHost, projectName: String) -> String? {
+    func selectedClipTitle(host: WorkflowSizingHost, projectName: String) async -> String? {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == host.pid else { return nil }
-        let deadline = ProcessInfo.processInfo.systemUptime + 0.16
-        readDeadline = deadline
-        defer { readDeadline = nil }
-        let root = AXUIElementCreateApplication(host.pid)
-        func find(in window: AXUIElement, _ query: FinalCutAXQuery) -> AXUIElement? {
-            FinalCutAXSearch.find(root: window, query: query, maxDepth: 16, maxNodes: 160,
-                read: { element, names in
-                    Dictionary(uniqueKeysWithValues: names.compactMap { name in
-                        self.attribute(element, name).map { (name, $0) }
-                    })
-                },
-                children: { self.attribute($0, kAXChildrenAttribute) as? [AXUIElement] ?? [] },
-                equals: { CFEqual($0, $1) },
-                shouldContinue: { ProcessInfo.processInfo.systemUptime < deadline })?.element
-        }
-        let project = FinalCutAXQuery(identifier: "editor/timelineContainer/toolbar/projectNamePopUpButton",
-            title: projectName, containersOnly: true)
-        let main = element(root, kAXMainWindowAttribute)
-        let windows = attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
-        guard let window = FinalCutProjectWindow.resolve(main: main, windows: windows,
-            equals: { CFEqual($0, $1) }, isWorkspace: { candidate in
-                FinalCutProjectWindow.isWorkspace(role: text(candidate, kAXRoleAttribute),
-                    subrole: text(candidate, kAXSubroleAttribute),
-                    modal: (attribute(candidate, kAXModalAttribute) as? NSNumber)?.boolValue,
-                    title: text(candidate, kAXTitleAttribute))
-            }),
-              let projectControl = find(in: window, project),
-              let timeline = find(in: window, .init(role: kAXLayoutAreaRole, description: "Project Timeline", containersOnly: true))
-        else { return nil }
-        let selected = attribute(timeline, kAXSelectedChildrenAttribute) as? [AXUIElement]
-        guard let items = selected?.isEmpty == false ? selected : attribute(timeline, kAXChildrenAttribute) as? [AXUIElement],
-              items.count <= 2_000 else { return nil }
-        var clip: AXUIElement?
-        for item in items {
-            guard ProcessInfo.processInfo.systemUptime < deadline, let role = text(item, kAXRoleAttribute) else { return nil }
-            guard role == kAXLayoutItemRole, text(item, kAXDescriptionAttribute) != "Range Selection",
-                  (attribute(item, kAXSelectedAttribute) as? NSNumber)?.boolValue == true else { continue }
-            guard clip == nil, (attribute(item, kAXEnabledAttribute) as? NSNumber)?.boolValue != false else { return nil }
-            clip = item
-        }
-        guard let clip, let children = attribute(clip, kAXChildrenAttribute) as? [AXUIElement], children.count <= 100 else { return nil }
-        let titles = children.filter { text($0, kAXRoleAttribute) == kAXTextFieldRole && text($0, kAXDescriptionAttribute) == "Title" }
-        guard titles.count == 1, let title = text(titles[0], kAXValueAttribute), !title.isEmpty, title.utf8.count <= 512,
-              title.rangeOfCharacter(from: .controlCharacters) == nil,
-              (attribute(clip, kAXSelectedAttribute) as? NSNumber)?.boolValue == true,
-              text(projectControl, kAXTitleAttribute) == projectName,
-              element(root, kAXMainWindowAttribute).map({ current in main.map { CFEqual(current, $0) } ?? false }) == true else { return nil }
-        return title
+        let title = await Task.detached(priority: .utility) {
+            let root = AXUIElementCreateApplication(host.pid)
+            _ = AXUIElementSetMessagingTimeout(root, 0.08)
+            let deadline = ProcessInfo.processInfo.systemUptime + 0.2
+            func ready() -> Bool { ProcessInfo.processInfo.systemUptime < deadline }
+            func read(_ element: AXUIElement, _ names: [String]) -> [String: Any] {
+                ready() ? FinalCutAXAttributes.read(element, names: names) : [:]
+            }
+            func mainWindow() -> AXUIElement? {
+                guard let value = read(root, [kAXMainWindowAttribute])[kAXMainWindowAttribute] as CFTypeRef?,
+                      CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+                return unsafeBitCast(value, to: AXUIElement.self)
+            }
+            return WorkflowClipTitleLookup.read(projectName: projectName, mainWindow: mainWindow, windows: {
+                read(root, [kAXWindowsAttribute])[kAXWindowsAttribute] as? [AXUIElement] ?? []
+            }, attributes: read, equals: { CFEqual($0, $1) }, shouldContinue: ready)
+        }.value
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier == host.pid ? title : nil
     }
     func readSize(_ target: AnyObject) -> CGSize? {
         guard let target = target as? Target, let raw = attribute(target.window, kAXSizeAttribute),

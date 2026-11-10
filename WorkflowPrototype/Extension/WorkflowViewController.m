@@ -463,6 +463,7 @@ static BOOL SSWorkflowPermissionPromptPending;
 @property (nonatomic, copy) NSArray<NSDictionary *> *reviewCuts;
 @property (nonatomic, copy) NSDictionary *reviewResponse;
 @property (nonatomic) BOOL navigationPending;
+@property (nonatomic) BOOL waitingForNavigationContext;
 @property (nonatomic, copy) NSString *pointerReviewState;
 @property (nonatomic, copy) NSString *completionMessage;
 @property (nonatomic, copy) NSDictionary *completionContext;
@@ -1304,14 +1305,19 @@ static BOOL SSWorkflowPermissionPromptPending;
     NSDictionary *context = [self observedProjectContext];
     BOOL ownsPendingAutomaticReview = self.automaticUpdatePending && self.settingsLoaded &&
         self.libraryURL != nil && self.projectUID.length && self.reviewClient.requestID.length;
-    if (!context && (self.handlingTextSettingsChange || ownsPendingAutomaticReview)) return;
+    BOOL navigationContextSettled = self.waitingForNavigationContext && context != nil;
+    if (!context && (self.handlingTextSettingsChange || ownsPendingAutomaticReview || self.waitingForNavigationContext)) return;
+    self.waitingForNavigationContext = NO;
     if (self.completionMessage && (![context[@"projectUID"] isEqual:self.completionContext[@"projectUID"]] ||
         ![context[@"libraryURL"] isEqual:self.completionContext[@"libraryURL"]])) [self clearCompletionMessage];
     [self refreshClipHeaderForContext:context];
     // Proxy refreshes can repeat for the same project. Preserve unsaved edits
     // and an in-flight load instead of replacing either with saved defaults.
     if (context && [context[@"projectUID"] isEqual:self.projectUID] &&
-        [context[@"libraryURL"] isEqual:self.libraryURL]) return;
+        [context[@"libraryURL"] isEqual:self.libraryURL]) {
+        if (navigationContextSettled) [self updateReviewControls];
+        return;
+    }
     [self invalidateReview];
     self.contextGeneration += 1;
     self.settingsSavePending = NO;
@@ -1357,9 +1363,11 @@ static BOOL SSWorkflowPermissionPromptPending;
     __weak SSWorkflowViewController *weakSelf = self;
     [self.windowClient observeSelectionInProject:context[@"projectName"] epoch:epoch update:^(NSString *title) {
         SSWorkflowViewController *owner = weakSelf;
+        NSString *label = title.length ? title : @"Select a timeline clip";
         if (!owner.viewVisible || ![owner.selectionEpoch isEqual:epoch] ||
+            [owner.selectedClipLabel.stringValue isEqualToString:label] ||
             ![[owner observedProjectContext] isEqual:context]) return;
-        owner.selectedClipLabel.stringValue = title.length ? title : @"Select a timeline clip";
+        owner.selectedClipLabel.stringValue = label;
         owner.selectedClipLabel.toolTip = title;
     }];
 }
@@ -1408,6 +1416,7 @@ static BOOL SSWorkflowPermissionPromptPending;
 - (void)invalidateReview {
     [self cancelAutomaticUpdate];
     self.navigationPending = NO;
+    self.waitingForNavigationContext = NO;
     self.reviewGeneration += 1;
     if (self.reviewClient.canCancel) [self.reviewClient cancel];
     [self.reviewClient detach];
@@ -1619,7 +1628,7 @@ static BOOL SSWorkflowPermissionPromptPending;
 }
 
 - (void)updateReviewControlsRefreshingSelection:(BOOL)refreshSelection {
-    BOOL currentRanges = !self.automaticUpdatePending && !self.reviewClient.updatingCuts;
+    BOOL currentRanges = !self.automaticUpdatePending && !self.reviewClient.updatingCuts && !self.waitingForNavigationContext;
     BOOL canChangeSelection = self.reviewClient.canChangeSelection;
     BOOL changed = SSWorkflowSetControlEnabled(self.applyButton, currentRanges && self.reviewClient.canApply);
     changed |= SSWorkflowSetControlEnabled(self.cancelButton, self.reviewClient.canCancel);
@@ -1880,11 +1889,33 @@ static BOOL SSWorkflowPermissionPromptPending;
         // An SDK sequence change may have arrived while navigation was busy.
         // Recheck now, after rendering this response, so invalidation can
         // discard all of the previous project's rows and settings.
-        if (navigationSettled) [self refreshProject];
+        if (navigationSettled) [self refreshProjectAfterNavigation];
         if (self.automaticUpdatePending && !self.reviewClient.busy && !self.automaticUpdateEdit) {
             [self queueAutomaticUpdate];
         }
     }
+}
+
+- (void)scheduleNavigationContextCheck:(dispatch_block_t)completion {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4), dispatch_get_main_queue(), completion);
+}
+
+- (void)refreshProjectAfterNavigation {
+    // The SDK can briefly omit the active sequence as the host restores its
+    // timeline. Hold the review through one recheck, with Apply locked.
+    self.waitingForNavigationContext = YES;
+    [self refreshProject];
+    if (!self.waitingForNavigationContext) return;
+    [self updateReviewControls];
+    NSUInteger generation = self.reviewGeneration;
+    __weak SSWorkflowViewController *weakSelf = self;
+    [self scheduleNavigationContextCheck:^{
+        SSWorkflowViewController *owner = weakSelf;
+        if (!owner.viewVisible || owner.reviewGeneration != generation || !owner.waitingForNavigationContext) return;
+        owner.waitingForNavigationContext = NO;
+        [owner refreshProject];
+        [owner updateReviewControls];
+    }];
 }
 
 - (void)clearCompletionMessage {
