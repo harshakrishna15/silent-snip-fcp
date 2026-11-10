@@ -56,7 +56,8 @@ import Foundation
         // the menu command is only a compatibility fallback.
         let includingRange = workflowOrigin != nil
         let beforeFocus = try timing.measure("capture.selectionBeforeFocus") {
-            try session.readTimelineSelection(includingRange: includingRange)
+            if includingRange { return try session.readTimelineSelection(includingRange: true) }
+            return (clip: Result { try session.selectionSnapshot() }, range: nil)
         }
         let selectionBeforeFocus = try? beforeFocus.clip.get()
         progress("Focusing the project timeline…")
