@@ -26,6 +26,8 @@ Host actions are conditional: range clearing is skipped when the timeline is ver
 
 Open a project and select the particular clip occurrence with audio in the primary storyline. Open **Window → Extensions → Silent Snip**. If shown, use **Connect to Final Cut Pro** to connect the frontend to the current project. No Silent Snip effect is required.
 
+The top bar shows the verified name of the selected timeline clip. To work on part of a clip, use Final Cut Pro's Range Selection tool (**R**) and select a span within one supported clip. Cut Review shows the analyzed time span. The review and its applied cuts stay inside that span.
+
 The supported target is one normal-speed direct asset clip with enabled audio and available source media. It can be audio-only or a camera clip with linked video/audio. Cuts trim the selected clip and its linked video together. Retained clips reference the original media and preserve their editable audio processing. Source trims and repeated uses of the same file are distinguished by the selected occurrence. Split audio/video edits, connected targets, compounds, multicam, and retiming still require additional support.
 
 Other project content is checked for compatibility. Retimed or nested targets, ambiguous selections, disabled audio, unsupported transitions, nested connections, connected dialogue, conflicting lanes, and some timed automation/component trims can prevent output. An isolated analysis render does not remove these editing restrictions.
@@ -37,7 +39,7 @@ The four detection controls are in the Workflow window:
 | Setting | Default | Meaning |
 |---|---|---|
 | Silence Threshold | −40 dBFS | Windows below this level in every channel qualify as quiet. Raising it toward zero includes louder quiet material. |
-| Minimum Silence | 0.5 seconds | The proposed removal must reach this length after padding and frame rounding. |
+| Minimum Silence | 0.5 seconds | A pause qualifies when its removable portion reaches this length after padding and frame rounding, before any target-pause shortening. |
 | Before Speech | 0.1 seconds | Retain this much quiet audio immediately before speech resumes. |
 | After Speech | 0.1 seconds | Retain this much quiet audio immediately after speech ends. |
 
@@ -45,7 +47,9 @@ Minimum Silence accepts 0.0001–10 seconds. Analysis measures audio in 0.01-sec
 
 Choose **Remove Silence** to close the selected pauses, or **Replace with 1-Second Gaps** to replace each selected pause with an editable gap. One second is rounded to the nearest project frame. Gap mode can lengthen a pause that was shorter than one second.
 
-Use **Save Settings** to persist the four detection values and output for the current project. Saving does not start a fresh analysis or export; a retained-audio update already queued by an edit can still finish. Settings are keyed by library URL and project UID in the frontend's own store, so separate projects keep separate values. Reopening the extension or returning to the original project loads its saved values; it does not restore an old review or authorize Apply. Existing Audio Unit instance settings are not automatically migrated.
+With **Remove Silence**, set **Target Pause** to retain original room tone. A target of 0.4 seconds trims the middle of a qualifying two-second pause and leaves roughly 0.4 seconds. Shorter pauses stay intact. Speech padding and inward grid rounding can leave a little more room tone. Use 0 for standard silence removal.
+
+Use **Save Settings** to persist the detection and output values for the current project. An already queued retained-audio update can finish after saving. Settings are keyed by library URL and project UID in the frontend's own store. Reopening the extension or returning to the original project loads its saved settings. Start a new analysis to create a review.
 
 After analysis, a valid detection or output edit disables stale cut selection, navigation and Apply while eligible ranges refresh automatically after a **250 ms pause**. Incomplete or invalid input waits for a valid value. These updates reuse the last analyzed measurements and perform no new export. Typing, Return, leaving a field, **Save Settings** and status polling do not start a fresh Analyze or Apply. If retained updates are unavailable for the analyzed layout, click **Analyze Again** after changing settings. Changes to volume, processing effects, source media or timeline content always require a fresh analysis using **Analyze Audio** or **Analyze Again**.
 
@@ -102,9 +106,13 @@ Unchanged status polls keep the connection alive without rebuilding the cut list
 
 Closing the Workflow window invalidates its review and clears the preview. Applying, cancelling, replacing the review, or editing settings also clears its old preview. The overlay stays above the verified project during hover redraws. Switching to another app immediately hides it while retaining the review; returning to Final Cut restores it from fresh geometry. Other normal Final Cut windows restore project-relative ordering, and floating panels and menus remain above it. Geometry that cannot be verified hides the overlay.
 
-Choose a range from the **Go to Cut** menu to move the playhead to its start. The worker checks the current project and selected occurrence without another Share. When the worker and extension support [Final Cut's timeline SDK](https://developer.apple.com/documentation/professional-video-applications/interacting-with-the-final-cut-pro-timeline), the extension requests one move and the worker verifies the timeline playhead and selection. Older pairs use [Final Cut's timecode navigation](https://support.apple.com/guide/final-cut-pro/ver1632d762/mac). Navigation runs separately from Apply and preserves the review’s inclusion choices.
+Click a cut row to make it active. Use **Go to Cut**, double-click the row, or press **Return** while the list has focus to move to its start. **Up** and **Down** move between rows, and **Space** toggles the active cut. The extension moves the playhead through Final Cut’s timeline SDK on supported pairs. The worker verifies the playhead and selected occurrence. [Apple’s timeline SDK guide](https://developer.apple.com/documentation/professional-video-applications/interacting-with-the-final-cut-pro-timeline)
 
-Use each eligible row's checkbox, or **Select All / Deselect All**, to choose cuts. Apply waits for the worker to acknowledge changes. Unavailable ranges explain their restrictions. Valid detection or output edits automatically recalculate from retained measurements when the analysis used source audio or a verified render directly in the original project. Isolated-render and unsupported layouts require **Analyze Again**. There is no separate Update Cuts button. A settings draft, provisional result or superseded reply cannot authorize Apply or navigation; the latest settings snapshot must be acknowledged first.
+Use the checkboxes or **Select All / Deselect All** to choose cuts. Shift-click a row or use **Shift–Up / Shift–Down** to select a consecutive group, then choose **Keep Selected** or **Cut Selected**. Unavailable cuts explain their restrictions and stay unchecked. The worker acknowledges changes before enabling Apply.
+
+For plain source audio, use **Play Original** and **Play Proposed Cut** to hear the active pause with about 350 ms of context on each side, up to the clip edges. Both versions play at the same source level. Use the **Start** and **End** steppers to narrow an eligible cut by one edit-grid interval at a time. **Reset Cut** restores its original proposal.
+
+Valid detection or output edits automatically recalculate from retained measurements for source audio and eligible verified renders. Unchanged cuts keep their choices and boundary adjustments. If a kept pause changes, the overlapping new cuts stay unchecked and show **Review**. Use **Analyze Again** after changing settings on an isolated-render or unsupported layout.
 
 Automatic range updates perform no Share exchange and do not activate Final Cut Pro when another app is in front. They check the visible settings snapshot, current project and selected occurrence before accepting a result. Apply later obtains fresh project/audio evidence and requires the reviewed cut candidates to match. Automatic range updates do not replace Analyze after timeline, source media, volume, processing effects, presets or bypass changes.
 
