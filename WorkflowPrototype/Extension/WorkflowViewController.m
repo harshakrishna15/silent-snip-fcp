@@ -285,11 +285,23 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 - (NSRect)drawTitle:(NSAttributedString *)title withFrame:(NSRect)frame inView:(NSView *)view { return frame; }
 @end
 
+@interface SSWorkflowCutList : SSWorkflowDocument
+@property (nonatomic, copy) BOOL (^handleReviewKey)(NSEvent *);
+@end
+@implementation SSWorkflowCutList
+- (BOOL)acceptsFirstResponder { return self.arrangedSubviews.count > 0; }
+- (void)keyDown:(NSEvent *)event {
+    if (!self.handleReviewKey || !self.handleReviewKey(event)) [super keyDown:event];
+}
+@end
+
 @interface SSWorkflowCutRow : NSButton
 @property (nonatomic, copy) NSString *startValue;
 @property (nonatomic, copy) NSString *endValue;
 @property (nonatomic, copy) NSString *durationValue;
 @property (nonatomic) BOOL needsReview;
+@property (nonatomic) BOOL activeRow;
+@property (nonatomic, copy) void (^chooseRow)(NSEvent *);
 @property (nonatomic, strong) NSFont *textFont;
 - (NSRect)columnRectForIndex:(NSUInteger)index;
 - (NSTextAlignment)textAlignmentForColumn:(NSUInteger)index;
@@ -297,6 +309,17 @@ static NSColor *SSWorkflowGray(CGFloat value) {
 @end
 @implementation SSWorkflowCutRow
 - (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric, 22); }
+- (BOOL)acceptsFirstResponder { return NO; }
+- (void)mouseDown:(NSEvent *)event {
+    if (self.chooseRow) self.chooseRow(event);
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    if (point.x < 24 && event.clickCount == 1) [super mouseDown:event];
+}
+- (void)setActiveRow:(BOOL)activeRow {
+    if (_activeRow == activeRow) return;
+    _activeRow = activeRow;
+    self.needsDisplay = YES;
+}
 - (NSRect)columnRectForIndex:(NSUInteger)index {
     CGFloat height = ceil(self.textFont.ascender - self.textFont.descender);
     CGFloat origin = index == 0 ? 26 : (index == 1 ? 144 : fmax(262, self.bounds.size.width - 148));
@@ -310,8 +333,10 @@ static NSColor *SSWorkflowGray(CGFloat value) {
     return index == 2 ? [NSFont monospacedDigitSystemFontOfSize:self.textFont.pointSize weight:NSFontWeightMedium] : self.textFont;
 }
 - (void)drawRect:(NSRect)dirtyRect {
-    if (self.tag % 2 == 0) {
-        [[NSColor.labelColor colorWithAlphaComponent:0.035] setFill];
+    if (self.activeRow || self.tag % 2 == 0) {
+        NSColor *fill = self.activeRow ? [NSColor.controlAccentColor colorWithAlphaComponent:0.20] :
+            [NSColor.labelColor colorWithAlphaComponent:0.035];
+        [fill setFill];
         NSRectFillUsingOperation(self.bounds, NSCompositingOperationSourceOver);
     }
     [super drawRect:dirtyRect];
@@ -404,7 +429,7 @@ static BOOL SSWorkflowPermissionPromptPending;
 @property (nonatomic, copy) NSDictionary *submittedAutomaticSettings;
 @property (nonatomic, copy) NSString *automaticUpdateEdit;
 @property (nonatomic, strong) NSButton *verifyButton;
-@property (nonatomic, strong) NSPopUpButton *navigateMenu;
+@property (nonatomic, strong) NSButton *navigateButton;
 @property (nonatomic, strong) NSButton *applyButton;
 @property (nonatomic, strong) NSButton *cancelButton;
 @property (nonatomic, strong) NSButton *retryButton;
@@ -412,7 +437,8 @@ static BOOL SSWorkflowPermissionPromptPending;
 @property (nonatomic, strong) NSButton *noneButton;
 @property (nonatomic, strong) NSTextField *reviewSummary;
 @property (nonatomic, strong) NSProgressIndicator *progressIndicator;
-@property (nonatomic, strong) NSStackView *cutList;
+@property (nonatomic, strong) SSWorkflowCutList *cutList;
+@property (nonatomic, copy) NSString *activeCutID;
 @property (nonatomic, copy) NSArray<NSDictionary *> *reviewCuts;
 @property (nonatomic, copy) NSDictionary *reviewResponse;
 @property (nonatomic) BOOL navigationPending;
@@ -736,22 +762,21 @@ static BOOL SSWorkflowPermissionPromptPending;
     [self styleReviewSummary];
     self.allButton = [NSButton buttonWithTitle:@"Select All" target:self action:@selector(selectAllCuts:)];
     self.noneButton = [NSButton buttonWithTitle:@"Deselect All" target:self action:@selector(deselectAllCuts:)];
-    self.navigateMenu = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
-    [self.navigateMenu addItemWithTitle:@"Go to Cut"];
-    self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
-    self.navigateMenu.controlSize = NSControlSizeSmall;
-    self.navigateMenu.bezelStyle = NSBezelStyleAccessoryBarAction;
-    self.navigateMenu.font = [NSFont systemFontOfSize:11];
-    for (NSButton *button in @[self.allButton, self.noneButton]) {
+    self.navigateButton = [NSButton buttonWithTitle:@"Go to Cut" target:self action:@selector(goToCut:)];
+    self.navigateButton.accessibilityIdentifier = @"silentsnip.workflow.navigate";
+    self.navigateButton.toolTip = @"Move the playhead to the active cut. Return when the cut list has focus.";
+    for (NSButton *button in @[self.navigateButton, self.allButton, self.noneButton]) {
         button.controlSize = NSControlSizeSmall;
         button.font = [NSFont systemFontOfSize:10.5];
         button.bezelStyle = NSBezelStyleAccessoryBarAction;
     }
     NSView *reviewSpring = [NSView new];
     [reviewSpring setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[[self label:@"Cut Review" size:14 weight:NSFontWeightSemibold], reviewSpring, self.navigateMenu, self.allButton, self.noneButton]];
+    NSStackView *reviewActions = [NSStackView stackViewWithViews:@[[self label:@"Cut Review" size:14 weight:NSFontWeightSemibold], reviewSpring, self.navigateButton, self.allButton, self.noneButton]];
     reviewActions.spacing = 6;
-    self.cutList = [SSWorkflowDocument stackViewWithViews:@[]];
+    self.cutList = [SSWorkflowCutList new];
+    __weak SSWorkflowViewController *cutListOwner = self;
+    self.cutList.handleReviewKey = ^BOOL(NSEvent *event) { return [cutListOwner handleReviewKey:event]; };
     self.cutList.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.cutList.alignment = NSLayoutAttributeLeading;
     self.cutList.spacing = 2;
@@ -1303,9 +1328,8 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.analyzeButton.accessibilityIdentifier = @"silentsnip.workflow.analyze";
     self.applyButton.accessibilityIdentifier = @"silentsnip.workflow.apply";
     self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
-    self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
-    [self.navigateMenu removeAllItems];
-    [self.navigateMenu addItemWithTitle:@"Go to Cut"];
+    self.navigateButton.accessibilityIdentifier = @"silentsnip.workflow.navigate";
+    self.activeCutID = nil;
     [self updateReviewControls];
 }
 
@@ -1492,7 +1516,8 @@ static BOOL SSWorkflowPermissionPromptPending;
     changed |= SSWorkflowSetControlEnabled(self.cancelButton, self.reviewClient.canCancel);
     changed |= SSWorkflowSetControlEnabled(self.allButton, currentRanges && canChangeSelection);
     changed |= SSWorkflowSetControlEnabled(self.noneButton, currentRanges && canChangeSelection);
-    changed |= SSWorkflowSetControlEnabled(self.navigateMenu, currentRanges && self.reviewClient.canHighlight);
+    changed |= SSWorkflowSetControlEnabled(self.navigateButton,
+        currentRanges && self.reviewClient.canHighlight && self.activeCutID.length > 0);
     BOOL previousRetryHidden = self.retryButton.hidden;
     BOOL previousApplyHidden = self.applyButton.hidden;
     self.retryButton.hidden = ![self.reviewResponse[@"canRetryVerification"] boolValue];
@@ -1600,8 +1625,7 @@ static BOOL SSWorkflowPermissionPromptPending;
 
 - (BOOL)canReuseCutRowsForCuts:(NSArray<NSDictionary *> *)cuts {
     NSArray<NSView *> *rows = self.cutList.arrangedSubviews;
-    if (cuts.count != self.reviewCuts.count || rows.count != cuts.count ||
-        self.navigateMenu.numberOfItems != (NSInteger)cuts.count + 1) return NO;
+    if (cuts.count != self.reviewCuts.count || rows.count != cuts.count) return NO;
     NSArray<NSString *> *displayedFields = @[@"id", @"start", @"end", @"duration", @"eligible", @"reason", @"needsReview"];
     for (NSUInteger index = 0; index < cuts.count; ++index) {
         if (![rows[index] isKindOfClass:SSWorkflowCutRow.class] || ((SSWorkflowCutRow *)rows[index]).tag != (NSInteger)index) return NO;
@@ -1648,7 +1672,7 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.reviewResponse = response;
     if (!self.reviewClient.busy) {
         self.verifyButton.accessibilityIdentifier = @"silentsnip.workflow.verify";
-        self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
+        self.navigateButton.accessibilityIdentifier = @"silentsnip.workflow.navigate";
     }
     BOOL deferRanges = self.automaticUpdatePending && !terminal;
     NSArray *cuts = deferRanges || [state isEqual:@"navigating"] ? self.reviewCuts : (response[@"cuts"] ?: @[]);
@@ -1656,17 +1680,9 @@ static BOOL SSWorkflowPermissionPromptPending;
     BOOL rebuildRows = cutsChanged && ![self canReuseCutRowsForCuts:cuts];
     if (cutsChanged) self.reviewCuts = cuts;
     if (rebuildRows) {
-        [self.navigateMenu removeAllItems];
-        [self.navigateMenu addItemWithTitle:@"Go to Cut"];
         for (NSView *row in self.cutList.arrangedSubviews.copy) [row removeFromSuperview];
         for (NSUInteger index = 0; index < cuts.count; ++index) {
             NSDictionary *cut = cuts[index];
-            NSMenuItem *navigation = [[NSMenuItem alloc] initWithTitle:
-                [NSString stringWithFormat:@"%lu: %@ – %@", (unsigned long)index + 1, cut[@"start"], cut[@"end"]]
-                action:@selector(goToCut:) keyEquivalent:@""];
-            navigation.target = self;
-            navigation.representedObject = cut[@"id"];
-            [self.navigateMenu.menu addItem:navigation];
             NSString *title = [NSString stringWithFormat:@"%@ – %@  (%@)", cut[@"start"], cut[@"end"], cut[@"duration"]];
             SSWorkflowCutRow *row = [[SSWorkflowCutRow alloc] initWithFrame:NSZeroRect];
             row.cell = [SSWorkflowCutCell new];
@@ -1693,9 +1709,18 @@ static BOOL SSWorkflowPermissionPromptPending;
             }
             row.accessibilityHelp = row.toolTip;
             row.accessibilityIdentifier = [@"silentsnip.workflow.cut." stringByAppendingString:cut[@"id"]];
+            __weak SSWorkflowViewController *weakSelf = self;
+            row.chooseRow = ^(NSEvent *event) {
+                SSWorkflowViewController *owner = weakSelf;
+                [owner.view.window makeFirstResponder:owner.cutList];
+                [owner selectReviewRow:index scroll:NO];
+                if (event.clickCount == 2) [owner goToCut:nil];
+            };
             [self.cutList addArrangedSubview:row];
             [row.widthAnchor constraintEqualToAnchor:self.cutList.widthAnchor constant:-12].active = YES;
         }
+        NSUInteger index = [self activeCutIndex];
+        [self selectReviewRow:index == NSNotFound ? 0 : index scroll:NO];
         [(SSWorkflowContentView *)self.view requestDefaultCursorRefreshForPhase:@"rows"];
     }
     NSString *summary = response[@"summary"] ?: @"";
@@ -1820,8 +1845,9 @@ static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
         [self projectContext:[self observedProjectContext] hasSameIdentityAs:context];
 }
 
-- (void)goToCut:(NSMenuItem *)sender {
-    if (!self.reviewClient.canHighlight || !self.viewVisible || self.automaticUpdatePending) return;
+- (void)goToCut:(id)sender {
+    NSString *cutID = self.activeCutID;
+    if (!cutID.length || !self.reviewClient.canHighlight || !self.viewVisible || self.automaticUpdatePending) return;
     NSDictionary *context = [self observedProjectContext];
     if (![self projectContext:context hasSameIdentityAs:@{@"projectUID": self.projectUID ?: @"",
         @"libraryURL": self.libraryURL ?: NSNull.null}]) return;
@@ -1834,23 +1860,23 @@ static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
     BOOL accepted;
     if (useSDK) {
         NSString *gesture = NSUUID.UUID.UUIDString;
-        self.navigateMenu.accessibilityIdentifier = [@"silentsnip.workflow.navigate.requested." stringByAppendingString:gesture];
-        self.navigateMenu.enabled = NO;
+        self.navigateButton.accessibilityIdentifier = [@"silentsnip.workflow.navigate.requested." stringByAppendingString:gesture];
+        self.navigateButton.enabled = NO;
         NSUInteger generation = self.reviewGeneration;
         NSUInteger contextGeneration = self.contextGeneration;
         __weak SSWorkflowViewController *weakSelf = self;
-        accepted = [self.reviewClient navigateCut:sender.representedObject gesture:gesture move:^BOOL(NSDictionary *permit) {
+        accepted = [self.reviewClient navigateCut:cutID gesture:gesture move:^BOOL(NSDictionary *permit) {
             SSWorkflowViewController *owner = weakSelf;
             return owner && owner.viewVisible && owner.reviewGeneration == generation &&
                 owner.contextGeneration == contextGeneration && !owner.automaticUpdatePending &&
                 [owner movePlayheadForPermit:permit context:context window:window];
         }];
     } else {
-        accepted = [self.reviewClient highlightCut:sender.representedObject];
+        accepted = [self.reviewClient highlightCut:cutID];
     }
     if (!accepted) {
         self.navigationPending = NO;
-        self.navigateMenu.accessibilityIdentifier = @"silentsnip.workflow.navigate";
+        self.navigateButton.accessibilityIdentifier = @"silentsnip.workflow.navigate";
     }
     [self setControlsEnabled:self.settingsLoaded && (!self.reviewClient.busy || self.reviewClient.updatingCuts)];
     [self updateReviewControls];
@@ -1988,9 +2014,53 @@ static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
     if (self.reviewClient.canCancel) [self.reviewClient cancel];
     [self updateReviewControls];
 }
+
+- (NSUInteger)activeCutIndex {
+    return [self.reviewCuts indexOfObjectPassingTest:^BOOL(NSDictionary *cut, NSUInteger index, BOOL *stop) {
+        return [cut[@"id"] isEqual:self.activeCutID];
+    }];
+}
+
+- (void)selectReviewRow:(NSUInteger)index scroll:(BOOL)scroll {
+    NSArray<SSWorkflowCutRow *> *rows = (NSArray *)self.cutList.arrangedSubviews;
+    self.activeCutID = index < self.reviewCuts.count ? self.reviewCuts[index][@"id"] : nil;
+    for (SSWorkflowCutRow *row in rows) row.activeRow = (NSUInteger)row.tag == index;
+    if (scroll && index < rows.count) [rows[index] scrollRectToVisible:rows[index].bounds];
+}
+
+- (BOOL)handleReviewKey:(NSEvent *)event {
+    if (self.reviewCuts.count == 0 || event.charactersIgnoringModifiers.length != 1 ||
+        (event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
+            NSEventModifierFlagOption | NSEventModifierFlagShift))) return NO;
+    NSUInteger index = [self activeCutIndex];
+    if (index == NSNotFound) index = 0;
+    switch ([event.charactersIgnoringModifiers characterAtIndex:0]) {
+        case NSUpArrowFunctionKey:
+            [self selectReviewRow:index > 0 ? index - 1 : 0 scroll:YES];
+            return YES;
+        case NSDownArrowFunctionKey:
+            [self selectReviewRow:MIN(index + 1, self.reviewCuts.count - 1) scroll:YES];
+            return YES;
+        case ' ': {
+            NSButton *row = (NSButton *)self.cutList.arrangedSubviews[index];
+            if (row.enabled) {
+                row.state = row.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
+                [self toggleCut:row];
+            }
+            return YES;
+        }
+        case '\r':
+        case '\x03':
+            [self goToCut:nil];
+            return YES;
+        default: return NO;
+    }
+}
+
 - (void)toggleCut:(NSButton *)sender {
     NSUInteger index = (NSUInteger)sender.tag;
     if (!self.reviewClient.canChangeSelection || index >= self.reviewCuts.count) return;
+    [self selectReviewRow:index scroll:NO];
     NSDictionary *cut = self.reviewCuts[index];
     if (![self.reviewClient setCut:cut[@"id"] included:sender.state == NSControlStateValueOn]) {
         sender.state = [cut[@"included"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;

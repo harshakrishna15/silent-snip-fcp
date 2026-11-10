@@ -355,7 +355,7 @@ static void unexpectedWindowBoundary(void) {
 - (BOOL)highlightCut:(NSString *)cutID { self.highlightedCut = cutID; self.fakeBusy = YES; return YES; }
 - (BOOL)navigateCut:(NSString *)cutID gesture:(NSString *)gesture move:(BOOL (^)(NSDictionary *))move {
     self.nativeMove = move;
-    if (!self.owner.navigateMenu.enabled) self.nativeNavigationMarker = self.owner.navigateMenu.accessibilityIdentifier;
+    if (!self.owner.navigateButton.enabled) self.nativeNavigationMarker = self.owner.navigateButton.accessibilityIdentifier;
     self.fakeBusy = YES;
     return YES;
 }
@@ -1050,7 +1050,6 @@ static void inclusionAcknowledgmentsKeepExistingCutControls(void) {
     SSFakeWorkflowReviewClient *client = beginReview(controller);
     SSWorkflowCutRow *row = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.firstObject;
     NSView *rowParent = row.superview;
-    NSMenuItem *menuItem = controller.navigateMenu.itemArray.lastObject;
     NSString *accessibilityID = row.accessibilityIdentifier;
     NSString *accessibilityLabel = row.accessibilityLabel;
     check(rowParent && row.cell.state == NSControlStateValueOn && accessibilityID.length && accessibilityLabel.length,
@@ -1075,9 +1074,8 @@ static void inclusionAcknowledgmentsKeepExistingCutControls(void) {
     cut[@"included"] = @NO;
     response[@"cuts"] = @[[cut copy]];
     [client deliver:response busy:NO canApply:YES];
-    check(controller.cutList.arrangedSubviews.firstObject == row && row.superview == rowParent &&
-          controller.navigateMenu.itemArray.lastObject == menuItem,
-          @"An inclusion acknowledgment keeps the attached checkbox and its exact menu item");
+    check(controller.cutList.arrangedSubviews.firstObject == row && row.superview == rowParent && row.activeRow,
+          @"An inclusion acknowledgment keeps the same active, attached checkbox");
     check(row.cell.state == NSControlStateValueOff && [row.accessibilityLabel isEqual:accessibilityLabel] &&
           [row.accessibilityIdentifier isEqual:accessibilityID] && row.target == controller && row.action == @selector(toggleCut:),
           @"The native checkbox stores the acknowledged state and keeps its accessibility identity and action");
@@ -1085,18 +1083,55 @@ static void inclusionAcknowledgmentsKeepExistingCutControls(void) {
     NSArray<NSArray<NSString *> *> *displayEdits = @[@[@"start", @"1.500"], @[@"reason", @"A newly protected range"], @[@"id", @"new-cut"]];
     for (NSArray<NSString *> *edit in displayEdits) {
         SSWorkflowCutRow *priorRow = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.firstObject;
-        NSMenuItem *priorItem = controller.navigateMenu.itemArray.lastObject;
         cut[edit[0]] = edit[1];
         response[@"cuts"] = @[[cut copy]];
         [client deliver:response busy:NO canApply:YES];
-        check(controller.cutList.arrangedSubviews.firstObject != priorRow && controller.navigateMenu.itemArray.lastObject != priorItem,
-              @"Changed timing, reason, or identity rebuilds the row and menu item");
+        check(controller.cutList.arrangedSubviews.firstObject != priorRow,
+              @"Changed timing, reason, or identity rebuilds the row");
     }
     SSWorkflowCutRow *updated = (SSWorkflowCutRow *)controller.cutList.arrangedSubviews.firstObject;
     check([updated.startValue isEqual:@"1.500"] && [updated.accessibilityHelp containsString:@"A newly protected range"] &&
           [updated.accessibilityIdentifier isEqual:@"silentsnip.workflow.cut.new-cut"] &&
-          [controller.navigateMenu.itemArray.lastObject.representedObject isEqual:@"new-cut"],
-          @"Replacement rows and menu entries expose the current reviewed details");
+          [controller.activeCutID isEqual:@"new-cut"],
+          @"Replacement rows expose the current reviewed details");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static NSEvent *reviewKey(unichar character, NSEventModifierFlags flags) {
+    NSString *text = [NSString stringWithCharacters:&character length:1];
+    return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
+        timestamp:0 windowNumber:0 context:nil characters:text charactersIgnoringModifiers:text
+        isARepeat:NO keyCode:0];
+}
+
+static void keyboardReviewKeepsTheActiveRowThroughAcknowledgment(void) {
+    SSTestWorkflowViewController *controller = openController(host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A")));
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    NSMutableDictionary *response = [reviewResponse(@"review", @"Review the pauses") mutableCopy];
+    NSMutableDictionary *second = [response[@"cuts"][0] mutableCopy];
+    second[@"id"] = @"cut-2";
+    second[@"start"] = @"3.000";
+    response[@"cuts"] = @[response[@"cuts"][0], second.copy];
+    [client deliver:response busy:NO canApply:YES];
+    SSWorkflowCutList *list = controller.cutList;
+    check(list.acceptsFirstResponder && [controller.activeCutID isEqual:@"cut-1"], @"The list can take focus on the first cut");
+    [list keyDown:reviewKey(NSDownArrowFunctionKey, 0)];
+    SSWorkflowCutRow *row = list.arrangedSubviews[1];
+    check(row.activeRow && [controller.activeCutID isEqual:@"cut-2"], @"Down selects the next row without changing inclusion");
+    [list keyDown:reviewKey(' ', 0)];
+    [list keyDown:reviewKey(' ', 0)];
+    check(!row.enabled && row.state == NSControlStateValueOff, @"Space toggles once while its acknowledgment is pending");
+    NSPoint before = controller.reviewScroll.contentView.bounds.origin;
+    second[@"included"] = @NO;
+    response[@"cuts"] = @[response[@"cuts"][0], second.copy];
+    [client deliver:response busy:NO canApply:YES];
+    check(controller.cutList == list && list.arrangedSubviews[1] == row && row.activeRow && row.enabled &&
+          NSEqualPoints(before, controller.reviewScroll.contentView.bounds.origin),
+          @"The acknowledgment keeps the responder, active checkbox and scroll origin");
+    [list keyDown:reviewKey('\r', 0)];
+    check([client.highlightedCut isEqual:@"cut-2"], @"Return jumps to the active cut without opening a menu");
     closeController(controller);
     groupCount += 1;
 }
@@ -1190,26 +1225,26 @@ static void sdkNavigationRequiresExactProjectWindowAndReturnedTime(void) {
     SSFakeWorkflowReviewClient *client = beginReview(controller);
     client.fakeNativeNavigation = YES;
     controller.fakeOwnsNavigationWindow = YES;
-    [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+    [controller goToCut:controller.navigateButton];
     check(client.nativeMove && [client.nativeNavigationMarker hasPrefix:@"silentsnip.workflow.navigate.requested."] &&
-          !controller.navigateMenu.enabled && !client.highlightedCut,
+          !controller.navigateButton.enabled && !client.highlightedCut,
           @"SDK navigation exposes its disabled marker and skips the old keyboard request");
     check(client.nativeMove(permit) && current.testTimeline.moveCount == 1 && CMTimeCompare(current.testTimeline.currentPlayhead, target) == 0,
           @"The SDK receives the exact fractional frame at a nonzero project origin");
     [client deliver:reviewResponse(@"review", @"Navigation done") busy:NO canApply:YES];
-    [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+    [controller goToCut:controller.navigateButton];
     controller.fakeOwnsNavigationWindow = NO;
     check(!client.nativeMove(permit) && current.testTimeline.moveCount == 1,
           @"Losing the key Workflow window after the gesture denies SDK movement");
     [client deliver:reviewResponse(@"review", @"Navigation denied") busy:NO canApply:YES];
     controller.fakeOwnsNavigationWindow = YES;
-    [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+    [controller goToCut:controller.navigateButton];
     current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-A.fcpbundle", @"Same name");
     check(!client.nativeMove(permit) && current.testTimeline.moveCount == 1,
           @"An unannounced same-name project change cannot use the earlier permit");
     current.testTimeline.sequence = source;
     [client deliver:reviewResponse(@"review", @"Navigation denied") busy:NO canApply:YES];
-    [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+    [controller goToCut:controller.navigateButton];
     current.testTimeline.usesFixedMoveResult = YES;
     current.testTimeline.fixedMoveResult = CMTimeAdd(target, CMTimeMake(1, 60000));
     check(!client.nativeMove(permit) && current.testTimeline.moveCount == 2 && !client.highlightedCut,
@@ -1227,7 +1262,7 @@ static void navigationSettlementRefreshesDeferredProjectChanges(void) {
         client.fakeNativeNavigation = sdk.boolValue;
         controller.fakeOwnsNavigationWindow = YES;
         NSView *originalRow = controller.cutList.arrangedSubviews.firstObject;
-        [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+        [controller goToCut:controller.navigateButton];
         [client deliver:reviewResponse(@"navigating", @"Moving") busy:YES canApply:NO];
         current.testTimeline.currentPlayhead = CMTimeMake(7229, 2);
         [client deliver:reviewResponse(@"review", @"Playhead moved") busy:NO canApply:YES];
@@ -1237,7 +1272,7 @@ static void navigationSettlementRefreshesDeferredProjectChanges(void) {
               [controller.statusLabel.stringValue isEqual:@"Playhead moved"],
               @"Settlement in the same project refreshes its playhead without rebuilding the review or overriding feedback");
 
-        [controller goToCut:controller.navigateMenu.itemArray.lastObject];
+        [controller goToCut:controller.navigateButton];
         // Also cover a declined SDK request that never gets a navigating reply.
         [client deliver:reviewResponse(sdk.boolValue ? @"review" : @"navigating", @"Moving") busy:YES canApply:NO];
         current.testTimeline.sequence = sequence(@"project-B", @"/Test/Library-A.fcpbundle", @"Same name");
@@ -1248,7 +1283,7 @@ static void navigationSettlementRefreshesDeferredProjectChanges(void) {
         [client deliver:reviewResponse(@"review", @"Final Cut Pro did not confirm the playhead move") busy:NO canApply:YES];
         check([controller.projectUID isEqual:@"project-B"] && controller.settings.loads.count == 2 &&
               [controller.settings.loads[1].projectUID isEqual:@"project-B"] && controller.reviewClient == nil &&
-              controller.cutList.arrangedSubviews.count == 0 && !controller.applyButton.enabled && !controller.navigateMenu.enabled,
+              controller.cutList.arrangedSubviews.count == 0 && !controller.applyButton.enabled && !controller.navigateButton.enabled,
               @"Settling navigation picks up the deferred same-name project change and drops stale rows");
         closeController(controller);
     }
@@ -1262,15 +1297,15 @@ static void retainedUpdatesNavigationAndRecovery(void) {
     SSFakeWorkflowReviewClient *client = beginReview(controller);
     client.fakeCanUpdate = YES;
     [controller updateReviewControls];
-    check(!subtreeHasButton(controller.view, @"Update Cuts") && controller.navigateMenu.enabled,
+    check(!subtreeHasButton(controller.view, @"Update Cuts") && controller.navigateButton.enabled,
           @"Eligible review keeps navigation without a separate Update Cuts button");
     check([controller.settingsPanel isAccessibilityElement] &&
           [controller.settingsPanel.accessibilityRole isEqual:NSAccessibilityGroupRole] &&
           [controller.settingsPanel.accessibilityIdentifier isEqual:@"silentsnip.workflow.settings"],
           @"The visible settings panel is the natural accessible group used to bind automatic snapshots");
-    NSMenuItem *cut = controller.navigateMenu.itemArray.lastObject;
-    check([cut.representedObject isEqual:@"cut-1"] && cut.action == @selector(goToCut:),
-          @"Navigation menu uses exact reviewed cut IDs");
+    NSButton *cut = controller.navigateButton;
+    check([controller.activeCutID isEqual:@"cut-1"] && cut.action == @selector(goToCut:),
+          @"The Go to Cut button uses the exact reviewed cut ID");
     [controller goToCut:cut];
     check([client.highlightedCut isEqual:@"cut-1"] && !controller.fields[0].enabled,
           @"Go to Cut dispatches navigation and locks settings while busy");
@@ -1279,7 +1314,7 @@ static void retainedUpdatesNavigationAndRecovery(void) {
     [controller settingsChanged:controller.fields[0]];
     [controller settingsChanged:controller.fields[0]];
     check(controller.reviewClient == client && client.dirtyCount >= 1 && client.cancelCount == 0 &&
-          !controller.applyButton.enabled && !controller.navigateMenu.enabled && controller.fields[0].enabled &&
+          !controller.applyButton.enabled && !controller.navigateButton.enabled && controller.fields[0].enabled &&
           client.automaticUpdatePayloads.count == 0,
           @"Repeated drafts retain audio and disable stale actions while awaiting the quiet debounce");
     runAutomaticUpdates(controller);
@@ -1460,7 +1495,7 @@ static void automaticDraftsCoalesceWithoutNewAnalysis(void) {
             object:controller.fields[0]]];
     }
     check(client.automaticUpdatePayloads.count == 0 && controller.automaticUpdatePending &&
-          controller.fields[0].enabled && !controller.applyButton.enabled && !controller.navigateMenu.enabled,
+          controller.fields[0].enabled && !controller.applyButton.enabled && !controller.navigateButton.enabled,
           @"Typing drafts remains editable and disables stale actions without immediately dispatching work");
     check(controller.automaticUpdateCompletions.count > 0, @"A valid edit schedules a quiet automatic refresh");
     runAutomaticUpdates(controller);
@@ -3219,7 +3254,7 @@ static void visualHierarchyRendersStatesWithoutChangingAuthority(void) {
         updating[@"message"] = @"Updating cut ranges…"; updating[@"progress"] = @0.8;
         [client deliver:updating busy:YES canApply:NO];
         settleOffscreenLayout(parent, controller);
-        check(controller.fields[0].enabled && !controller.applyButton.enabled && !controller.navigateMenu.enabled,
+        check(controller.fields[0].enabled && !controller.applyButton.enabled && !controller.navigateButton.enabled,
               @"Automatic-update presentation keeps editing available while stale cuts and navigation stay inactive");
         checkNoImplicitReturnAction(controller);
         checkOnlyTimestampScrolls(controller);
@@ -3445,6 +3480,7 @@ int main(void) {
         analyzeDispatchPinsPayloadAndGesture();
         applyRequiresReviewAndFreshGesture();
         inclusionAcknowledgmentsKeepExistingCutControls();
+        keyboardReviewKeepsTheActiveRowThroughAcknowledgment();
         reviewResponsesLayOutFinalContentOnce();
         sdkNavigationRequiresExactProjectWindowAndReturnedTime();
         navigationSettlementRefreshesDeferredProjectChanges();

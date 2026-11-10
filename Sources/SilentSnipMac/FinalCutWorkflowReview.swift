@@ -226,7 +226,7 @@ extension FinalCutAXSession {
             let id = values[kAXIdentifierAttribute] as? String
             let role = values[kAXRoleAttribute] as? String
             if id == identifier {
-                guard [kAXPopUpButtonRole, kAXMenuButtonRole].contains(role ?? ""),
+                guard [kAXButtonRole, kAXPopUpButtonRole, kAXMenuButtonRole].contains(role ?? ""),
                       (attribute(element, kAXEnabledAttribute) as? NSNumber)?.boolValue == false,
                       marker.map({ CFEqual($0, element) }) != false else { return false }
                 marker = element
