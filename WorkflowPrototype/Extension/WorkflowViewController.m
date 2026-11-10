@@ -446,6 +446,11 @@ static BOOL SSWorkflowPermissionPromptPending;
 @property (nonatomic, strong) NSButton *allButton;
 @property (nonatomic, strong) NSButton *noneButton;
 @property (nonatomic, strong) NSStackView *boundaryActions;
+@property (nonatomic, strong) NSStackView *auditionActions;
+@property (nonatomic, strong) NSStackView *perCutActions;
+@property (nonatomic, strong) NSButton *playOriginalButton;
+@property (nonatomic, strong) NSButton *playProposedButton;
+@property (nonatomic, strong) NSButton *stopAuditionButton;
 @property (nonatomic, strong) NSStepper *startStepper;
 @property (nonatomic, strong) NSStepper *endStepper;
 @property (nonatomic, strong) NSButton *resetCutButton;
@@ -869,8 +874,28 @@ static BOOL SSWorkflowPermissionPromptPending;
     self.boundaryActions.spacing = 7;
     self.boundaryActions.alignment = NSLayoutAttributeCenterY;
     self.boundaryActions.hidden = YES;
+    self.playOriginalButton = [NSButton buttonWithTitle:@"Play Original" target:self action:@selector(playAudition:)];
+    self.playProposedButton = [NSButton buttonWithTitle:@"Play Proposed Cut" target:self action:@selector(playAudition:)];
+    self.stopAuditionButton = [NSButton buttonWithTitle:@"Stop" target:self action:@selector(stopAudition:)];
+    self.playOriginalButton.toolTip = @"Play the active pause with audio on either side.";
+    self.playProposedButton.toolTip = @"Play the same audio with the active cut applied.";
+    self.stopAuditionButton.accessibilityLabel = @"Stop Cut Audition";
+    NSArray *playButtons = @[self.playOriginalButton, self.playProposedButton, self.stopAuditionButton];
+    for (NSButton *button in playButtons) {
+        button.controlSize = NSControlSizeSmall;
+        button.bezelStyle = NSBezelStyleAccessoryBarAction;
+        button.font = [NSFont systemFontOfSize:10.5];
+    }
+    self.auditionActions = [NSStackView stackViewWithViews:playButtons];
+    self.auditionActions.spacing = 4;
+    self.auditionActions.alignment = NSLayoutAttributeCenterY;
+    self.auditionActions.hidden = YES;
+    self.perCutActions = [NSStackView stackViewWithViews:@[self.auditionActions, self.boundaryActions]];
+    self.perCutActions.spacing = 6;
+    self.perCutActions.alignment = NSLayoutAttributeCenterY;
+    self.perCutActions.hidden = YES;
     self.reviewPanel = [self cardWithViews:@[reviewActions, self.reviewSummary, self.analyzedSpanLabel,
-        self.statusDetails, self.cutColumnHeader, self.reviewScroll, self.boundaryActions]];
+        self.statusDetails, self.cutColumnHeader, self.reviewScroll, self.perCutActions]];
     self.reviewPanel.spacing = 4;
     [self.settingsPanel setHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationVertical];
     [self.reviewPanel setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
@@ -990,6 +1015,10 @@ static BOOL SSWorkflowPermissionPromptPending;
         self.outputActions.spacing = outputWide ? 8 : 4;
         self.reviewSummary.preferredMaxLayoutWidth = cardWidth - 24;
         self.statusDetails.preferredMaxLayoutWidth = cardWidth - 24;
+        BOOL stackCutActions = !self.auditionActions.hidden && !self.boundaryActions.hidden &&
+            ceil(self.auditionActions.fittingSize.width) + ceil(self.boundaryActions.fittingSize.width) + 6 > cardWidth - 24;
+        self.perCutActions.orientation = stackCutActions ? NSUserInterfaceLayoutOrientationVertical : NSUserInterfaceLayoutOrientationHorizontal;
+        self.perCutActions.alignment = stackCutActions ? NSLayoutAttributeLeading : NSLayoutAttributeCenterY;
         [self.content layoutSubtreeIfNeeded];
         [self.reviewScroll tile];
         CGFloat listWidth = self.reviewScroll.contentView.bounds.size.width;
@@ -1596,6 +1625,7 @@ static BOOL SSWorkflowPermissionPromptPending;
     changed |= SSWorkflowSetControlEnabled(self.cancelButton, self.reviewClient.canCancel);
     changed |= [self updateGroupControls];
     [self updateBoundaryControls];
+    [self updateAuditionControls];
     changed |= SSWorkflowSetControlEnabled(self.navigateButton,
         currentRanges && self.reviewClient.canHighlight && self.activeCutID.length > 0);
     BOOL previousRetryHidden = self.retryButton.hidden;
@@ -2188,6 +2218,37 @@ static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
 
 - (void)resetCutBoundary:(id)sender { [self sendBoundaryEdit:SSReviewBoundaryReset]; }
 
+- (void)updateAuditionControls {
+    self.auditionActions.hidden = ![self.reviewResponse[@"canAudition"] boolValue];
+    self.perCutActions.hidden = self.auditionActions.hidden && self.boundaryActions.hidden;
+    NSUInteger index = [self activeCutIndex];
+    BOOL ready = !self.auditionActions.hidden && !self.automaticUpdatePending && self.reviewClient.canChangeSelection;
+    BOOL playable = ready && index < self.reviewCuts.count && [self.reviewCuts[index][@"eligible"] boolValue];
+    self.playOriginalButton.enabled = self.playProposedButton.enabled = playable;
+    self.stopAuditionButton.enabled = ready;
+    if (ready) {
+        self.playOriginalButton.accessibilityIdentifier = @"silentsnip.workflow.audition-original";
+        self.playProposedButton.accessibilityIdentifier = @"silentsnip.workflow.audition-proposed";
+    }
+}
+
+- (void)playAudition:(NSButton *)sender {
+    if (!sender.enabled || !self.activeCutID.length || !self.reviewClient.canChangeSelection) return;
+    BOOL proposed = sender == self.playProposedButton;
+    NSString *gesture = NSUUID.UUID.UUIDString;
+    sender.accessibilityIdentifier = [NSString stringWithFormat:@"silentsnip.workflow.audition-%@.requested.%@",
+        proposed ? @"proposed" : @"original", gesture];
+    sender.enabled = NO;
+    [self.reviewClient auditionCut:self.activeCutID proposed:proposed gesture:gesture];
+    [self updateReviewControls];
+}
+
+- (void)stopAudition:(id)sender {
+    if (!self.stopAuditionButton.enabled) return;
+    [self.reviewClient stopAudition];
+    [self updateReviewControls];
+}
+
 - (void)selectReviewRow:(NSUInteger)index scroll:(BOOL)scroll extending:(BOOL)extending {
     NSArray<SSWorkflowCutRow *> *rows = (NSArray *)self.cutList.arrangedSubviews;
     NSString *previous = self.activeCutID;
@@ -2201,6 +2262,7 @@ static BOOL SSExactNavigationTime(CMTime actual, CMTime expected) {
     }
     [self updateGroupControls];
     [self updateBoundaryControls];
+    [self updateAuditionControls];
     if (scroll && index < rows.count) [rows[index] scrollRectToVisible:rows[index].bounds];
 }
 

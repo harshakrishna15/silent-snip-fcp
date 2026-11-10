@@ -51,6 +51,12 @@ import SilentSnipMac
             interactive.canAuthorizeNativeNavigation(command)
         }, verifyNativeNavigation: { [unowned self] request, result, cutID in
             try await interactive.verifyNativeNavigation(request, result: result, cutID: cutID)
+        }, auditionOperation: { [unowned self] request, result, cut, mode in
+            try await interactive.playAudition(request, result: result, cut: cut, mode: mode)
+        }, authorizeAudition: { [unowned self] command in
+            interactive.canAuthorizeAudition(command)
+        }, endAudition: { [unowned self] in
+            interactive.stopAudition()
         }, verificationOperation: { [unowned self] request, progress in
             await waitForStorageCleanup()
             try await withPrototype(request: request.id) {

@@ -4,6 +4,40 @@ import XCTest
 @testable import SilentSnipMac
 
 @MainActor final class AnalysisReviewCoordinatorTests: XCTestCase {
+    func testAuditionRequiresTheLiveGestureAndStopsWithoutChangingThePlan() async throws {
+        let fixture = try makeFixture(role: "music"); defer { fixture.remove() }
+        let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),
+            libraryURL: fixture.directory.appendingPathComponent("Audition.fcpbundle"), projectUID: "review-fixture", projectName: "Review Fixture")
+        let request = AnalyzeRequest(id: UUID(), settings: .defaults, outputMode: .remove, workflowOrigin: origin)
+        let gesture = UUID()
+        var latest: ReviewResponse?, plays = 0, cancelled = false
+        let coordinator = AnalysisReviewCoordinator(operation: { _, _ in fixture.result },
+            auditionOperation: { _, _, _, mode in
+                XCTAssertEqual(mode, .proposed)
+                plays += 1
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { cancelled = true; throw error }
+            }, authorizeAudition: { $0.auditionGesture == gesture },
+            emit: { latest = $0.response }, record: { _, _, _ in })
+        defer { coordinator.stop() }
+        coordinator.start(request); try await waitUntil { latest?.state == "review" }
+        let initial = try XCTUnwrap(latest)
+        let cut = try XCTUnwrap(initial.cuts.first)
+        XCTAssertEqual(initial.canAudition, true)
+        coordinator.handle(.init(request: request.id, command: .audition, cutID: cut.id, expectedRevision: initial.revision,
+            view: origin.view, auditionMode: .proposed, auditionGesture: UUID()))
+        XCTAssertEqual(plays, 0)
+        let play = ReviewCommand(request: request.id, command: .audition, cutID: cut.id, expectedRevision: latest?.revision,
+            view: origin.view, auditionMode: .proposed, auditionGesture: gesture)
+        coordinator.handle(play)
+        try await waitUntil { plays == 1 }
+        coordinator.handle(play)
+        coordinator.handle(.init(request: request.id, command: .stopAudition, expectedRevision: latest?.revision, view: origin.view))
+        try await waitUntil { cancelled }
+        XCTAssertEqual(plays, 1)
+        XCTAssertEqual(latest?.cuts, initial.cuts)
+    }
+
     func testAutomaticPreviewRejectsSupersededNativeEditWithoutChangingAcceptedRevisionAndRecoversLatestDraft() async throws {
         let fixture = try makeFixture(); defer { fixture.remove() }
         let origin = try WorkflowReviewOrigin(view: UUID(), gesture: UUID(),

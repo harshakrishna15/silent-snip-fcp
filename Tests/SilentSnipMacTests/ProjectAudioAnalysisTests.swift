@@ -1,4 +1,5 @@
 import SilentSnipCore
+import AVFoundation
 import Foundation
 import Darwin
 import XCTest
@@ -234,6 +235,35 @@ final class ProjectAudioAnalysisTests: XCTestCase {
         let edited = try TimelineParser.parse(data: output.xmlData)
         XCTAssertEqual(edited.clips.filter(\.hasAudio).map(\.sourceStart), [RationalTime(12), RationalTime(15)])
         XCTAssertEqual(edited.projectRange.duration, RationalTime(5))
+    }
+
+    @MainActor func testCutAuditionComposesTheExactRetainedSourceSpansAtNaturalRate() async throws {
+        let file = try wave(frames: 288_000, channels: 1) { _, _ in 8_192 }
+        let clip = TimeRange(start: RationalTime(10), end: RationalTime(14))
+        let source = TimeRange(start: RationalTime(1), end: RationalTime(5))
+        let cut = TimeRange(start: RationalTime(66 * 1001, 6000), end: RationalTime(72 * 1001, 6000))
+        let original = try SourceCutAudition.segments(clip: clip, source: source, cut: cut, mode: .original)
+        let proposed = try SourceCutAudition.segments(clip: clip, source: source, cut: cut, mode: .proposed)
+        let preJoin = try cut.start.subtracting(RationalTime(9))
+        let postJoin = try cut.end.subtracting(RationalTime(9))
+        let first = try preJoin.subtracting(RationalTime(7, 20)), last = try postJoin.adding(RationalTime(7, 20))
+        XCTAssertEqual(original, [.source(TimeRange(start: first, end: last))])
+        XCTAssertEqual(proposed, [.source(TimeRange(start: first, end: preJoin)), .source(TimeRange(start: postJoin, end: last))])
+        let gap = RationalTime(1001, 1000)
+        let withGap = try SourceCutAudition.segments(clip: clip, source: source, cut: cut, mode: .proposed, gap: gap)
+        XCTAssertEqual(withGap, [proposed[0], .gap(gap), proposed[1]])
+        let audio = try await SourceCutAudition.composition(url: file, segments: withGap)
+        let duration = try await audio.load(.duration)
+        XCTAssertEqual(CMTimeCompare(duration, CMTime(value: 1701, timescale: 1000)), 0)
+        let tracks = try await audio.loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(tracks.first as? AVCompositionTrack)
+        let actual = try await track.load(.segments)
+        XCTAssertEqual(actual.count, 3)
+        guard actual.count == 3 else { return }
+        XCTAssertTrue(actual[1].isEmpty)
+        let right = actual[2].timeMapping
+        XCTAssertEqual(CMTimeCompare(right.source.start, CMTime(value: postJoin.numerator, timescale: Int32(postJoin.denominator))), 0)
+        XCTAssertEqual(CMTimeCompare(right.target.duration, right.source.duration), 0)
     }
 
     func testFractionalVideoInitialAndRecalculatedCutsUseTheSameNativeSampleGrid() async throws {

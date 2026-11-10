@@ -210,6 +210,10 @@ extension FinalCutAXSession {
         canAuthorizeWorkflowAction(view: view, gesture: edit, action: "update")
     }
 
+    func canAuthorizeWorkflowAudition(view: UUID, gesture: UUID, mode: ReviewAuditionMode) -> Bool {
+        canAuthorizeWorkflowAction(view: view, gesture: gesture, action: "audition-\(mode.rawValue)")
+    }
+
     func canAuthorizeWorkflowNavigation(view: UUID, gesture: UUID) -> Bool {
         let connection = workflowConnection(view: view)
         guard connection.failure == nil, let window = connection.window, let expected = reviewOwnership.active else { return false }

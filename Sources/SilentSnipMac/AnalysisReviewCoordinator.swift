@@ -26,6 +26,7 @@ public struct ReviewAnalysisResult: Sendable {
 
     public typealias HighlightOperation = @MainActor (AnalyzeRequest, ReviewAnalysisResult, String) async throws -> Void
     public typealias VerificationOperation = @MainActor (AnalyzeRequest, @escaping Progress) async throws -> Void
+    public typealias AuditionOperation = @MainActor (AnalyzeRequest, ReviewAnalysisResult, ReviewCut, ReviewAuditionMode) async throws -> Void
 
     private final class Job {
         var request: AnalyzeRequest
@@ -58,6 +59,10 @@ public struct ReviewAnalysisResult: Sendable {
     private let highlightOperation: HighlightOperation?
     private let authorizeNativeNavigation: (@MainActor (ReviewCommand) -> Bool)?
     private let verifyNativeNavigation: HighlightOperation?
+    private let auditionOperation: AuditionOperation?
+    private let authorizeAudition: (ReviewCommand) -> Bool
+    private let endAudition: () -> Void
+    private var auditionTask: Task<Void, Never>?
     private let verificationOperation: VerificationOperation?
     private let canRetryVerification: (UUID) -> Bool
     private let emit: (ReviewPublication) throws -> Void
@@ -77,6 +82,9 @@ public struct ReviewAnalysisResult: Sendable {
                 highlightOperation: HighlightOperation? = nil,
                 authorizeNativeNavigation: (@MainActor (ReviewCommand) -> Bool)? = nil,
                 verifyNativeNavigation: HighlightOperation? = nil,
+                auditionOperation: AuditionOperation? = nil,
+                authorizeAudition: @escaping (ReviewCommand) -> Bool = { _ in false },
+                endAudition: @escaping () -> Void = {},
                 verificationOperation: VerificationOperation? = nil,
                 canRetryVerification: @escaping (UUID) -> Bool = { _ in false },
                 emit: @escaping (ReviewPublication) throws -> Void,
@@ -92,6 +100,7 @@ public struct ReviewAnalysisResult: Sendable {
         self.highlightOperation = highlightOperation
         self.authorizeNativeNavigation = authorizeNativeNavigation
         self.verifyNativeNavigation = verifyNativeNavigation
+        self.auditionOperation = auditionOperation; self.authorizeAudition = authorizeAudition; self.endAudition = endAudition
         self.verificationOperation = verificationOperation
         self.canRetryVerification = canRetryVerification
         self.emit = emit
@@ -148,6 +157,7 @@ public struct ReviewAnalysisResult: Sendable {
             previous.message = "A new analysis replaced this review."
             publish(previous)
         }
+        stopActiveAudition()
         active = request.id
         publish(job)
         job.task = Task { [weak self, weak job] in
@@ -209,6 +219,7 @@ public struct ReviewAnalysisResult: Sendable {
                 guard job.state == .review, command.expectedRevision == job.revision else { return }
             }
             // Hiding cannot authorize recalculation, Share, selection, or Apply.
+            stopActiveAudition()
             job.previewSuspended = true
             onReviewChange?(job.request.id, nil)
             return
@@ -229,6 +240,7 @@ public struct ReviewAnalysisResult: Sendable {
         }
         if command.command == .cancel {
             guard active == command.request, job.state.canCancel else { return }
+            stopActiveAudition()
             job.cancelled = true
             job.result = nil
             job.task?.cancel()
@@ -249,11 +261,22 @@ public struct ReviewAnalysisResult: Sendable {
             return
         }
         do {
+            if command.command == .audition {
+                try beginAudition(job, result: result, command: command)
+                return
+            }
+            if command.command == .stopAudition {
+                guard let origin = job.request.workflowOrigin, command.view == origin.view,
+                      command.expectedRevision == job.revision else { return }
+            }
+            stopActiveAudition()
             switch command.command {
             case .preview:
                 // Older Audio Unit windows can still send this command while
                 // Final Cut is running. A valid review always keeps its lines.
                 guard command.included != nil else { return }
+            case .stopAudition:
+                break
             case .include:
                 guard let id = command.cutID, let included = command.included else { return }
                 try result.analyzed.review.setIncluded(included, cutID: id)
@@ -294,7 +317,7 @@ public struct ReviewAnalysisResult: Sendable {
                 }
                 beginApply(job, result: result)
                 return
-            case .status, .cancel, .retryVerification, .recalculate, .navigationFinished: return
+            case .status, .cancel, .retryVerification, .recalculate, .navigationFinished, .audition: return
             }
             job.result = result
             job.message = self.reviewMessage(result)
@@ -304,6 +327,36 @@ public struct ReviewAnalysisResult: Sendable {
             // candidates or silently reset the user's inclusion choices.
             job.message = error.localizedDescription
             publish(job)
+        }
+    }
+
+    private func stopActiveAudition() {
+        auditionTask?.cancel()
+        auditionTask = nil
+        endAudition()
+    }
+
+    private func beginAudition(_ job: Job, result: ReviewAnalysisResult, command: ReviewCommand) throws {
+        guard let origin = job.request.workflowOrigin, command.view == origin.view,
+              command.expectedRevision == job.revision, let mode = command.auditionMode,
+              let cut = result.analyzed.review.cuts.first(where: { $0.id == command.cutID && $0.isEligible }),
+              result.analyzed.dialogueContext.sourceRange != nil, let auditionOperation,
+              authorizeAudition(command) else { throw CoordinatorError.auditionUnavailable }
+        stopActiveAudition()
+        job.message = reviewMessage(result)
+        let acknowledgedRevision = job.revision + 1
+        publish(job)
+        guard active == job.request.id, job.state == .review, job.result != nil,
+              job.revision == acknowledgedRevision else { return }
+        auditionTask = Task { [weak self, weak job] in
+            guard let self, let job else { return }
+            do {
+                try await auditionOperation(job.request, result, cut, mode)
+            } catch {
+                guard !Task.isCancelled, self.active == job.request.id, job.state == .review else { return }
+                job.message = "Could not play the cut preview. " + error.localizedDescription
+                self.publish(job)
+            }
         }
     }
 
@@ -335,6 +388,7 @@ public struct ReviewAnalysisResult: Sendable {
               else { rejectAutomaticPreview(job, command: command); return }
         if job.settingsView == view && sequence <= job.settingsSequence { rejectAutomaticPreview(job, command: command); return }
         guard authorizeRecalculation(command) else { rejectAutomaticPreview(job, command: command); return }
+        stopActiveAudition()
         do {
             _ = try result.analyzed.recalculate(settings: settings)
             guard result.analyzed.review.cuts.count <= Self.maximumReviewCuts else { throw CoordinatorError.tooManyCuts }
@@ -561,6 +615,7 @@ public struct ReviewAnalysisResult: Sendable {
     }
 
     public func stop() {
+        stopActiveAudition()
         for job in jobs.values { job.cancelled = true; job.task?.cancel() }
     }
 
@@ -684,6 +739,8 @@ public struct ReviewAnalysisResult: Sendable {
     private func makeResponse(_ job: Job, rejectedEdit: UUID? = nil,
                               rejectedSequence: Int? = nil) throws -> ReviewResponse {
         let sdkNavigation = job.request.workflowOrigin != nil && authorizeNativeNavigation != nil && verifyNativeNavigation != nil
+        let sourceAudition = job.request.workflowOrigin != nil && auditionOperation != nil &&
+            job.result?.analyzed.dialogueContext.sourceRange != nil
         guard let result = job.result, job.state == .review || job.state == .analyzing || job.state == .recalculating else {
             return ReviewResponse(request: job.request.id, revision: job.revision,
                 state: job.state.rawValue, message: job.message, progress: job.progress,
@@ -691,7 +748,9 @@ public struct ReviewAnalysisResult: Sendable {
                 canRetryVerification: verificationOperation != nil && job.state.canRetryVerification && canRetryVerification(job.request.id),
                 settingsEdit: job.settingsEdit, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture,
                 canNavigateWithSDK: sdkNavigation ? true : nil,
-                navigationPermit: job.state == .navigating ? job.navigationPermit : nil)
+                navigationPermit: job.state == .navigating ? job.navigationPermit : nil,
+                canSelectGroup: job.state == .navigating && job.request.workflowOrigin != nil ? true : nil,
+                canAudition: job.state == .navigating && sourceAudition ? true : nil)
         }
         let analysis = result.analyzed
         let review = analysis.review
@@ -735,7 +794,8 @@ public struct ReviewAnalysisResult: Sendable {
             automaticPreviewAvailable: job.request.workflowOrigin != nil && result.canUpdateCuts && localPreviewOperation != nil,
             rejectedSettingsEdit: rejectedEdit, rejectedSettingsSequence: rejectedSequence,
             canNavigateWithSDK: sdkNavigation ? true : nil,
-            canSelectGroup: job.request.workflowOrigin != nil ? true : nil, analyzedSpan: analyzedSpan)
+            canSelectGroup: job.request.workflowOrigin != nil ? true : nil, analyzedSpan: analyzedSpan,
+            canAudition: sourceAudition ? true : nil)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {
@@ -792,7 +852,12 @@ public struct ReviewAnalysisResult: Sendable {
     }
 
     private enum CoordinatorError: LocalizedError {
-        case tooManyCuts
-        var errorDescription: String? { "There are more than 1,000 proposed cuts. Increase Minimum Silence, then analyze the clip again." }
+        case tooManyCuts, auditionUnavailable
+        var errorDescription: String? {
+            switch self {
+            case .tooManyCuts: return "There are more than 1,000 proposed cuts. Increase Minimum Silence, then analyze the clip again."
+            case .auditionUnavailable: return "The cut preview requires a current plain-source review and its active Final Cut Pro window."
+            }
+        }
     }
 }

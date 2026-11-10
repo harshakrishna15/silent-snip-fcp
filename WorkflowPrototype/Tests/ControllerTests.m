@@ -210,6 +210,8 @@ static void unexpectedReviewBoundary(void) {
 - (BOOL)setCut:(NSString *)cutID included:(BOOL)included { unexpectedReviewBoundary(); return NO; }
 - (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included { unexpectedReviewBoundary(); return NO; }
 - (BOOL)adjustCut:(NSString *)cutID edit:(SSReviewBoundaryEdit)edit { unexpectedReviewBoundary(); return NO; }
+- (BOOL)auditionCut:(NSString *)cutID proposed:(BOOL)proposed gesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
+- (BOOL)stopAudition { unexpectedReviewBoundary(); return NO; }
 - (BOOL)selectAll:(BOOL)included { unexpectedReviewBoundary(); return NO; }
 - (BOOL)retryVerification { unexpectedReviewBoundary(); return NO; }
 - (void)cancel { unexpectedReviewBoundary(); }
@@ -294,6 +296,8 @@ static void unexpectedWindowBoundary(void) {
 @property (nonatomic, copy) NSString *highlightedCut;
 @property (nonatomic, copy) NSDictionary *groupSelection;
 @property (nonatomic, copy) NSDictionary *boundarySelection;
+@property (nonatomic, copy) NSDictionary *auditionSelection;
+@property (nonatomic) NSUInteger auditionStops;
 @property (nonatomic) BOOL fakeNativeNavigation;
 @property (nonatomic, copy) BOOL (^nativeMove)(NSDictionary *permit);
 @property (nonatomic, copy) NSString *nativeNavigationMarker;
@@ -429,6 +433,16 @@ static void unexpectedWindowBoundary(void) {
     self.testUpdate(self.lastResponse);
     return YES;
 }
+- (BOOL)auditionCut:(NSString *)cutID proposed:(BOOL)proposed gesture:(NSString *)gesture {
+    if (!self.fakeCanChangeSelection) return NO;
+    NSButton *button = proposed ? self.owner.playProposedButton : self.owner.playOriginalButton;
+    self.auditionSelection = @{@"cut": cutID, @"proposed": @(proposed), @"gesture": gesture,
+        @"marker": button.accessibilityIdentifier, @"disabled": @(!button.enabled)};
+    self.fakeCanChangeSelection = NO;
+    self.testUpdate(self.lastResponse);
+    return YES;
+}
+- (BOOL)stopAudition { self.auditionStops += 1; return YES; }
 - (BOOL)retryVerification {
     if (!self.fakeCanRetry || self.fakeBusy) return NO;
     self.retryCount += 1;
@@ -664,7 +678,7 @@ static void closeController(SSWorkflowViewController *controller) {
 
 static void sameProjectPreservesDraft(void) {
     SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"Same name"));
-    SSWorkflowViewController *controller = openController(current);
+    SSTestWorkflowViewController *controller = openController(current);
     check(current.testTimeline.addCount == 1, @"Opening registers one timeline observer");
     check(controller.settings.loads.count == 1, @"Opening loads settings for the verified identity");
     check(!controller.saveButton.enabled, @"Pending settings are not editable");
@@ -1226,6 +1240,28 @@ static void boundarySteppersPreserveTheActiveRowAndUseAcknowledgedTimes(void) {
           @"The acknowledged timing updates the same active row");
     [controller resetCutBoundary:nil];
     check([client.boundarySelection[@"edit"] isEqual:@(SSReviewBoundaryReset)], @"Reset is an explicit edit for this cut");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void auditionUsesTheActiveCutAndAnExplicitPlayGesture(void) {
+    SSTestWorkflowViewController *controller = openController(host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A")));
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    check(controller.auditionActions.hidden, @"A processed or older-worker review hides playback controls");
+    NSMutableDictionary *response = [reviewResponse(@"review", @"Review cut boundaries") mutableCopy];
+    response[@"canAudition"] = @YES;
+    [client deliver:response busy:NO canApply:YES];
+    check(!controller.auditionActions.hidden && controller.playOriginalButton.enabled && controller.playProposedButton.enabled,
+          @"A current source review offers both playback modes");
+    [controller playAudition:controller.playProposedButton];
+    NSDictionary *play = client.auditionSelection;
+    check([play[@"cut"] isEqual:@"cut-1"] && [play[@"proposed"] boolValue] && [play[@"disabled"] boolValue] &&
+          [play[@"marker"] isEqual:[@"silentsnip.workflow.audition-proposed.requested." stringByAppendingString:play[@"gesture"]]],
+          @"Proposed playback binds the disabled native button, gesture, and active cut");
+    [client deliver:response busy:NO canApply:YES];
+    [controller stopAudition:nil];
+    check(client.auditionStops == 1 && controller.applyButton.enabled, @"Stop leaves the review available");
     closeController(controller);
     groupCount += 1;
 }
@@ -3566,6 +3602,7 @@ int main(void) {
         keyboardReviewKeepsTheActiveRowThroughAcknowledgment();
         shiftSelectionSendsOnlyTheChosenGroup();
         boundarySteppersPreserveTheActiveRowAndUseAcknowledgedTimes();
+        auditionUsesTheActiveCutAndAnExplicitPlayGesture();
         reviewResponsesLayOutFinalContentOnce();
         sdkNavigationRequiresExactProjectWindowAndReturnedTime();
         navigationSettlementRefreshesDeferredProjectChanges();

@@ -52,6 +52,10 @@ static void unexpectedBoundary(void) {
 - (BOOL)startWithLibraryURL:(NSURL *)libraryURL projectUID:(NSString *)projectUID projectName:(NSString *)projectName settings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
 - (BOOL)sendApplyWithGesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
 - (BOOL)setCut:(NSString *)cutID included:(BOOL)included { unexpectedBoundary(); return NO; }
+- (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included { unexpectedBoundary(); return NO; }
+- (BOOL)adjustCut:(NSString *)cutID edit:(SSReviewBoundaryEdit)edit { unexpectedBoundary(); return NO; }
+- (BOOL)auditionCut:(NSString *)cutID proposed:(BOOL)proposed gesture:(NSString *)gesture { unexpectedBoundary(); return NO; }
+- (BOOL)stopAudition { unexpectedBoundary(); return NO; }
 - (BOOL)selectAll:(BOOL)included { unexpectedBoundary(); return NO; }
 - (BOOL)retryVerification { unexpectedBoundary(); return NO; }
 - (void)cancel { unexpectedBoundary(); }

@@ -554,7 +554,7 @@ static NSString *SSResponseName(NSString *request) {
     if (![states containsObject:value[@"state"]]) return NO;
     for (NSString *key in @[@"canApply", @"canChangeSelection", @"canCancel", @"canHighlight"])
         if (!SSBoolean(value[key])) return NO;
-    for (NSString *key in @[@"canRetryVerification", @"previewVisible", @"provisional", @"canUpdateCuts", @"usesAudioSnapshot", @"automaticPreviewAvailable", @"canNavigateWithSDK", @"canSelectGroup"])
+    for (NSString *key in @[@"canRetryVerification", @"previewVisible", @"provisional", @"canUpdateCuts", @"usesAudioSnapshot", @"automaticPreviewAvailable", @"canNavigateWithSDK", @"canSelectGroup", @"canAudition"])
         if (value[key] && !SSBoolean(value[key])) return NO;
     id permit = value[@"navigationPermit"];
     if (permit) {
@@ -752,6 +752,7 @@ static NSString *SSResponseName(NSString *request) {
     self.connection.pendingSelection = command;
     self.connection.selectionRevision = self.connection.revision;
     [self publish];
+    if (self.cancelRequested || self.locallyFailed || ![self.connection.pendingSelection isEqual:command]) return NO;
     [self send:command name:SSCommandName];
     return YES;
 }
@@ -773,6 +774,20 @@ static NSString *SSResponseName(NSString *request) {
         }
     }
     return NO;
+}
+- (BOOL)auditionCut:(NSString *)cutID proposed:(BOOL)proposed gesture:(NSString *)gesture {
+    if (![self.response[@"canAudition"] isEqual:@YES] || !SSUUID(gesture)) return NO;
+    for (NSDictionary *cut in self.response[@"cuts"]) {
+        if ([cut[@"id"] isEqual:cutID] && [cut[@"eligible"] boolValue]) {
+            return [self selection:@{@"command": @"audition", @"cutID": cutID, @"view": self.viewID,
+                @"auditionMode": proposed ? @"proposed" : @"original", @"auditionGesture": gesture}];
+        }
+    }
+    return NO;
+}
+- (BOOL)stopAudition {
+    if (![self.response[@"canAudition"] isEqual:@YES]) return NO;
+    return [self selection:@{@"command": @"stopAudition", @"view": self.viewID}];
 }
 - (BOOL)selectAll:(BOOL)included { return [self selection:@{@"command": included ? @"selectAll" : @"deselectAll"}]; }
 - (void)markSettingsDirty {

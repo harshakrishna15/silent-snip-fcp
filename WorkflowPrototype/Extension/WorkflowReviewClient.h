@@ -67,6 +67,8 @@ typedef NS_OPTIONS(NSUInteger, SSReviewBoundaryEdit) {
 - (BOOL)setCut:(NSString *)cutID included:(BOOL)included;
 - (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included;
 - (BOOL)adjustCut:(NSString *)cutID edit:(SSReviewBoundaryEdit)edit;
+- (BOOL)auditionCut:(NSString *)cutID proposed:(BOOL)proposed gesture:(NSString *)gesture;
+- (BOOL)stopAudition;
 - (BOOL)selectAll:(BOOL)included;
 - (BOOL)retryVerification;
 - (void)cancel;

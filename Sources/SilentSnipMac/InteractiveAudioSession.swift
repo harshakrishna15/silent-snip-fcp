@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CryptoKit
 import SilentSnipCore
 import Foundation
@@ -21,6 +22,8 @@ import Foundation
     public private(set) var reviewRequestID: UUID?
     private var restoringControllerSettings = false
     private var lastReviewAuthorizationFailure: String?
+    private var auditionPlayer: AVPlayer?
+    private var auditionActivationObserver: NSObjectProtocol?
 
     public func canReconnectReview(view: UUID) -> Bool {
         guard !restoringControllerSettings, let session = reviewSession else { return false }
@@ -55,6 +58,55 @@ import Foundation
               let selected = session.reviewOwnership.active,
               (try? selected.resolve(in: context.capture.document).1) == context.capture.target else { return false }
         return session.canAuthorizeWorkflowNavigation(view: view, gesture: gesture)
+    }
+
+    public func canAuthorizeAudition(_ command: ReviewCommand) -> Bool {
+        guard !restoringControllerSettings, command.request == reviewRequestID,
+              let view = command.view, let gesture = command.auditionGesture, let mode = command.auditionMode else { return false }
+        return reviewSession?.canAuthorizeWorkflowAudition(view: view, gesture: gesture, mode: mode) == true
+    }
+
+    public func playAudition(_ request: AnalyzeRequest, result: ReviewAnalysisResult,
+                             cut: ReviewCut, mode: ReviewAuditionMode) async throws {
+        let analyzed = result.analyzed
+        guard let context = contexts[request.id], let originalURL = analyzed.target.mediaURL,
+              let sourceRange = analyzed.dialogueContext.sourceRange, cut.isEligible else { throw ReviewError.invalidTarget }
+        let source = try context.mediaSnapshot.restricting(to: [originalURL])
+        let url = analyzed.dialogueContext.audioURL
+        guard source.hashes[url] == analyzed.dialogueContext.audioSHA256,
+              let readGuard = try source.prepareValidationRead() else { throw ProjectAnalysisError.changedRenderArtifact }
+        let segments = try SourceCutAudition.segments(clip: analyzed.target.timelineRange, source: sourceRange,
+            cut: cut.range, mode: mode, gap: request.outputMode.gapDuration(frame: analyzed.document.frameDuration))
+        let composition = try await SourceCutAudition.composition(url: url, segments: segments)
+        try Task.checkCancellation()
+        try readGuard.validate()
+        try validateReviewSelection(context.capture)
+        let pid = context.capture.session.application.processIdentifier
+        guard reviewRequestID == request.id, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+            throw ReviewError.staleProject
+        }
+        stopAudition()
+        let player = AVPlayer(playerItem: AVPlayerItem(asset: composition))
+        player.volume = 1
+        auditionPlayer = player
+        auditionActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didDeactivateApplicationNotification, object: nil, queue: .main) { [weak self] notice in
+                MainActor.assumeIsolated {
+                    if (notice.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier == pid {
+                        self?.stopAudition()
+                    }
+                }
+            }
+        player.play()
+    }
+
+    public func stopAudition() {
+        auditionPlayer?.pause()
+        auditionPlayer = nil
+        if let auditionActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(auditionActivationObserver)
+            self.auditionActivationObserver = nil
+        }
     }
 
     public func canAuthorizeRecalculation(_ command: ReviewCommand) -> Bool {
@@ -96,7 +148,7 @@ import Foundation
     }
 
     public func updatePreview(_ id: UUID, review: ReviewPlan?) {
-        guard let review, let context = contexts[id] else { preview.hide(); return }
+        guard let review, let context = contexts[id] else { stopAudition(); preview.hide(); return }
         preview.show(review: review, session: context.capture.session)
     }
 
@@ -134,6 +186,7 @@ import Foundation
     }
 
     public func stop() {
+        stopAudition()
         preview.hide()
         contexts.removeAll()
         reviewSession = nil
