@@ -2,6 +2,22 @@ import XCTest
 @testable import SilentSnipMac
 
 final class ReviewTransportTests: XCTestCase {
+    func testGroupCommandRequiresBothEndpointsAndTheVisibleRevision() throws {
+        let request = UUID(), view = UUID()
+        let group = ReviewCommand(request: request, command: .includeGroup, cutID: "first", included: false,
+            expectedRevision: 3, view: view, lastCutID: "last")
+        XCTAssertEqual(try ReviewWire.decodeCommand(ReviewWire.encode(group)), group)
+        for invalid in [
+            ReviewCommand(request: request, command: .includeGroup, cutID: "first", included: false,
+                expectedRevision: 3, view: view),
+            ReviewCommand(request: request, command: .includeGroup, cutID: "first", included: false,
+                view: view, lastCutID: "last"),
+            ReviewCommand(request: request, command: .include, cutID: "first", included: false,
+                expectedRevision: 3, lastCutID: "last")
+        ] {
+            XCTAssertThrowsError(try ReviewWire.decodeCommand(ReviewWire.encode(invalid)))
+        }
+    }
     func testWorkflowSavedResultRequestBindsFreshNativeGestureAndSDKIdentity() throws {
         let view = UUID(), gesture = UUID()
         let fields = ["view": view.uuidString, "gesture": gesture.uuidString,

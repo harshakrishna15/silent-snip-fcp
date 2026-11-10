@@ -540,7 +540,7 @@ static NSString *SSResponseName(NSString *request) {
     if (![states containsObject:value[@"state"]]) return NO;
     for (NSString *key in @[@"canApply", @"canChangeSelection", @"canCancel", @"canHighlight"])
         if (!SSBoolean(value[key])) return NO;
-    for (NSString *key in @[@"canRetryVerification", @"previewVisible", @"provisional", @"canUpdateCuts", @"usesAudioSnapshot", @"automaticPreviewAvailable", @"canNavigateWithSDK"])
+    for (NSString *key in @[@"canRetryVerification", @"previewVisible", @"provisional", @"canUpdateCuts", @"usesAudioSnapshot", @"automaticPreviewAvailable", @"canNavigateWithSDK", @"canSelectGroup"])
         if (value[key] && !SSBoolean(value[key])) return NO;
     id permit = value[@"navigationPermit"];
     if (permit) {
@@ -570,6 +570,7 @@ static NSString *SSResponseName(NSString *request) {
             !SSText(row[@"start"], 128, NO) || !SSText(row[@"end"], 128, NO) || !SSText(row[@"duration"], 128, NO) ||
             !SSBoolean(row[@"eligible"]) || !SSBoolean(row[@"included"]) ||
             ([row[@"included"] boolValue] && ![row[@"eligible"] boolValue]) ||
+            (row[@"needsReview"] && !SSBoolean(row[@"needsReview"])) ||
             (row[@"reason"] && !SSDisplayText(row[@"reason"], 16384))) return NO;
         [ids addObject:row[@"id"]];
     }
@@ -741,6 +742,11 @@ static NSString *SSResponseName(NSString *request) {
     for (NSDictionary *cut in self.response[@"cuts"]) if ([cut[@"id"] isEqual:cutID] && [cut[@"eligible"] boolValue])
         return [self selection:@{@"command": @"include", @"cutID": cutID, @"included": @(included)}];
     return NO;
+}
+- (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included {
+    if (![self.response[@"canSelectGroup"] isEqual:@YES] || !SSText(firstID, 200, NO) || !SSText(lastID, 200, NO)) return NO;
+    return [self selection:@{@"command": @"includeGroup", @"cutID": firstID, @"lastCutID": lastID,
+        @"included": @(included), @"view": self.viewID}];
 }
 - (BOOL)selectAll:(BOOL)included { return [self selection:@{@"command": included ? @"selectAll" : @"deselectAll"}]; }
 - (void)markSettingsDirty {

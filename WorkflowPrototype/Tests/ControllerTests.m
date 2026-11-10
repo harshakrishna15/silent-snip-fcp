@@ -208,6 +208,7 @@ static void unexpectedReviewBoundary(void) {
                   settings:(NSDictionary *)settings gesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
 - (BOOL)sendApplyWithGesture:(NSString *)gesture { unexpectedReviewBoundary(); return NO; }
 - (BOOL)setCut:(NSString *)cutID included:(BOOL)included { unexpectedReviewBoundary(); return NO; }
+- (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included { unexpectedReviewBoundary(); return NO; }
 - (BOOL)selectAll:(BOOL)included { unexpectedReviewBoundary(); return NO; }
 - (BOOL)retryVerification { unexpectedReviewBoundary(); return NO; }
 - (void)cancel { unexpectedReviewBoundary(); }
@@ -282,6 +283,7 @@ static void unexpectedWindowBoundary(void) {
 - (void)acknowledgeAutomaticUpdate;
 @property (nonatomic, copy) NSDictionary *verifyPayload;
 @property (nonatomic, copy) NSString *highlightedCut;
+@property (nonatomic, copy) NSDictionary *groupSelection;
 @property (nonatomic) BOOL fakeNativeNavigation;
 @property (nonatomic, copy) BOOL (^nativeMove)(NSDictionary *permit);
 @property (nonatomic, copy) NSString *nativeNavigationMarker;
@@ -403,6 +405,13 @@ static void unexpectedWindowBoundary(void) {
     return YES;
 }
 - (BOOL)selectAll:(BOOL)included { return self.fakeCanChangeSelection; }
+- (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included {
+    if (!self.fakeCanChangeSelection) return NO;
+    self.groupSelection = @{@"first": firstID, @"last": lastID, @"included": @(included)};
+    self.fakeCanChangeSelection = NO;
+    self.testUpdate(self.lastResponse);
+    return YES;
+}
 - (BOOL)retryVerification {
     if (!self.fakeCanRetry || self.fakeBusy) return NO;
     self.retryCount += 1;
@@ -1132,6 +1141,41 @@ static void keyboardReviewKeepsTheActiveRowThroughAcknowledgment(void) {
           @"The acknowledgment keeps the responder, active checkbox and scroll origin");
     [list keyDown:reviewKey('\r', 0)];
     check([client.highlightedCut isEqual:@"cut-2"], @"Return jumps to the active cut without opening a menu");
+    closeController(controller);
+    groupCount += 1;
+}
+
+static void shiftSelectionSendsOnlyTheChosenGroup(void) {
+    SSTestWorkflowViewController *controller = openController(host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A")));
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    NSMutableDictionary *response = [reviewResponse(@"review", @"Review the pauses") mutableCopy];
+    NSMutableDictionary *second = [response[@"cuts"][0] mutableCopy], *third = [second mutableCopy];
+    second[@"id"] = @"cut-2";
+    second[@"needsReview"] = @YES;
+    second[@"included"] = @NO;
+    third[@"id"] = @"cut-3";
+    response[@"cuts"] = @[response[@"cuts"][0], second.copy, third.copy];
+    response[@"canSelectGroup"] = @YES;
+    [client deliver:response busy:NO canApply:YES];
+    [controller.cutList keyDown:reviewKey(NSDownArrowFunctionKey, NSEventModifierFlagShift)];
+    check(NSEqualRanges([controller reviewGroup], NSMakeRange(0, 2)) &&
+          [controller.noneButton.title isEqual:@"Keep Selected"] && [controller.allButton.title isEqual:@"Cut Selected"],
+          @"Shift extends the range and shows the selected-only commands");
+    [controller deselectAllCuts:nil];
+    check([client.groupSelection isEqual:@{@"first": @"cut-1", @"last": @"cut-2", @"included": @NO}] &&
+          !controller.allButton.enabled, @"Keep Selected submits the two endpoint IDs once");
+    [second removeObjectForKey:@"needsReview"];
+    NSMutableDictionary *first = [response[@"cuts"][0] mutableCopy];
+    first[@"included"] = @NO;
+    response[@"cuts"] = @[first.copy, second.copy, third.copy];
+    [client deliver:response busy:NO canApply:YES];
+    check(NSEqualRanges([controller reviewGroup], NSMakeRange(0, 2)) &&
+          [controller.allButton.title isEqual:@"Cut Selected"] && controller.allButton.enabled,
+          @"The acknowledged group survives a review flag clearing");
+    [controller selectAllCuts:nil];
+    check([client.groupSelection isEqual:@{@"first": @"cut-1", @"last": @"cut-2", @"included": @YES}],
+          @"Cut Selected keeps the same explicit group");
     closeController(controller);
     groupCount += 1;
 }
@@ -3481,6 +3525,7 @@ int main(void) {
         applyRequiresReviewAndFreshGesture();
         inclusionAcknowledgmentsKeepExistingCutControls();
         keyboardReviewKeepsTheActiveRowThroughAcknowledgment();
+        shiftSelectionSendsOnlyTheChosenGroup();
         reviewResponsesLayOutFinalContentOnce();
         sdkNavigationRequiresExactProjectWindowAndReturnedTime();
         navigationSettlementRefreshesDeferredProjectChanges();

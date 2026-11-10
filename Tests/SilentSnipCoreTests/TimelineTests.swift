@@ -66,6 +66,28 @@ final class TimelineTests: XCTestCase {
         XCTAssertFalse(review.cuts[1].needsReview)
     }
 
+    func testKeepAndCutGroupChangeOnlyEligibleRowsBetweenOrderedEndpoints() throws {
+        let doc = try parse("""
+        <fcpxml version="1.14"><resources><format id="f" frameDuration="1/30s"/>
+        <asset id="a" start="0s" duration="10s" hasAudio="1"><media-rep kind="original-media" src="file:///tmp/a.wav"/></asset></resources>
+        <library><event><project name="Group" uid="test"><sequence format="f" duration="10s" tcStart="0s"><spine>
+        <asset-clip ref="a" offset="0s" start="0s" duration="10s" audioRole="dialogue">
+        <adjust-volume amount="0dB"><fadeIn duration="2s"/></adjust-volume></asset-clip>
+        </spine></sequence></project></event></library></fcpxml>
+        """)
+        let target = try doc.selectedTarget(.init(timelineRange: range(0, 10)), requireExistingMedia: false)
+        var review = try ReviewPlan(jobID: UUID(), document: doc, target: target,
+            analysis: .init(candidates: [range(1, 2), range(3, 4), range(5, 6), range(7, 8)], disposition: .cuts))
+        let ids = review.cuts.map(\.id)
+        try review.setIncluded(false, from: ids[0], through: ids[2])
+        XCTAssertEqual(review.selectedCuts.map(\.id), [ids[3]])
+        XCTAssertThrowsError(try review.setIncluded(true, from: ids[2], through: ids[0]))
+        XCTAssertThrowsError(try review.setIncluded(true, from: ids[0], through: "stale"))
+        XCTAssertEqual(review.selectedCuts.map(\.id), [ids[3]])
+        try review.setIncluded(true, from: ids[0], through: ids[2])
+        XCTAssertEqual(review.selectedCuts.map(\.id), Array(ids.dropFirst()))
+    }
+
     func testProjectTimecodeAndSourceTimecodeAreIndependent() throws {
         let doc = try parse(fixture())
         XCTAssertEqual(doc.projectTimecodeStart, RationalTime(3600))

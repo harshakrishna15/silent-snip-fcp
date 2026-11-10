@@ -257,6 +257,11 @@ public struct ReviewAnalysisResult: Sendable {
             case .include:
                 guard let id = command.cutID, let included = command.included else { return }
                 try result.analyzed.review.setIncluded(included, cutID: id)
+            case .includeGroup:
+                guard let origin = job.request.workflowOrigin, command.view == origin.view,
+                      command.expectedRevision == job.revision,
+                      let first = command.cutID, let last = command.lastCutID, let included = command.included else { return }
+                try result.analyzed.review.setIncluded(included, from: first, through: last)
             case .selectAll: result.analyzed.review.selectAllEligible(true)
             case .deselectAll: result.analyzed.review.selectAllEligible(false)
             case .highlight:
@@ -713,7 +718,8 @@ public struct ReviewAnalysisResult: Sendable {
             usesAudioSnapshot: result.usesAudioSnapshot, targetClipName: job.targetClipName, workflowGesture: job.request.workflowOrigin?.gesture,
             automaticPreviewAvailable: job.request.workflowOrigin != nil && result.canUpdateCuts && localPreviewOperation != nil,
             rejectedSettingsEdit: rejectedEdit, rejectedSettingsSequence: rejectedSequence,
-            canNavigateWithSDK: sdkNavigation ? true : nil)
+            canNavigateWithSDK: sdkNavigation ? true : nil,
+            canSelectGroup: job.request.workflowOrigin != nil ? true : nil)
     }
 
     private func timecode(_ value: RationalTime, analysis: AnalyzedAudioProject, dropFrame: Bool) throws -> String {

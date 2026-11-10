@@ -61,6 +61,7 @@ NS_ASSUME_NONNULL_BEGIN
                    gesture:(NSString *)gesture;
 - (BOOL)sendApplyWithGesture:(NSString *)gesture;
 - (BOOL)setCut:(NSString *)cutID included:(BOOL)included;
+- (BOOL)setCutsFrom:(NSString *)firstID through:(NSString *)lastID included:(BOOL)included;
 - (BOOL)selectAll:(BOOL)included;
 - (BOOL)retryVerification;
 - (void)cancel;

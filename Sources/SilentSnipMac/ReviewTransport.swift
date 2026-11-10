@@ -26,6 +26,7 @@ public enum ReviewWire {
               data.count <= maximumBytes else { throw ReviewTransportError.invalidPayload }
         let command = try JSONDecoder().decode(ReviewCommand.self, from: data)
         guard command.version == version else { throw ReviewTransportError.invalidPayload }
+        if command.lastCutID != nil, command.command != .includeGroup { throw ReviewTransportError.invalidPayload }
         if command.navigationGesture != nil || command.navigationSucceeded != nil {
             guard command.command == .prepareNavigation || command.command == .navigationFinished else {
                 throw ReviewTransportError.invalidPayload
@@ -53,6 +54,11 @@ public enum ReviewWire {
                   command.included != nil, command.expectedRevision.map({ $0 >= 0 }) == true else {
                 throw ReviewTransportError.invalidPayload
             }
+        case .includeGroup:
+            guard let first = command.cutID, let last = command.lastCutID,
+                  [first, last].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 200 }),
+                  command.view != nil, command.included != nil,
+                  command.expectedRevision.map({ $0 >= 0 }) == true else { throw ReviewTransportError.invalidPayload }
         case .preview:
             guard command.included != nil, command.expectedRevision.map({ $0 >= 0 }) == true else {
                 throw ReviewTransportError.invalidPayload
@@ -98,13 +104,14 @@ public struct ReviewWireSettings: Codable, Equatable, Sendable {
 
 public struct ReviewCommand: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
-        case status, cancel, include, selectAll, deselectAll, highlight, apply, retryVerification, preview, recalculate
+        case status, cancel, include, includeGroup, selectAll, deselectAll, highlight, apply, retryVerification, preview, recalculate
         case prepareNavigation, navigationFinished
     }
     public let version: Int
     public let request: UUID
     public let command: Kind
     public let cutID: String?
+    public let lastCutID: String?
     public let included: Bool?
     /// Mutations are accepted only for the revision the user saw. Retransmitted
     /// commands cannot undo a newer review choice or restart verification.
@@ -128,9 +135,10 @@ public struct ReviewCommand: Codable, Equatable, Sendable {
                 settings: ReviewWireSettings? = nil, output: String? = nil,
                 settingsEdit: UUID? = nil, settingsSequence: Int? = nil, verifySettings: Bool? = nil,
                 localPreview: Bool? = nil, automaticPreview: Bool? = nil,
-                navigationGesture: UUID? = nil, navigationSucceeded: Bool? = nil) {
+                navigationGesture: UUID? = nil, navigationSucceeded: Bool? = nil, lastCutID: String? = nil) {
         version = ReviewWire.version; self.request = request; self.command = command
         self.cutID = cutID; self.included = included
+        self.lastCutID = lastCutID
         self.expectedRevision = expectedRevision
         self.view = view; self.applyGesture = applyGesture
         self.localPreview = localPreview; self.automaticPreview = automaticPreview
@@ -182,6 +190,7 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
     public let cuts: [ReviewCutResponse]
     public let canApply: Bool
     public let canChangeSelection: Bool
+    public let canSelectGroup: Bool?
     public let canCancel: Bool
     public let canHighlight: Bool
     public let previewVisible: Bool?
@@ -212,11 +221,13 @@ public struct ReviewResponse: Codable, Equatable, Sendable {
                 settingsEdit: UUID? = nil, settings: ReviewWireSettings? = nil, output: String? = nil, provisional: Bool? = nil,
                 canUpdateCuts: Bool? = nil, usesAudioSnapshot: Bool? = nil, targetClipName: String? = nil, workflowGesture: UUID? = nil,
                 automaticPreviewAvailable: Bool? = nil, rejectedSettingsEdit: UUID? = nil, rejectedSettingsSequence: Int? = nil,
-                canNavigateWithSDK: Bool? = nil, navigationPermit: ReviewNavigationPermit? = nil) {
+                canNavigateWithSDK: Bool? = nil, navigationPermit: ReviewNavigationPermit? = nil,
+                canSelectGroup: Bool? = nil) {
         version = ReviewWire.version; self.request = request; self.revision = revision
         self.state = state; self.message = message; self.progress = progress
         self.summary = summary; self.cuts = cuts
         self.canApply = canApply; self.canChangeSelection = canChangeSelection
+        self.canSelectGroup = canSelectGroup
         self.canCancel = canCancel; self.canHighlight = canHighlight
         self.previewVisible = previewVisible
         self.canRetryVerification = canRetryVerification

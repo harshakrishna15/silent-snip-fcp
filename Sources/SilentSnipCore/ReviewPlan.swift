@@ -54,6 +54,17 @@ public struct ReviewPlan: Encodable, Sendable {
         }
     }
 
+    public mutating func setIncluded(_ included: Bool, from firstID: String, through lastID: String) throws {
+        guard let first = cuts.firstIndex(where: { $0.id == firstID }),
+              let last = cuts.firstIndex(where: { $0.id == lastID }), first <= last else {
+            throw ReviewError.unknownCut
+        }
+        for index in first...last where cuts[index].isEligible {
+            cuts[index].included = included
+            cuts[index].needsReview = false
+        }
+    }
+
     /// Returns true when the detected ranges change.
     @discardableResult public mutating func recalculate(
         _ analysis: SilenceAnalysisResult, document: TimelineDocument
