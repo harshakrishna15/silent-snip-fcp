@@ -68,6 +68,11 @@ struct PreviewSamplePacer {
                 if AXObserverAddNotification(result, element, name as CFString, context) == .success { registrations += 1 }
             }
         }
+        if let clip = reader.clipGeometryTarget {
+            for name in [kAXMovedNotification, kAXResizedNotification, kAXLayoutChangedNotification] {
+                if AXObserverAddNotification(result, clip, name as CFString, context) == .success { registrations += 1 }
+            }
+        }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(result), .commonModes)
     }
     func stop() {
@@ -295,16 +300,20 @@ struct PreviewSamplePacer {
         reader.sample { [weak self] result, duration in
             Task { @MainActor in
                 guard let self else { return }
-                defer { self.scheduleSample() }
-                guard self.gate.finish(token) else { return }
+                guard self.gate.finish(token) else { self.scheduleSample(); return }
                 guard epoch == self.foregroundEpoch else {
                     if self.diagnosticEnabled { self.trace("foregroundDiscardedRead", ["epoch": epoch]) }
+                    self.scheduleSample()
                     return
                 }
                 guard self.permitsForegroundPresentation() else { return }
                 if self.diagnosticEnabled { self.readTimes.append(duration) }
                 switch result {
                 case .success(let geometry):
+                    if geometry.frame != self.lastGeometry?.frame || geometry.visibleFrame != self.lastGeometry?.visibleFrame {
+                        self.pacer.wake(at: Date())
+                    }
+                    self.scheduleSample()
                     let start = Date()
                     self.present(geometry)
                     if self.diagnosticEnabled { self.paintTimes.append(Date().timeIntervalSince(start)) }
@@ -338,6 +347,7 @@ struct PreviewSamplePacer {
                             self.record("Hidden: " + error.localizedDescription)
                         }
                     }
+                    self.scheduleSample()
                 }
                 self.finishDiagnosticsIfNeeded()
             }
@@ -398,7 +408,6 @@ struct PreviewSamplePacer {
         let changed = geometry.frame != lastGeometry?.frame || geometry.visibleFrame != lastGeometry?.visibleFrame
         let needsOrderCheck = panel?.isVisible != true ||
             geometry.projectWindowNumber != lastGeometry?.projectWindowNumber
-        if changed { pacer.wake(at: Date()) }
         visibility.verified()
         let window = panel ?? makePanel()
         let visible = geometry.visibleFrame

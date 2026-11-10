@@ -234,6 +234,23 @@ final class TimelineCutPreviewTests: XCTestCase {
         XCTAssertTrue(pacer.isDue(at: start))
     }
 
+    func testLateGeometryReadCanReleaseTheNextDueSampleBeforeDrawing() throws {
+        let start = Date(timeIntervalSince1970: 100)
+        var gate = PreviewRequestGate()
+        var pacer = PreviewSamplePacer()
+        let inFlight = try XCTUnwrap(gate.begin())
+        pacer.didStartRead(at: start)
+        let completion = start.addingTimeInterval(0.08)
+        pacer.wake(at: completion)
+        XCTAssertTrue(pacer.isDue(at: completion))
+        XCTAssertNil(gate.begin(), "A host hint cannot overlap a slow read.")
+        XCTAssertTrue(gate.finish(inFlight))
+        let next = try XCTUnwrap(gate.begin(), "A due sample can run while the prior result is drawn.")
+        pacer.didStartRead(at: completion)
+        XCTAssertFalse(pacer.isDue(at: completion.addingTimeInterval(0.015)))
+        XCTAssertTrue(gate.finish(next))
+    }
+
     func testClickTimeReadGapsNeverExpireVerifiedPreview() {
         let now = Date(timeIntervalSince1970: 100)
         var visibility = PreviewVisibility()
