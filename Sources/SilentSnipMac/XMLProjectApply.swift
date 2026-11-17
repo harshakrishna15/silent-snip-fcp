@@ -164,9 +164,7 @@ enum XMLProjectApply {
             throw EditedProjectWriterError.unsupported("the exported XML does not identify its source library")
         }
         try validateLibrary(library)
-        let gap = try mode.gapDuration(frame: document.frameDuration)
-        var gaps: [TimeRange: RationalTime] = [:]
-        if let gap { for cut in cuts { gaps[cut] = gap } }
+        let gaps = try mode.replacementGaps(for: cuts, frame: document.frameDuration)
         let withSettings: Data
         if let workflowOrigin {
             try workflowOrigin.verify(projectData: projectData)

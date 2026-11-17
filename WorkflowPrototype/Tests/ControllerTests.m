@@ -3091,6 +3091,44 @@ static void informationalCopyKeepsReviewAuthorityUnchanged(void) {
     groupCount += 1;
 }
 
+static void emptyReviewShowsWhyNoCutsWereProposed(void) {
+    SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
+    SSTestWorkflowViewController *controller = openController(current);
+    completeLoad(controller.settings.loads[0], values(-50, YES), nil);
+    SSFakeWorkflowReviewClient *client = beginReview(controller);
+    NSString *noSilence = @"No qualifying silence was found. No cuts are proposed.";
+    NSString *entirelySilent = @"The selected clip is entirely below the threshold. Silent Snip cannot remove the entire clip.";
+    NSString *snapshotNotice = @"Cuts use the last analyzed audio. Apply Cuts verifies the current audio before editing. Click Analyze Again after changing volume or audio effects.";
+    NSString *sourceNotice = @"Analyzed original audio; this clip has no audio adjustments or processing effects. "
+        "Threshold uses 10 ms average loudness (RMS), not peak meters. "
+        "Apply cuts the source clips in a cleaned project copy and keeps their audio effects editable. "
+        "Quiet breaths may qualify; this detector does not classify breaths.";
+    for (NSNumber *snapshot in @[@NO, @YES]) {
+        for (NSString *explanation in @[noSilence, entirelySilent]) {
+            NSString *message = snapshot.boolValue
+                ? [NSString stringWithFormat:@"%@ %@", snapshotNotice, explanation]
+                : [NSString stringWithFormat:@"%@ %@", explanation, sourceNotice];
+            NSMutableDictionary *response = [reviewResponse(@"review", message) mutableCopy];
+            response[@"cuts"] = @[];
+            response[@"usesAudioSnapshot"] = snapshot;
+            [client deliver:response busy:NO canApply:NO];
+            check([controller.statusLabel.stringValue isEqual:explanation] && [controller.statusLabel.toolTip isEqual:message],
+                  @"A completed empty analysis shows its own reason instead of a failure banner");
+            check(!controller.applyButton.enabled && controller.analyzeButton.enabled && controller.detailsButton.hidden,
+                  @"An empty review offers Analyze Again and does not need an expanded failure panel");
+        }
+    }
+    NSString *warning = @"Temporary isolation cleanup needs attention.";
+    NSMutableDictionary *response = [reviewResponse(@"review",
+        [NSString stringWithFormat:@"%@ %@ %@", noSilence, sourceNotice, warning]) mutableCopy];
+    response[@"cuts"] = @[];
+    [client deliver:response busy:NO canApply:NO];
+    check([controller.statusLabel.stringValue isEqual:warning] && !controller.applyButton.enabled,
+          @"Compacting an empty review preserves its actionable cleanup warning");
+    closeController(controller);
+    groupCount += 1;
+}
+
 static void longRecoveryDetailsStayVisibleWithoutAuthorizingAnotherApply(void) {
     SSHost *current = host(sequence(@"project-A", @"/Test/Library-A.fcpbundle", @"A"));
     SSTestWorkflowViewController *controller = openController(current);
@@ -3655,6 +3693,7 @@ int main(void) {
         structuredEighteenCutReviewFitsNarrowAndWideWindows();
         fixedCutPaneStaysStableAsRowsChange();
         informationalCopyKeepsReviewAuthorityUnchanged();
+        emptyReviewShowsWhyNoCutsWereProposed();
         longRecoveryDetailsStayVisibleWithoutAuthorizingAnotherApply();
         longCancellationDetailsDoNotSuggestApply();
         longLocalSaveFailurePreservesReadyReview();

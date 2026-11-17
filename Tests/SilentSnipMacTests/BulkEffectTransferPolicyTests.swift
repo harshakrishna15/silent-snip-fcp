@@ -94,6 +94,8 @@ final class BulkEffectTransferPolicyTests: XCTestCase {
         XCTAssertThrowsError(try BulkEffectTransferPolicy.validateSelection(expected: expected, actual: [first], selected: [true]))
         XCTAssertThrowsError(try BulkEffectTransferPolicy.validateSelection(expected: expected, actual: [second, first], selected: [true, true]))
         XCTAssertThrowsError(try BulkEffectTransferPolicy.validateSelection(expected: [], actual: [], selected: []))
+        XCTAssertThrowsError(try BulkEffectTransferPolicy.validateSelection(
+            expected: expected, actual: expected, selected: [true, true], gapSelected: true))
     }
 
     func testExactOrderedEffectInstancesAreRequiredIncludingRepeatedNames() throws {

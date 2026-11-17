@@ -1712,13 +1712,34 @@ static BOOL SSWorkflowPermissionPromptPending;
         self.statusLabel.toolTip = message;
         return;
     }
-    if (completed || (!recovery && !snapshot && [state isEqual:@"review"] && normalReview != nil)) {
-        NSString *remaining = message;
+    NSString *remaining = message;
+    NSString *emptyReview = nil;
+    if (!recovery && [state isEqual:@"review"] && [response[@"cuts"] count] == 0) {
+        if (snapshot) {
+            for (NSString *notice in snapshotNotices) {
+                NSString *prefix = [notice stringByAppendingString:@" "];
+                if ([remaining hasPrefix:prefix]) {
+                    remaining = [remaining substringFromIndex:prefix.length];
+                    break;
+                }
+            }
+        }
+        for (NSString *reason in @[
+            @"No qualifying silence was found. No cuts are proposed.",
+            @"The selected clip is entirely below the threshold. Silent Snip cannot remove the entire clip."
+        ]) {
+            if ([remaining isEqual:reason] || [remaining hasPrefix:[reason stringByAppendingString:@" "]]) {
+                emptyReview = reason;
+                break;
+            }
+        }
+    }
+    if (completed || emptyReview || (!recovery && !snapshot && [state isEqual:@"review"] && normalReview != nil)) {
         if (!completed) {
             // Remove only known informational copy. Any appended cleanup or
             // recovery notice remains actionable rather than disappearing.
             NSArray<NSString *> *boilerplate = @[
-                normalReview,
+                emptyReview ?: normalReview,
                 @"Reused verified audio measurements after checking the current project and source contents.",
                 @"Analyzed original audio; this clip has no audio adjustments or processing effects.",
                 @"Analyzed Final Cut Pro’s rendered audio, including clip volume and enabled audio effects.",
@@ -1732,7 +1753,9 @@ static BOOL SSWorkflowPermissionPromptPending;
             for (NSString *text in boilerplate) remaining = [remaining stringByReplacingOccurrencesOfString:text withString:@""];
             remaining = [remaining stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         }
-        [self updateStatusContent:completed ? ([response[@"verificationOnly"] boolValue] ? @"Result verified." : @"Cuts applied.") : remaining
+        NSString *status = remaining.length ? remaining : (emptyReview ?: @"");
+        if (completed) status = [response[@"verificationOnly"] boolValue] ? @"Result verified." : @"Cuts applied.";
+        [self updateStatusContent:status
                 requiresAttention:!completed && remaining.length > 0];
         self.statusDetails.stringValue = message;
         self.statusDetails.toolTip = message;

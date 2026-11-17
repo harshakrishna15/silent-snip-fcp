@@ -77,6 +77,36 @@ final class BulkEffectTransferPlanTests: XCTestCase {
         }
     }
 
+    func testGapOutputKeepsOnlyAudioAsEffectRecipients() throws {
+        let selected = [TimeRange(start: .zero, end: .init(1, 2)),
+            TimeRange(start: .init(6), end: .init(8)),
+            TimeRange(start: .init(19, 2), end: .init(10))]
+        let result = try BulkEffectTransferPlan.make(projectData: fixture(), selection: selection,
+            cuts: selected, outputName: "Cleaned with gaps", projectUID: uid, outputMode: .gaps)
+        let gaps = [TimeRange(start: .zero, end: .init(1)), TimeRange(start: .init(13, 2), end: .init(15, 2)),
+            TimeRange(start: .init(9), end: .init(10))]
+        let audio = [TimeRange(start: .init(1), end: .init(13, 2)), TimeRange(start: .init(15, 2), end: .init(9))]
+        XCTAssertEqual(result.sourcePlan.final.gaps, gaps)
+        XCTAssertNil(result.sourcePlan.initial.gaps)
+        XCTAssertEqual(result.sourcePlan.final.segments.map(\.timelineRange), audio)
+        XCTAssertEqual(result.effectFreeOutput.report.insertedGapDuration, .init(3))
+        for data in [result.effectFreeOutput.xmlData, result.expectedXML] {
+            let document = try TimelineParser.parse(data: data)
+            let clips = document.clips.filter { $0.kind == "asset-clip" }
+            XCTAssertEqual(document.clips.filter { $0.kind == "gap" }.map(\.timelineRange), gaps)
+            XCTAssertEqual(document.projectRange.end, .init(10))
+            XCTAssertEqual(clips.map(\.timelineRange), audio)
+            XCTAssertEqual(clips.map(\.sourceStart), [.init(205, 2), .init(110)])
+            XCTAssertEqual(clips.map(\.mediaURL), [URL(fileURLWithPath: "/fixtures/Generated.wav"),
+                URL(fileURLWithPath: "/fixtures/Generated.wav")])
+        }
+        let imported = try XMLDocument(data: result.effectFreeOutput.xmlData)
+        let expected = try XMLDocument(data: result.expectedXML)
+        XCTAssertTrue(try imported.nodes(forXPath: "//filter-audio").isEmpty)
+        XCTAssertTrue(try expected.nodes(forXPath: "//spine/gap/filter-audio").isEmpty)
+        XCTAssertEqual(try expected.nodes(forXPath: "//spine/asset-clip/filter-audio").count, 6)
+    }
+
     func testEffectAnimationIsRejectedWhileOriginalVolumeAutomationStaysOnSourceClock() throws {
         let animation = "<param key=\"gain\"><keyframeAnimation><keyframe time=\"102s\" value=\"2\"/><keyframe time=\"110s\" value=\"8\"/></keyframeAnimation></param>"
         let animatedEffect = fixture(filters: "<filter-audio ref=\"limiter\">\(animation)</filter-audio>")

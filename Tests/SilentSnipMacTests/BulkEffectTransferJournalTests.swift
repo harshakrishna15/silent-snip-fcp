@@ -93,18 +93,33 @@ import XCTest
         XCTAssertThrowsError(try ImportedResultVerification.load(outputURL: output))
     }
 
+    func testRecoveryBindsAudioRecipientCountInAResultWithGaps() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let withGap = Data(String(decoding: expected, as: UTF8.self)
+            .replacingOccurrences(of: "duration=\"2s\" tcStart=", with: "duration=\"3s\" tcStart=")
+            .replacingOccurrences(of: "<asset-clip name=\"Audio\" ref=\"a\" offset=\"1s\"",
+                with: "<gap name=\"Gap\" offset=\"1s\" start=\"3600s\" duration=\"1s\"/><asset-clip name=\"Audio\" ref=\"a\" offset=\"2s\"")
+            .utf8)
+        try write(directory, stage: "effects applied; result verification pending", data: withGap, clipCount: 3)
+        XCTAssertThrowsError(try NativeBulkEffectTransferJournal.requireApplied(directory: directory, expected: withGap))
+        try write(directory, stage: "effects applied; result verification pending", data: withGap)
+        XCTAssertEqual(try NativeBulkEffectTransferJournal.requireApplied(directory: directory, expected: withGap), hostUID)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         return directory
     }
 
-    private func write(_ directory: URL, stage: String, failure: String? = nil, returnedUID: String? = nil, failureStage: String? = nil) throws {
+    private func write(_ directory: URL, stage: String, failure: String? = nil, returnedUID: String? = nil,
+                       failureStage: String? = nil, data: Data? = nil, clipCount: Int = 2) throws {
         var receipt: [String: Any] = ["token": UUID().uuidString, "sourceUID": sourceUID, "clipboardStamp": 1,
-            "expectedSHA256": SHA256.hash(data: expected).map { String(format: "%02x", $0) }.joined(),
+            "expectedSHA256": SHA256.hash(data: data ?? expected).map { String(format: "%02x", $0) }.joined(),
             "effectFreeSHA256": "unused-by-read-only-verification", "projectName": "Bulk Result",
             "libraryURL": "file:///tmp/Integration.fcpbundle/", "eventUID": "857D09F8-5AF1-4275-934F-DDA604D2B17D",
-            "clipCount": 2, "stage": stage, "hostUID": returnedUID ?? hostUID]
+            "clipCount": clipCount, "stage": stage, "hostUID": returnedUID ?? hostUID]
         if let failure { receipt["failure"] = failure }
         if let failureStage { receipt["failureStage"] = failureStage }
         try JSONSerialization.data(withJSONObject: receipt).write(to: directory.appendingPathComponent(filename))

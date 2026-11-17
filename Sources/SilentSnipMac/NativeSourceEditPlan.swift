@@ -44,6 +44,7 @@ struct NativeSourceEditPlan: Sendable {
     struct Layout: Codable, Equatable, Sendable {
         let duration: RationalTime
         let segments: [Segment]
+        var gaps: [TimeRange]? = nil
 
         var projectRange: TimeRange { .init(start: .zero, end: duration) }
     }
@@ -123,10 +124,9 @@ struct NativeSourceEditPlan: Sendable {
             removedDuration: removedDuration, initial: initial, steps: steps)
     }
 
-    /// One sorted-range pass creates the final XML geometry. There are no
-    /// destructive native steps and no quadratic array of intermediate layouts.
+    /// Build the final XML geometry directly from the validated ranges.
     static func makeBulk(projectData: Data, selection: TimelineSelection,
-                         removals input: [TimeRange]) throws -> NativeSourceEditPlan {
+                         removals input: [TimeRange], outputMode: SilentSnipOutputMode = .remove) throws -> NativeSourceEditPlan {
         guard !input.isEmpty else { throw NativeSourceEditPlanError.noRemovals }
         guard input.count <= maximumBulkRemovals else { throw NativeSourceEditPlanError.tooManyRemovals }
         let (document, target, identity) = try validatedSource(projectData: projectData, selection: selection)
@@ -140,7 +140,8 @@ struct NativeSourceEditPlan: Sendable {
         }
         if cursor < target.timelineRange.end { kept.append(.init(start: cursor, end: target.timelineRange.end)) }
         let initial = try layout([target.timelineRange], target: target)
-        let final = try layout(kept, target: target)
+        let replacementGaps = try outputMode.replacementGaps(for: removals, frame: document.frameDuration)
+        let final = try layout(kept, target: target, replacementGaps: replacementGaps)
         return .init(libraryURL: identity.library, eventName: identity.eventName, eventUID: identity.eventUID,
             projectName: document.projectName, projectUID: identity.projectUID,
             baselineFingerprint: document.fingerprint, projectTimecodeStart: document.projectTimecodeStart,
@@ -191,10 +192,19 @@ struct NativeSourceEditPlan: Sendable {
         return (removals, removedDuration)
     }
 
-    private static func layout(_ ranges: [TimeRange], target: TimelineClip) throws -> Layout {
+    private static func layout(_ ranges: [TimeRange], target: TimelineClip,
+                               replacementGaps: [TimeRange: RationalTime] = [:]) throws -> Layout {
         var cursor = RationalTime.zero
         var segments: [Segment] = []
-        for interval in ranges {
+        var gaps: [TimeRange] = []
+        let pieces = replacementGaps.isEmpty ? ranges : (ranges + Array(replacementGaps.keys)).sorted { $0.start < $1.start }
+        for interval in pieces {
+            if let gap = replacementGaps[interval] {
+                let end = try cursor.adding(gap)
+                gaps.append(.init(start: cursor, end: end))
+                cursor = end
+                continue
+            }
             let duration = try interval.checkedDuration()
             let end = try cursor.adding(duration)
             let sourceStart = try target.sourceStart.adding(interval.start.subtracting(target.timelineRange.start))
@@ -203,7 +213,7 @@ struct NativeSourceEditPlan: Sendable {
                 sourceRange: .init(start: sourceStart, end: try sourceStart.adding(duration))))
             cursor = end
         }
-        return .init(duration: cursor, segments: segments)
+        return .init(duration: cursor, segments: segments, gaps: gaps.isEmpty ? nil : gaps)
     }
 
     private static func validateXML(_ data: Data, document: TimelineDocument,

@@ -21,14 +21,15 @@ import FoundationXML
     func prepareJournal(directory: URL, expectedResultData: Data, effectFreeData: Data) throws {
         let expected = try TimelineParser.parse(data: expectedResultData)
         let identity = try XMLReplacementTarget(projectData: expectedResultData)
-        guard NSPasteboard.general.changeCount == clipboardStamp, !expected.clips.isEmpty,
+        let clipCount = expected.clips.filter { $0.kind != "gap" }.count
+        guard NSPasteboard.general.changeCount == clipboardStamp, clipCount > 0,
               expected.projectName == outputName,
               identity.originalProjectUID != sourceUID else { throw FinalCutCaptureError.changedProject }
         let journal = NativeBulkEffectTransferJournal.Record(token: id, sourceUID: sourceUID,
             clipboardStamp: clipboardStamp, expectedSHA256: bulkDigest(expectedResultData),
             effectFreeSHA256: bulkDigest(effectFreeData), projectName: expected.projectName,
             libraryURL: identity.libraryURL, eventUID: identity.eventUID.uuidString,
-            clipCount: expected.clips.count, stage: "import pending")
+            clipCount: clipCount, stage: "import pending")
         try journal.save(directory: directory, initial: true)
     }
 }
@@ -73,9 +74,10 @@ import FoundationXML
         let journal = try load(directory)
         let document = try TimelineParser.parse(data: expected)
         let identity = try XMLReplacementTarget(projectData: expected)
+        let clipCount = document.clips.filter { $0.kind != "gap" }.count
         guard ["effects applied; result verification pending", "completed; verified"].contains(journal.stage),
               journal.failure == nil, journal.failureStage == nil, journal.expectedSHA256 == bulkDigest(expected),
-              journal.projectName == document.projectName, journal.clipCount == document.clips.count,
+              journal.projectName == document.projectName, journal.clipCount == clipCount,
               journal.libraryURL == identity.libraryURL, journal.eventUID == identity.eventUID.uuidString,
               let uid = journal.hostUID, !uid.isEmpty, uid != journal.sourceUID else {
             throw EditedProjectWriterError.verificationFailed("the original native effects were not applied to this exact result; no import or paste was repeated")
@@ -111,8 +113,9 @@ enum BulkEffectTransferPolicy {
         helperPID > 0 && foregroundPID == helperPID && sameDialog && clipboardUnchanged
     }
 
-    static func validateSelection(expected: [TimeRange], actual: [TimeRange], selected: [Bool]) throws {
-        guard !expected.isEmpty, expected == actual, selected.count == expected.count,
+    static func validateSelection(expected: [TimeRange], actual: [TimeRange], selected: [Bool],
+                                  gapSelected: Bool = false) throws {
+        guard !gapSelected, !expected.isEmpty, expected == actual, selected.count == expected.count,
               selected.allSatisfy({ $0 }) else { throw FinalCutCaptureError.changedProject }
     }
 
@@ -459,19 +462,27 @@ extension FinalCutAXSession {
         return names
     }
 
-    private func bulkItems(plan: NativeSourceEditPlan) throws -> [BulkItem] {
+    private struct BulkTimelineItems {
+        let clips: [BulkItem]
+        let gapSelected: Bool
+    }
+
+    private func bulkItems(layout: NativeSourceEditPlan.Layout, plan: NativeSourceEditPlan) throws -> BulkTimelineItems {
         try assertInputFocus()
         try refreshTimeline()
         guard let raw = attribute(timeline, kAXChildrenAttribute) as? [AXUIElement], raw.count <= 10_000 else { throw FinalCutCaptureError.changedProject }
         func text(_ value: Any?) -> String? { (value as? String) ?? (value as? NSNumber)?.stringValue }
         let clipDescription = "Audio-Clip:" + plan.target.name
         var items: [BulkItem] = []
+        var gaps: [TimeRange] = []
+        var gapSelected = false
         for element in raw {
             try Task.checkCancellation()
             let values = FinalCutAXAttributes.read(element, names: [kAXRoleAttribute, kAXDescriptionAttribute,
                 kAXValueAttribute, kAXSelectedAttribute, kAXChildrenAttribute])
             guard values[kAXRoleAttribute] as? String == kAXLayoutItemRole else { continue }
-            guard text(values[kAXDescriptionAttribute]) == clipDescription,
+            guard let description = text(values[kAXDescriptionAttribute]),
+                  description == clipDescription || description == "Gap:Gap",
                   let duration = text(values[kAXValueAttribute]), !duration.contains(";"),
                   let selected = (values[kAXSelectedAttribute] as? NSNumber)?.boolValue,
                   let children = values[kAXChildrenAttribute] as? [AXUIElement] else {
@@ -487,33 +498,43 @@ extension FinalCutAXSession {
             guard positions.count == 1, let position = positions[0] else { throw FinalCutCaptureError.changedProject }
             let start = try FinalCutTimecode.time(position, frameDuration: plan.frameDuration).subtracting(plan.projectTimecodeStart)
             let length = try FinalCutTimecode.time(duration, frameDuration: plan.frameDuration)
-            items.append(.init(element: element, range: .init(start: start, end: try start.adding(length)), selected: selected))
+            let range = TimeRange(start: start, end: try start.adding(length))
+            if description == clipDescription {
+                items.append(.init(element: element, range: range, selected: selected))
+            } else {
+                gaps.append(range)
+                gapSelected = gapSelected || selected
+            }
         }
-        return items.sorted { $0.range.start < $1.range.start }
+        guard gaps.sorted(by: { $0.start < $1.start }) == (layout.gaps ?? []) else {
+            throw FinalCutCaptureError.changedProject
+        }
+        return .init(clips: items.sorted { $0.range.start < $1.range.start }, gapSelected: gapSelected)
     }
 
     private func bulkAssertSelected(layout: NativeSourceEditPlan.Layout, plan: NativeSourceEditPlan) throws {
-        try bulkVerifySelection(bulkItems(plan: plan), layout: layout)
+        try bulkVerifySelection(bulkItems(layout: layout, plan: plan), layout: layout)
     }
 
-    private func bulkVerifySelection(_ items: [BulkItem], layout: NativeSourceEditPlan.Layout) throws {
-        try BulkEffectTransferPolicy.validateSelection(expected: layout.segments.map(\.timelineRange), actual: items.map(\.range), selected: items.map(\.selected))
+    private func bulkVerifySelection(_ items: BulkTimelineItems, layout: NativeSourceEditPlan.Layout) throws {
+        try BulkEffectTransferPolicy.validateSelection(expected: layout.segments.map(\.timelineRange),
+            actual: items.clips.map(\.range), selected: items.clips.map(\.selected), gapSelected: items.gapSelected)
         if let aggregate = attribute(timeline, kAXSelectedChildrenAttribute) as? [AXUIElement] {
             // All mounted clip occurrences have already supplied individual
             // selected=true and exact unique geometry above. Only the aggregate
             // count remains; avoid a quadratic AX identity cross-product.
-            guard aggregate.count == items.count else { throw FinalCutCaptureError.changedProject }
+            guard aggregate.count == items.clips.count else { throw FinalCutCaptureError.changedProject }
         }
     }
 
     private func bulkSelect(layout: NativeSourceEditPlan.Layout, plan: NativeSourceEditPlan, timing: AnalysisTiming) async throws {
-        let items = try bulkItems(plan: plan)
+        let items = try bulkItems(layout: layout, plan: plan)
         if (try? bulkVerifySelection(items, layout: layout)) != nil {
             timing.incrementCounter("apply.bulkSelection.alreadyExact")
             return
         }
-        guard items.map(\.range) == layout.segments.map(\.timelineRange),
-              AXUIElementSetAttributeValue(timeline, kAXSelectedChildrenAttribute as CFString, items.map(\.element) as CFArray) == .success else { throw FinalCutCaptureError.changedProject }
+        guard items.clips.map(\.range) == layout.segments.map(\.timelineRange),
+              AXUIElementSetAttributeValue(timeline, kAXSelectedChildrenAttribute as CFString, items.clips.map(\.element) as CFArray) == .success else { throw FinalCutCaptureError.changedProject }
         timing.incrementCounter("apply.bulkSelection.axSets")
         try await waitUntil(timeout: 3, context: "all exact retained audio clips") { (try? self.bulkAssertSelected(layout: layout, plan: plan)) != nil }
     }

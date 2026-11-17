@@ -25,11 +25,12 @@ struct BulkEffectTransferPlan: Sendable {
 
     static func make(projectData: Data, selection: TimelineSelection,
                      cuts: [TimeRange], outputName: String,
-                     projectUID: UUID = UUID()) throws -> BulkEffectTransferPlan {
+                     projectUID: UUID = UUID(), outputMode: SilentSnipOutputMode = .remove) throws -> BulkEffectTransferPlan {
         // This validates bounded XML, original library/event/project identity,
         // normal source timing, complete audio-only topology and every cut.
         let source = try NativeSourceEditPlan.makeBulk(projectData: projectData,
-            selection: selection, removals: cuts)
+            selection: selection, removals: cuts, outputMode: outputMode)
+        let replacementGaps = try outputMode.replacementGaps(for: source.removals, frame: source.frameDuration)
         let xml = try XMLDocument(data: projectData, options: [.nodeLoadExternalEntitiesNever])
         guard let clip = try xml.nodes(forXPath: "/fcpxml/library/event/project/sequence/spine/asset-clip").first as? XMLElement,
               let resources = xml.rootElement()?.elements(forName: "resources").first else {
@@ -81,14 +82,15 @@ struct BulkEffectTransferPlan: Sendable {
         let imported = try EditedProjectWriter.write(projectData: stripped,
             selection: selection, selectedRanges: source.removals,
             outputName: outputName, projectUID: projectUID,
-            destinationLibrary: source.libraryURL, selectedClipOnly: false,
+            destinationLibrary: source.libraryURL, replacementGaps: replacementGaps, selectedClipOnly: false,
             useOriginalEvent: true, omitController: true)
         let expected = try EditedProjectWriter.nativeEditExpectation(projectData: projectData,
             selection: selection, selectedRanges: source.removals,
-            outputName: outputName, projectUID: imported.report.projectUID)
+            outputName: outputName, projectUID: imported.report.projectUID, replacementGaps: replacementGaps)
         // Both routes use the established writer. Check their independent
         // geometry reports rather than comparing the intentionally different DSP.
         guard imported.report.retainedSegments == expected.report.retainedSegments,
+              imported.report.retainedSegments.map(\.resultProjectRange) == source.final.segments.map(\.timelineRange),
               imported.report.resultProjectDuration == source.final.duration,
               imported.report.projectUID == expected.report.projectUID,
               imported.report.eventUID == expected.report.eventUID else {

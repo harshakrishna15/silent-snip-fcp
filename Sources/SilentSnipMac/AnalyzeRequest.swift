@@ -75,6 +75,11 @@ public enum SilentSnipOutputMode: String, Sendable {
         let upper = try second.roundedUp(toFrame: frame)
         return try second.subtracting(lower) < upper.subtracting(second) && lower > .zero ? lower : upper
     }
+
+    func replacementGaps(for cuts: [TimeRange], frame: RationalTime) throws -> [TimeRange: RationalTime] {
+        guard let gap = try gapDuration(frame: frame) else { return [:] }
+        return cuts.reduce(into: [:]) { $0[$1] = gap }
+    }
 }
 
 /// Explicit recovery chosen in a native view; contains a local result, never media.

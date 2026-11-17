@@ -99,10 +99,10 @@ public enum EditedProjectWriter {
     /// keeps its reconstruction guard.
     static func nativeEditExpectation(projectData: Data, selection: TimelineSelection,
                                       selectedRanges: [TimeRange], outputName: String,
-                                      projectUID: UUID) throws -> EditedProjectOutput {
+                                      projectUID: UUID, replacementGaps: [TimeRange: RationalTime] = [:]) throws -> EditedProjectOutput {
         try makeOutput(projectData: projectData, selection: selection,
             selectedRanges: selectedRanges, outputName: outputName, projectUID: projectUID,
-            eventUID: UUID(), destinationLibrary: nil, replacementGaps: [:],
+            eventUID: UUID(), destinationLibrary: nil, replacementGaps: replacementGaps,
             replaceOriginal: false, selectedClipOnly: false, useOriginalEvent: true,
             omitController: false)
     }

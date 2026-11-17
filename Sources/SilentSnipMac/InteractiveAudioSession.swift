@@ -404,7 +404,7 @@ import Foundation
             timing.begin("previewPreparation")
             // Prove that the selected cuts can be represented before enabling Apply.
             if !analyzed.review.selectedCuts.isEmpty {
-                try Self.validateEditableOutput(projectData: projectData, selection: capture.selection,
+                try Self.validateEditableOutput(projectData: projectData, frame: capture.document.frameDuration, selection: capture.selection,
                     cuts: analyzed.review.selectedCuts.map(\.range), request: request,
                     outputName: Self.outputName(clip: capture.target, request: request.id))
             }
@@ -517,7 +517,7 @@ import Foundation
             try Task.checkCancellation()
             timing.begin("editValidation")
             if !result.analyzed.review.selectedCuts.isEmpty {
-                try Self.validateEditableOutput(projectData: data, selection: context.capture.selection,
+                try Self.validateEditableOutput(projectData: data, frame: current.frameDuration, selection: context.capture.selection,
                     cuts: result.analyzed.review.selectedCuts.map(\.range), request: request,
                     outputName: Self.outputName(clip: context.capture.target, request: request.id))
             }
@@ -579,15 +579,16 @@ import Foundation
                 throw AudioProjectProcessingError.changedProject
             }
             let applyRoute = try ClipAudioAnalysisRoute.resolve(projectData: baselineData, selection: capture.selection)
-            let nativePlan = try Self.nativeEditPlanIfNeeded(projectData: baselineData,
-                selection: capture.selection, cuts: removals, request: request)
+            let outputName = Self.outputName(clip: capture.target, request: request.id)
+            let transfersEffects = try Self.bulkEffectPlanIfNeeded(projectData: baselineData,
+                selection: capture.selection, cuts: removals, request: request, outputName: outputName) != nil
             let finalData: Data
             let final: TimelineDocument
             let outputMedia: MediaContentSnapshot
             let readGuard: MediaContentSnapshot.ReadGuard
             let renderGuard: MediaContentSnapshot.ReadGuard?
             let sourceOnly: XMLProjectApply.SourceOnlyEvidence?
-            if context.sourceOnlyProjectDigest != nil, request.workflowOrigin != nil, applyRoute == .source, nativePlan == nil,
+            if context.sourceOnlyProjectDigest != nil, request.workflowOrigin != nil, applyRoute == .source, !transfersEffects,
                result.analyzed.dialogueContext.sourceRange != nil,
                let evidence = try XMLProjectApply.sourceOnlyEvidence(projectData: baselineData,
                    document: capture.document, target: capture.target),
@@ -701,13 +702,12 @@ import Foundation
                 }
                 try readGuard.validate()
             }
-            if nativePlan != nil {
+            if transfersEffects {
                 guard let receipt = fullMixReceipt, let renderGuard else {
                     throw ProjectAnalysisError.invalidRenderArtifact
                 }
-                let outputName = Self.outputName(clip: capture.target, request: request.id)
                 let plan = try BulkEffectTransferPlan.make(projectData: finalData,
-                    selection: capture.selection, cuts: removals, outputName: outputName)
+                    selection: capture.selection, cuts: removals, outputName: outputName, outputMode: request.outputMode)
                 timing.recordCounters(["apply.bulkXMLCuts": removals.count, "apply.nativeRangeRemovals": 0])
                 guard !FileManager.default.fileExists(atPath: parent.path) else {
                     throw EditedProjectWriterError.unsupported("the result folder already exists")
@@ -767,7 +767,6 @@ import Foundation
             }
             timing.begin("projectCreationAndImport")
             progress("Creating the cleaned project…", 0.4)
-            let outputName = Self.outputName(clip: capture.target, request: request.id)
             let artifact = try XMLProjectApply.prepare(projectData: finalData, selection: capture.selection,
                 cuts: removals, settings: result.analyzed.settings, mode: request.outputMode,
                 outputName: outputName, directory: parent, selectedClipOnly: false, useOriginalEvent: true,
@@ -844,28 +843,25 @@ import Foundation
         }
     }
 
-    private static func nativeEditPlanIfNeeded(projectData: Data, selection: TimelineSelection,
-                                               cuts: [TimeRange], request: AnalyzeRequest) throws -> NativeSourceEditPlan? {
+    private static func bulkEffectPlanIfNeeded(projectData: Data, selection: TimelineSelection,
+                                               cuts: [TimeRange], request: AnalyzeRequest, outputName: String) throws -> BulkEffectTransferPlan? {
         do { try EditableEffectReconstruction.validate(projectData: projectData); return nil }
         catch {
-            guard request.workflowOrigin != nil, request.outputMode == .remove else { throw error }
+            guard request.workflowOrigin != nil else { throw error }
             // Bulk XML owns every cut. A single native effects transfer retains
             // omitted settings; unsupported animation/layouts never fall back to cuts.
             return try BulkEffectTransferPlan.make(projectData: projectData, selection: selection,
-                cuts: cuts, outputName: "Silent Snip Validation").sourcePlan
+                cuts: cuts, outputName: outputName, outputMode: request.outputMode)
         }
     }
 
-    private static func validateEditableOutput(projectData: Data, selection: TimelineSelection,
+    private static func validateEditableOutput(projectData: Data, frame: RationalTime, selection: TimelineSelection,
                                                cuts: [TimeRange], request: AnalyzeRequest, outputName: String) throws {
-        if try nativeEditPlanIfNeeded(projectData: projectData, selection: selection, cuts: cuts, request: request) != nil {
-            _ = try EditedProjectWriter.nativeEditExpectation(projectData: projectData, selection: selection,
-                selectedRanges: cuts, outputName: outputName, projectUID: UUID())
-        } else {
-            _ = try EditedProjectWriter.write(projectData: projectData, selection: selection,
-                selectedRanges: cuts, outputName: outputName, selectedClipOnly: false,
-                useOriginalEvent: true, omitController: true)
-        }
+        guard try bulkEffectPlanIfNeeded(projectData: projectData, selection: selection,
+            cuts: cuts, request: request, outputName: outputName) == nil else { return }
+        _ = try EditedProjectWriter.write(projectData: projectData, selection: selection,
+            selectedRanges: cuts, outputName: outputName, replacementGaps: request.outputMode.replacementGaps(for: cuts, frame: frame),
+            selectedClipOnly: false, useOriginalEvent: true, omitController: true)
     }
 
     /// Freshly verify a processed target independently of the full project mix.
