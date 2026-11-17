@@ -1140,6 +1140,7 @@ static BOOL SSWorkflowPermissionPromptPending;
     [self startAutomaticUpdateObservers];
     if (self.host) {
         [self startWindowClientIfVisible];
+        [self checkConnection:NO];
         return;
     }
     id singleton = ProExtensionHostSingleton();
@@ -1159,18 +1160,29 @@ static BOOL SSWorkflowPermissionPromptPending;
     [self checkConnection:NO];
 }
 
-// The public permission API may wait indefinitely for a user's response and
-// must run off the main thread. ask=NO observes permission without prompting.
+// AEDeterminePermissionToAutomateTarget can hang even with access granted.
+// Probe the same read-only event with a reply deadline; only Connect may prompt.
 - (void)checkHostPermissionAskingUser:(BOOL)ask completion:(void (^)(OSStatus))completion {
     NSString *bundleIdentifier = [self.host.bundleIdentifier copy];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSData *identifier = [bundleIdentifier dataUsingEncoding:NSUTF8StringEncoding];
-        AEAddressDesc target = {typeNull, NULL};
-        OSStatus status = AECreateDesc(typeApplicationBundleID, identifier.bytes, identifier.length, &target);
-        if (status == noErr) {
-            status = AEDeterminePermissionToAutomateTarget(&target, kAECoreSuite, kAEGetData, ask);
-            AEDisposeDesc(&target);
-        }
+        NSAppleEventDescriptor *libraries = [NSAppleEventDescriptor recordDescriptor];
+        [libraries setDescriptor:[NSAppleEventDescriptor descriptorWithTypeCode:'fxlb'] forKeyword:keyAEDesiredClass];
+        [libraries setDescriptor:[NSAppleEventDescriptor descriptorWithEnumCode:formAbsolutePosition] forKeyword:keyAEKeyForm];
+        OSType all = kAEAll;
+        [libraries setDescriptor:[NSAppleEventDescriptor descriptorWithDescriptorType:typeAbsoluteOrdinal bytes:&all length:sizeof(all)] forKeyword:keyAEKeyData];
+        [libraries setDescriptor:[NSAppleEventDescriptor nullDescriptor] forKeyword:keyAEContainer];
+        NSAppleEventDescriptor *event = [NSAppleEventDescriptor appleEventWithEventClass:kAECoreSuite eventID:kAEGetData
+            targetDescriptor:[NSAppleEventDescriptor descriptorWithBundleIdentifier:bundleIdentifier]
+            returnID:kAutoGenerateReturnID transactionID:kAnyTransactionID];
+        [event setParamDescriptor:[libraries coerceToDescriptorType:typeObjectSpecifier] forKeyword:keyDirectObject];
+        NSAppleEventSendOptions options = NSAppleEventSendWaitForReply | NSAppleEventSendNeverInteract;
+        if (!ask) options |= (NSAppleEventSendOptions)kAEDoNotPromptForUserConsent;
+        NSError *error = nil;
+        NSAppleEventDescriptor *reply = [event sendEventWithOptions:options timeout:5 error:&error];
+        OSStatus status = reply ? [reply paramDescriptorForKeyword:keyErrorNumber].int32Value :
+            (error ? (OSStatus)error.code : errAEEventFailed);
+        if (status == noErr && [reply paramDescriptorForKeyword:keyDirectObject].descriptorType != typeAEList) status = errAEEventFailed;
+        os_log_with_type(OS_LOG_DEFAULT, OS_LOG_TYPE_DEFAULT, "Silent Snip connection: ask=%d status=%d", ask, (int)status);
         dispatch_async(dispatch_get_main_queue(), ^{ completion(status); });
     });
 }
@@ -1179,21 +1191,31 @@ static BOOL SSWorkflowPermissionPromptPending;
 
 - (void)recheckConnection:(id)sender { [self checkConnection:NO]; }
 
+- (void)openAutomationSettings:(id)sender {
+    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"]];
+}
+
 - (void)schedulePermissionWaitDeadline:(dispatch_block_t)block {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), block);
 }
 
-- (void)showPermissionRecoveryAfterTimeout:(BOOL)timedOut {
+- (void)showConnectionRecoveryForStatus:(OSStatus)status {
     BOOL promptPending = SSWorkflowPermissionPromptPending;
+    BOOL denied = status == errAEEventNotPermitted;
+    BOOL consentRequired = status == errAEEventWouldRequireUserConsent;
     self.connectButton.hidden = NO;
-    self.connectButton.enabled = !promptPending || !self.permissionCheckToken;
-    self.connectButton.title = promptPending ? @"Check Permission" : @"Connect to Final Cut Pro";
-    self.connectButton.action = promptPending ? @selector(recheckConnection:) : @selector(requestConnection:);
+    self.connectButton.enabled = !self.permissionCheckToken;
+    self.connectButton.title = denied ? @"Open Automation Settings" :
+        (consentRequired && !promptPending ? @"Connect to Final Cut Pro" : @"Check Connection");
+    self.connectButton.action = denied ? @selector(openAutomationSettings:) :
+        (consentRequired && !promptPending ? @selector(requestConnection:) : @selector(recheckConnection:));
     self.selectedClipLabel.stringValue = @"Connect to Final Cut Pro";
     self.selectedClipLabel.toolTip = nil;
-    [self setStatusMessage:(timedOut || promptPending)
-        ? @"Check the macOS permission dialog or allow access in System Settings > Privacy & Security > Automation."
-        : @"Allow Silent Snip to access Final Cut Pro to show the open project and playhead."];
+    if (denied) [self setStatusMessage:@"Enable Final Cut Pro under Silent Snip Workflow Prototype in Automation settings, then return here."];
+    else if (promptPending) [self setStatusMessage:@"Respond to the macOS access dialog, or enable Final Cut Pro in Automation settings, then click Check Connection."];
+    else if (consentRequired) [self setStatusMessage:@"Allow Silent Snip to access Final Cut Pro to show the open project and playhead."];
+    else if (status == errAETimeout) [self setStatusMessage:@"Final Cut Pro did not respond to the connection check. Click Check Connection to retry."];
+    else [self setStatusMessage:[NSString stringWithFormat:@"Silent Snip could not check the Final Cut Pro connection (%d). Click Check Connection to retry.", (int)status]];
 }
 
 - (void)checkConnection:(BOOL)ask {
@@ -1213,7 +1235,10 @@ static BOOL SSWorkflowPermissionPromptPending;
     [self checkHostPermissionAskingUser:ask completion:^(OSStatus status) {
         SSWorkflowViewController *owner = weakSelf;
         if (ask) SSWorkflowPermissionPromptPending = NO;
-        else if (owner.permissionCheckToken == wait) owner.permissionCheckToken = nil;
+        else {
+            if (owner.permissionCheckToken != wait) return;
+            owner.permissionCheckToken = nil;
+        }
         if (!owner || !owner.viewVisible || generation != owner.contextGeneration) return;
         if (![owner hasVerifiedWindowHost]) {
             [owner stopWindowClient];
@@ -1223,7 +1248,7 @@ static BOOL SSWorkflowPermissionPromptPending;
         if (status != noErr) {
             if (owner.permissionWaitToken && owner.permissionWaitToken != wait) return;
             owner.permissionWaitToken = nil;
-            [owner showPermissionRecoveryAfterTimeout:NO];
+            [owner showConnectionRecoveryForStatus:status];
             return;
         }
         owner.permissionWaitToken = nil;
@@ -1238,7 +1263,8 @@ static BOOL SSWorkflowPermissionPromptPending;
         if (!owner || !owner.viewVisible || generation != owner.contextGeneration ||
             owner.permissionWaitToken != wait || ![owner hasVerifiedWindowHost]) return;
         owner.permissionWaitToken = nil;
-        [owner showPermissionRecoveryAfterTimeout:YES];
+        if (owner.permissionCheckToken == wait) owner.permissionCheckToken = nil;
+        [owner showConnectionRecoveryForStatus:errAETimeout];
     }];
 }
 
@@ -1463,7 +1489,9 @@ static BOOL SSWorkflowPermissionPromptPending;
     if (![application respondsToSelector:@selector(bundleIdentifier)] ||
         ![[application bundleIdentifier] isEqual:@"com.apple.FinalCut"]) return;
     [self onMain:^{
-        if (!self.automaticUpdatePending || !self.viewVisible) return;
+        if (!self.viewVisible) return;
+        if (!self.timeline) [self checkConnection:NO];
+        if (!self.automaticUpdatePending) return;
         self.automaticUpdateRejectedGeneration = 0;
         [self queueAutomaticUpdate];
     }];

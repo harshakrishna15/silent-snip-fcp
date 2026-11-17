@@ -19,6 +19,8 @@ The local installer is unsigned, and the apps use ad hoc signing by default. mac
 - **Worker control access:** in **System Settings → Privacy & Security → Device Control and Data Access**, enable the installed **Silent Snip.app**. Earlier macOS versions call this setting **Accessibility**.
 - **Frontend Automation access:** open **Window → Extensions → Silent Snip** in Final Cut, click **Connect to Final Cut Pro** if shown, and approve its Automation request.
 
+If you previously denied access, click **Open Automation Settings** and enable **Final Cut Pro** under **Silent Snip Workflow Prototype**. Return to Final Cut to reconnect automatically. If access is already enabled and the connection check times out, click **Check Connection** to retry.
+
 Grant access to the installed worker, or to `build/App/Silent Snip.app` for an in-place developer build. A staged candidate cannot handle the live workflow. Rebuilding an ad hoc signed worker can leave its existing access entry stale; quit and reopen it, then refresh that entry if access still fails.
 
 ## Add the Share destination

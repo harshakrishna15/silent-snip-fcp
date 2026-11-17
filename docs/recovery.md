@@ -47,7 +47,7 @@ Keep files from the same result folder together. Edited or mismatched artifacts 
 | Problem | What to do |
 | --- | --- |
 | Silent Snip is missing from **Window → Extensions** | Open the complete Workflow app once, choose **Done**, and restart Final Cut. Keep one active frontend copy. |
-| The extension cannot connect | Click **Connect to Final Cut Pro** and check the frontend's Automation permission. |
+| The extension cannot connect | Use **Connect to Final Cut Pro** for first-time consent. If access is denied, **Open Automation Settings** and enable **Final Cut Pro** under **Silent Snip Workflow Prototype**. Returning to Final Cut rechecks access automatically; **Check Connection** retries a stalled connection without another prompt. |
 | Analyze cannot launch the worker | Check that the installed worker is still at its expected path. A staged candidate cannot handle live requests. |
 | Analyze cannot open Share | Check the exact **Silent Snip** destination name, **Audio Only / WAV**, and the action pointing at the worker. |
 | Control access fails after rebuilding | Quit and reopen the worker. Refresh its existing control-access entry in System Settings if needed. |
