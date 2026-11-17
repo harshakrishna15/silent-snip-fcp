@@ -1,5 +1,7 @@
 # Historical integration record (through September 16, 2026)
 
+Test harnesses and fixture generators referenced in this historical record were removed during the 1.0 cleanup. Their source remains in [pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/commit/29827cd).
+
 > Historical development record. Product names in this record are normalized to current branding; original evidence filenames and system labels may differ. Build paths, installed/staged app state, and test totals below describe the original run. Generated logs and Final Cut libraries are not included in Git. Use the [README](../README.md) for verification of this repository copy and [setup](setup.md) for a fresh installation.
 
 Product prose uses the current Silent Snip name; recorded project names and artifact paths keep their original spelling.

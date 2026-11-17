@@ -1,5 +1,7 @@
 # Visible Share plugin prototype
 
+The retired prototype packager was removed during the 1.0 cleanup. Its source remains in [pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/blob/29827cd/Scripts/build-quiet-share-prototype.sh); this development report is retained.
+
 Use this prototype through the **Silent Snip Audio effect inside Final Cut Pro**. The existing Controls window provides Analyze, review, and Apply. There is no separate test window or Dock application UI.
 
 The user removed the covering-window requirement on October 28, 2026. The prototype now leaves Final Cut's native Share panels and project transitions visible. It creates no cover or separate progress window. Final Cut must still remain in front during host automation. The file and build-script names retain the earlier prototype name.

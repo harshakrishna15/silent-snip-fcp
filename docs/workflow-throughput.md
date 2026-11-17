@@ -1,5 +1,7 @@
 # Workflow throughput and audio preservation
 
+The fixture generators and measurement scripts referenced below were removed during the 1.0 cleanup. Their source remains in [pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/tree/29827cd/Scripts); the recorded results and measurement method are retained here.
+
 ## November 9 analysis and navigation candidate
 
 The installed worker 78 completed two analyses on the same disposable 24-second Noise Gate → Limiter clip in the workspace's **Cutdown Integration.fcpbundle**. Separate XML and audio exchanges took **7.004 s** and **7.134 s**. Two more analyses using the existing combined exchange took **6.031 s** and **4.299 s**. All four reviews found the same six cuts. The separate XML exchange accounted for **2.231–2.610 s**. The runs were sequential, with different host activation conditions. They measure the installed worker and establish the cost of the exchange this candidate can skip more often.

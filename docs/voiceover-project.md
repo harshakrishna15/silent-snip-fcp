@@ -1,5 +1,7 @@
 # Editable voice-over project milestone
 
+The fixture generator referenced below was removed during the 1.0 cleanup. Its source remains in [pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/blob/29827cd/Scripts/make-voiceover-fixture.py); this milestone report and exported evidence are retained.
+
 October 28, 2026. The selected voice-over milestone passed offline checks and fresh native Analyze → Apply tests in Final Cut Pro 12.4 (454072). The installed app and distributable ZIP contain the tested helper.
 
 ## Behavior

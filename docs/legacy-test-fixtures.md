@@ -1,5 +1,7 @@
 # Native Final Cut fixtures
 
+These notes describe fixtures removed during the requested 1.0 cleanup. The fixtures and their regression tests remain available in [pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/tree/29827cd/Tests/SilentSnipCoreTests/Fixtures).
+
 The `final-cut-12-3-*` fixtures came from Final Cut Pro 12.3 exports of generated local media inside the required `Cutdown Integration.fcpbundle` library. File URLs, library and media identifiers, timestamps, and bookmark data are sanitized. The paired `native-range-before.fcpxml` and `native-range-after.fcpxml` fixtures use the same neutral identifiers and placeholder bookmark data; their timeline edits are preserved.
 
 `timeline-context.fcpxml` uses a trimmed, repeated audio-only recording with connected speech, music, titles, markers, and audio effects. It exercises project timing and preservation around an audio target. The historical `final-cut-12-3-basic.fcpxml` video export is retained only to verify that video remains readable timeline context and is rejected as a Silent Snip target; video effects must remain part of the project fingerprint.

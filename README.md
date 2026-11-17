@@ -110,7 +110,7 @@ Targets must be normal-speed direct asset clips with enabled audio in the primar
 
 Recorded builds used Xcode 27.0 / Swift 6.4. Current development checks use Final Cut Pro 12.4 on macOS 27.2; historical reports used earlier macOS releases and Final Cut Pro 12.3. Other combinations have not been verified here.
 
-Installing the prebuilt apps takes only Finder and macOS Installer. Building from source requires full Xcode with first-launch setup completed and Apple’s Workflow Extensions SDK as documented in the [frontend guide](docs/workflow-extension-prototype.md). There are no external Swift package dependencies. Python 3 is needed for build-script tests; generating integration media also requires FFmpeg.
+Installing the prebuilt apps takes only Finder and macOS Installer. Building from source requires full Xcode with first-launch setup completed and Apple’s Workflow Extensions SDK as documented in the [frontend guide](docs/workflow-extension-prototype.md). There are no external Swift package dependencies. Python 3 is needed for package verification during the build.
 
 ## Install
 
@@ -156,34 +156,13 @@ Quit Final Cut and both Silent Snip apps, then move **Silent Snip.app** and **Si
 
 Developer builds can be removed with `Scripts/uninstall-local.sh`. Use `--dry-run` to preview or `--remove-data` to erase this account's saved settings, results, and recovery XML. This script only removes app bundles inside the checkout; protected data may require manual removal in Finder.
 
-## Tests
+## Development validation history
 
-Offline tests cover Swift processing, the Workflow controller and clients, and build scripts. Legacy Audio Unit harnesses remain available for compatibility checks. They do not edit Final Cut projects.
-
-<details>
-<summary>Run the offline tests</summary>
-
-Run from the repository root. Reuse `build/swift` for all Swift builds:
-
-```sh
-mkdir -p build/module-cache build/swift-cache
-CLANG_MODULE_CACHE_PATH="$PWD/build/module-cache" \
-SWIFTPM_MODULECACHE_OVERRIDE="$PWD/build/module-cache" \
-swift test --disable-sandbox --scratch-path build/swift --cache-path build/swift-cache -c release
-
-WorkflowPrototype/Tests/run-controller-tests.sh
-WorkflowPrototype/Tests/run-review-client-tests.sh
-WorkflowPrototype/Tests/run-window-client-tests.sh
-python3 -B -m unittest discover -s Tests/BuildScripts -p 'test_*.py'
-```
-
-Audio decoding requires access to macOS media services. Xcode builds may also need process-list and debug-symbol-generation access. Record sandbox or environment failures separately from test failures.
-
-</details>
+Version **1.0.0** uses worker build **80** and Workflow frontend/extension build **32**. The automated test suites, fixture generators, prototype packager, and preview harness were removed during the requested release cleanup. Their complete source, including the preceding bug fixes, is preserved in [the pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/commit/29827cd). Historical reports below describe their recorded runs. Package and signature validation remain part of the normal build.
 
 **Live Final Cut tests must use `Cutdown Integration.fcpbundle` at the repository root.** A fresh checkout does not include it: create an empty library at that exact path, or reuse the existing one. Use small disposable projects with generated media referenced in place, without copied, optimized, or proxy media.
 
-Follow [integration-test setup](docs/setup.md#integration-test-library) and [AGENTS.md](AGENTS.md) before testing.
+Follow [integration-test setup](docs/setup.md#integration-test-library) and [AGENTS.md](AGENTS.md) before any future live validation. The disposable November bug-sweep event and latency-test Share destination were removed; the required library, other project, original media, and exported evidence were retained.
 
 ## Verification status
 

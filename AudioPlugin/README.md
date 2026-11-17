@@ -1,6 +1,6 @@
 # Silent Snip Audio: settings and actions in the effect window
 
-> Legacy interface retained for compatibility and regression tests. The current distribution uses **Window → Extensions → Silent Snip** and does not require an audio effect. See [the button workflow](../docs/workflow.md).
+> Legacy interface documentation. The current distribution uses **Window → Extensions → Silent Snip** and does not require an audio effect. The test and preview harnesses described below were removed during the 1.0 cleanup and remain available in [pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/tree/29827cd/AudioPlugin). See [the button workflow](../docs/workflow.md).
 
 Add **Silent Snip Audio** from the Effects browser and open its **Controls** window in Final Cut. The four detection settings and Output stay visible. Click **Analyze Audio** to capture current processed audio, review the proposed cuts, then click **Apply Cuts**. Configure the required Share destination once using [first-time setup](../docs/setup.md). Normal use initiates and confirms the native Share operations programmatically.
 

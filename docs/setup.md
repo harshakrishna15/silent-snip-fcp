@@ -79,17 +79,9 @@ Omitting `--check-only` registers that exact pair while Final Cut is closed and 
 
 Every live test must run only in **Cutdown Integration.fcpbundle** at the repository root. Reuse it if it already exists. On a fresh checkout, create a new empty Final Cut library with that exact name and location before testing. Do not use another library or a real editing project. Libraries are deliberately ignored by Git.
 
-Install FFmpeg and Python 3 to generate test media, then run:
+The 1.0 cleanup removed the automated suites, fixture generators, and disposable November bug-sweep event. Their source is preserved in [pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/commit/29827cd); [the fixture notes](legacy-test-fixtures.md) and historical integration reports remain in this checkout. The required library, its other project, original media, and exported evidence were retained.
 
-```sh
-ffmpeg -version
-python3 --version
-Scripts/make-fixtures.sh
-```
-
-The script writes WAV files, FCPXML bundles, and expected-results JSON under `build/Fixtures`. XML validation expects Final Cut at `/Applications/Final Cut Pro.app` with the FCPXML 1.14 DTD. Resolve a missing DTD before relying on validation.
-
-With the required library open, import `build/Fixtures/Silent Snip Audio Only Basic.fcpxmld` into it. Keep generated media referenced in place; disable copied, optimized, and proxy media. Use a fresh small disposable project for each run. Sanitized files under `Tests/SilentSnipCoreTests/Fixtures` have placeholder media URLs for offline tests; use generated media for live imports. A fixture containing a legacy detector can be tested with that detector removed in the disposable project; the Workflow route itself does not need one.
+For future live validation, prepare small generated media and import it into this exact library. Keep media referenced in place; disable copied, optimized, and proxy media. Use a fresh disposable project for each run. Historical sanitized XML fixtures have placeholder media URLs and cannot serve as live media. The Workflow route does not need a legacy detector effect.
 
 Follow [the workflow](workflow.md): select the clip, open **Window → Extensions → Silent Snip**, Analyze, review, and Apply. Check retained intervals, processed-media references, audio routing, duration, preview, and recovery. Test automatic range updates on an eligible source/direct-render clip, including rapid edits, invalid input and zero new Share jobs; also test Go to Cut at a nonzero boundary and saved-result verification after restart without reimport. Verify unchanged original media and processing effects. Exported PCM comparisons are separate evidence of sound preservation; an extension loading or analysis passing does not prove automatic cuts. Preserve source media, durable processed audio, and exported evidence separately from caches.
 

@@ -16,9 +16,6 @@ let package = Package(
         .target(name: "SilentSnipWorkflowModel"),
         .target(name: "SilentSnipMac", dependencies: ["SilentSnipCore"]),
         .executableTarget(name: "SilentSnipApp", dependencies: ["SilentSnipCore", "SilentSnipMac"]),
-        .executableTarget(name: "SilentSnipVerify", dependencies: ["SilentSnipCore", "SilentSnipMac"]),
-        .testTarget(name: "SilentSnipWorkflowModelTests", dependencies: ["SilentSnipWorkflowModel"]),
-        .testTarget(name: "SilentSnipCoreTests", dependencies: ["SilentSnipCore"], resources: [.copy("Fixtures")]),
-        .testTarget(name: "SilentSnipMacTests", dependencies: ["SilentSnipCore", "SilentSnipMac"])
+        .executableTarget(name: "SilentSnipVerify", dependencies: ["SilentSnipCore", "SilentSnipMac"])
     ]
 )

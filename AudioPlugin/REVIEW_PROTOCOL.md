@@ -1,5 +1,7 @@
 # Audio effect window review channel
 
+The test harnesses and state fixture referenced here were removed during the 1.0 cleanup. Their source remains in [pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/commit/29827cd); this protocol documentation is retained.
+
 The current window sends Analyze through the local URL handler in its own containing app, then polls this
 channel for status. It sends Apply only from the separate button after a valid
 review response. The helper now dispatches both operations through the analysis

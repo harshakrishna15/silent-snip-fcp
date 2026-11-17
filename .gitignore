@@ -18,12 +18,10 @@ xcuserdata/
 *.xcscmblueprint
 
 # Final Cut libraries and local exports may contain personal paths/bookmarks.
-# Keep sanitized XML fixtures used by the regression tests.
 *.fcpbundle/
 *.fcpcache/
 *.fcpxmld/
 *.fcpxml
-!Tests/SilentSnipCoreTests/Fixtures/*.fcpxml
 /Fixtures/
 /Exports/
 /Recordings/
