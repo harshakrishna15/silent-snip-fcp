@@ -1,26 +1,22 @@
-# Workflow icon
+# Workflow icons
 
-`ExtensionIcon` is a transparent split-waveform silhouette. Final Cut's toolbar
-tints its alpha, so an opaque colored badge would become a solid square.
-`SilentSnipIcon.svg` is its editable vector drawing. The separate `WorkflowBadge`
-assets and `WorkflowBadge.svg` retain the mint badge for the window header and
-containing app. `Scripts/render-workflow-icon.m` renders both geometries offscreen
-with AppKit and creates their macOS icon representations.
+The extension uses a transparent waveform icon; the app and window header use the mint badge.
 
-Apple's installed Workflow Extensions SDK template declares
-`CFBundleIconFile = ExtensionIcon` in `TemplateInfo.plist` and provides 32 × 32
-and 64 × 64 artwork in its `AppIcon.appiconset`. The extension uses that public
-bundle-icon contract. This does not replace Final Cut's own generic Extensions
-button when the host chooses to display one.
+| Resource | Use |
+| --- | --- |
+| `SilentSnipIcon.svg` | Editable waveform artwork |
+| `ExtensionIcon.icns` | Transparent extension icon |
+| `WorkflowBadge.svg` | Editable mint badge artwork |
+| `WorkflowBadge.icns` | Containing app icon, copied as `AppIcon.icns` |
+| `WorkflowBadge.png` | Window header badge |
 
-To regenerate the checked-in icon resources from the repository root:
+Final Cut tints the extension icon's alpha, so keep its background transparent. An opaque badge would appear as a solid square. The extension declares `CFBundleIconFile = ExtensionIcon`; Final Cut may still show its own generic Extensions toolbar button.
+
+To regenerate the resources from the repository root:
 
 ```sh
 xcrun clang -fobjc-arc -framework AppKit Scripts/render-workflow-icon.m -o /tmp/silentsnip-icon
 /tmp/silentsnip-icon WorkflowPrototype/Resources
 ```
 
-The generator opens no windows, reads no projects or media, and removes its
-temporary iconsets. The containing app receives `WorkflowBadge.icns` as
-`AppIcon.icns`; the extension's public bundle-icon declaration uses the
-transparent `ExtensionIcon.icns`. The header loads `WorkflowBadge.png`.
+The generator uses AppKit offscreen, opens no windows, and removes its temporary iconsets.

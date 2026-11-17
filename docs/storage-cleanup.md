@@ -1,40 +1,39 @@
-# Storage and safe cache cleanup
+# Storage and cleanup
 
-The worker runs without a menu bar icon; cache cleanup is automatic. New operations cancel an already-running cleanup and wait for it to stop before using cached files. Hashing checks cancellation between 1 MiB reads, so maintenance does not sit in front of a fresh Analyze or Apply request. Disk traversal and hashing run away from the UI thread.
+Silent Snip cleans up its recorded disposable audio automatically at launch and every ten minutes while idle. There is no menu bar cleanup command.
 
-Automatic cleanup runs at launch and every ten minutes while idle. Recorded, unmodified disposable audio is eligible after seven days, or sooner when the recorded cache exceeds 256 MiB. The oldest unpinned copies go first. The current reusable analysis audio is pinned. Active, changed, inaccessible, or uncertain files take precedence over reaching the size target.
+Files become eligible after seven days, or sooner when the recorded disposable cache exceeds 256 MiB. The oldest unpinned copies go first. Active, changed, or uncertain files are kept, so the size target is not a hard limit on total storage.
 
-## What can be deleted
+## Storage locations
 
-The app records an inventory only for cache copies it creates and completed, verified, request-owned processing renders. An inventory entry identifies one file directly inside `Temporary/<job UUID>` or `Share Inbox/<job UUID>`, including its device/inode, size, modification time, and content hash. `Temporary` permits only `Cached-Processed-Audio.wav`. Share processing renders permit the PCM audio formats the existing Share exchange accepts.
+Worker files live under `~/Library/Application Support/Silent Snip`:
 
-Before deletion, cleanup validates the permitted location, regular-file type, single link, file identity, and unchanged content hash. It rejects symlinked roots, job directories, registries, audio files, and hard-linked audio. It unlinks one verified file at a time. Empty job directories may be removed with `rmdir`, which cannot remove any directory containing XML or unknown siblings. It never recursively purges job folders.
+| Folder | Contents | Automatic cleanup |
+| --- | --- | --- |
+| `Results/<request UUID>/` | Edited XML, recovery XML, reports, settings snapshots, and receipts | Kept |
+| `Processed Audio/<request UUID>/` | Durable rendered audio used by older cleaned projects | Kept |
+| `Temporary/<request UUID>/` | Job diagnostics and owned cache copies | Only recorded disposable audio is eligible |
+| `Share Inbox/<request UUID>/` | Files delivered through Share | Only recorded, completed processing renders are eligible |
+| `Cache Records/` | Ownership records for disposable audio | Records are removed after their file is deleted or absent |
 
-`Cache Records` contains the small ownership inventory. An entry is removed after its audio is deleted or known to be absent. Missing or malformed ownership information does not authorize deletion.
+Per-project Workflow settings are stored as `Project-Settings.json` in the frontend's sandbox, under its `Application Support/Silent Snip Workflow Prototype` directory. They are kept during cache cleanup.
 
-## What stays
+## Files to keep
 
-- The entire `Results` directory, including before/after XML, recovery and verification receipts, edit reports, and settings snapshots.
-- Durable `Processed Audio/<request UUID>/Processed-Audio.wav` media referenced by cleaned Final Cut projects. It is never registered as disposable audio, and uninstall data removal also preserves it.
-- Every XML/FCPXML/FCPXMLD export, including diagnostic exports in temporary jobs.
-- Original media, Final Cut libraries/projects, source files, extension settings, and preferences.
-- Manual Share exports. They are user output, not automatically generated analysis cache.
-- Unregistered legacy files, incomplete exports whose ownership was not recorded, modified files, and unknown files placed beside a disposable copy.
+Keep the original media referenced by current cleaned projects. For older rendered-audio results, also keep `Processed Audio/<request UUID>/Processed-Audio.wav`. Moving or deleting it without relinking can leave a project without audio.
 
-These exceptions mean total application storage is not hard-capped: saved results and recovery history accumulate deliberately. A crash before an incomplete render is inventoried can also leave an unknown file. The cleanup command does not guess that an audio extension or an old timestamp makes such a file safe to delete. Review these files manually if needed; automated cleanup never trades away recovery or media safety to reclaim more space.
+Keep original native Final Cut projects and libraries, especially when they contain effects whose private settings are absent from XML. Saved result and recovery folders are useful additional copies; they are not media backups.
 
-Keep durable processed audio when archiving or moving a cleaned project. Manual deletion or moving it without relinking can make that project's audio unavailable. Archive or relink the media and confirm no remaining project depends on its old location before removing it. Container identity metadata distinguishes each durable file; its PCM and format bytes retain the native render exactly.
+Automatic cleanup preserves all XML exports, result folders, recovery files, settings, libraries, original media, durable processed audio, and manual Share exports. It also keeps unknown, unregistered, modified, or incomplete files.
+
+Before manually removing media, archive or relink it and confirm that no remaining project depends on the old path. [Uninstall](setup.md#uninstall) keeps data by default; its optional data-removal mode deletes known settings and recovery reports but still preserves durable processed audio.
+
+## How cleanup chooses files
+
+Only files with recorded ownership are candidates. Cleanup checks the allowed job location, file identity, size, timestamps, and content hash before deleting one file at a time. Symlinks, hard links, changed files, and missing or malformed ownership records are rejected.
+
+It removes an empty job directory only if it is actually empty. It does not recursively purge job folders. New operations stop an active cleanup before using the cache.
 
 ## Logs
 
-Only the Share event log rotates: `Share Inbox/events.jsonl` and `events.previous.jsonl`, each at most 1 MiB. A single oversized event is replaced by a small omission notice. Existing oversized current logs are discarded rather than copied into an oversized backup. Symlinked or hard-linked log paths are not written or rotated. Other diagnostic and recovery files are preserved.
-
-## Verification
-
-Tests run inside private temporary fixtures. They place recovery XML, original media, manual Share output, modified cache content, existing destination files, unknown files, symlinks, and hard links next to disposable entries and verify preservation. Other checks cover age/size eviction, active-file pins, log limits, overlapping cleanup, and operations waiting for cleanup. No Final Cut library is modified by these tests.
-
-Build, installed-app checks, and native menu validation are recorded separately from live Final Cut editing. Storage cleanup does not establish successful automatic Apply.
-
-On October 23, build 10 passed 352 Swift tests (one skipped, zero failures) and 53 build-script tests. The installed app and ZIP matched the published bundle, signatures and extension sandbox were verified, and Apple's Audio Unit validation passed. Launching the installed app removed a synthetic eight-day-old inventoried cache file and its record. SHA-256 checks confirmed that all 142 existing saved/library files and the referenced original source file remained unchanged. After refreshing its existing control-access grant, the copied app reported `ready`. The manual cleanup/controller paths are covered by isolated tests; the native menu command and a live Final Cut editing pass remain separate manual checks.
-
-Local evidence is preserved in `build/StorageCleanupEvidence`, with test/build logs in `build/storage-cleanup-*.log`. These generated files are excluded from Git.
+Share event logs rotate between `Share Inbox/events.jsonl` and `events.previous.jsonl`, each limited to 1 MiB. Other diagnostics and recovery files stay on disk, so saved results and logs can grow over time.

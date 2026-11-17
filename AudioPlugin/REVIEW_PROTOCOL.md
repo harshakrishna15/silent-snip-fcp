@@ -1,179 +1,81 @@
-# Audio effect window review channel
+# Review transport
 
-The test harnesses and state fixture referenced here were removed during the 1.0 cleanup. Their source remains in [pre-cleanup commit `29827cd`](https://github.com/harshakrishna15/silent-snip-fcp/commit/29827cd); this protocol documentation is retained.
+The worker and sandboxed clients exchange review commands through `DistributedNotificationCenter` in the current macOS login session. Messages use a bounded JSON string as `object` and nil `userInfo`; no network connection or shared app group is needed.
 
-The current window sends Analyze through the local URL handler in its own containing app, then polls this
-channel for status. It sends Apply only from the separate button after a valid
-review response. The helper now dispatches both operations through the analysis
-coordinator. Protocol and unit tests are not proof of a successful live Final Cut import.
+The Workflow frontend and legacy Audio Unit share the wire schema and connection validation. Launch, native-view authorization, and reconnection differ between clients. The legacy handshake below applies to the Audio Unit's Controls window.
 
-The extension resolves its exact containing `Silent Snip.app` and explicitly
-targets that application for Analyze and saved-result verification. A competing
-legacy helper cannot receive these requests through the default URL association.
-The extension remains a separate sandboxed process; the containing app runs the
-existing background workflow. Matching builds are required for settings previews.
+## Owning code
 
-The Audio Unit's custom effect window and the Silent Snip helper communicate through
-`DistributedNotificationCenter` within the current macOS login session. The Audio
-Unit remains sandboxed. No network or shared application-group entitlement is
-needed. Apple allows sandboxed notifications when `userInfo` is nil; Silent Snip uses
-a bounded JSON string as the notification's `object`.
+| File | Responsibility |
+| --- | --- |
+| `Sources/SilentSnipMac/ReviewTransport.swift` | Schema, payload limits, and command validation |
+| `Sources/SilentSnipMac/ReviewState.swift` | Worker review states |
+| `AudioPlugin/Extension/SilentSnipReviewConnection.m` | Response validation, heartbeats, pending commands, and acknowledgments |
+| `WorkflowPrototype/Extension/WorkflowReviewClient.m` | Workflow launch, capabilities, and review commands |
 
-- [Apple: sandboxed distributed notifications](https://developer.apple.com/documentation/foundation/distributednotificationcenter/post(name:object:userinfo:))
-- [Apple: distributed notification delivery and security](https://developer.apple.com/documentation/foundation/distributednotificationcenter)
+## Messages
 
-`Sources/SilentSnipMac/ReviewTransport.swift` defines the schema.
-`ReviewState.swift` defines typed helper states; the Objective-C
-`SilentSnipReviewConnection` owns validation, cached heartbeats, pending commands,
-and acknowledgment state independently of the view. Both implementations check
-their state policies against `AudioPlugin/Tests/review-states.json`.
-Commands use notification name
-`local.silentsnip.review.command.v1`. Responses use
-`local.silentsnip.review.response.v1.<uppercase request UUID>`.
+Commands use `local.silentsnip.review.command.v1`. Responses use `local.silentsnip.review.response.v1.<uppercase request UUID>`.
 
-Every payload contains `version: 1` and `request`. Responses also contain a
-monotonic `revision`. Payloads are limited to 256 KiB and at most 2,000 cut rows.
-Project XML, source paths, and audio samples are not sent through this channel.
+Every payload contains `version: 1` and `request`. Responses include a monotonic `revision`. The limit is 256 KiB and 2,000 cut rows. Audio samples, project XML, and source paths do not travel through this channel.
 
-The view subscribes before launching the helper and polls the latest revision to
-recover lost notifications. Unacknowledged Apply, selection, settings, preview, and verification-retry commands resend the same pending request. The helper applies a job at most once. An acknowledged Apply is only polled. After 15 seconds without an accepted response, the window invalidates the review, warns of any uncertain import, and re-enables Analyze.
+Clients subscribe before launching the worker and poll its latest revision because notifications can be lost. Review edits, navigation, and Apply carry `expectedRevision`; Apply also carries the native `view` UUID and a fresh `applyGesture` UUID. The worker checks request ownership, current capabilities, the requesting view, project state, and recovery requirements before editing.
 
-The helper validates and serializes each revision once. Identical responses only
-refresh the connection heartbeat; they do not decode again or rebuild the table.
-Equal revisions cannot acknowledge pending edits, restore an invalidated review,
-or clear a timeout notice. While Apply is unacknowledged, the preceding review
-does not postpone its timeout. While the same view instance remains alive,
-reopening resumes status polling with a fresh response interval. Polls use
-common run-loop modes. Terminal states with no pending operation do not require
-a heartbeat. A timeout clears pending mutation commands but keeps read-only
-status polling, allowing a newer failure to replace the provisional timeout.
-This does not restore Apply eligibility. Explicit verification retry and a new
-Analyze receive fresh deadlines.
-A replacement view does not currently recover an older view's job identifier.
-Helpers silently ignore status requests for jobs they do not own. This prevents
-another running helper from overwriting the owner's response. If the owner exits,
-the existing 15-second timeout enables Analyze again.
+Notifications are untrusted input. Receiving a message alone never authorizes an edit. Audio rendering never launches the worker or sends commands.
 
-Commands are `status`, `cancel`, `include`, `selectAll`, `deselectAll`, `highlight`,
-`apply`, `retryVerification`, `preview`, and `recalculate`. Detection and output
-edits recalculate the current retained review while fresh verification gates Apply.
-An `analyzing` response can contain verified cut rows while cleanup
-runs, but `canApply`, `canChangeSelection`, and `canHighlight` remain false until
-`review`. Capability flags from the helper enable each implemented operation.
-`canApply` and `canHighlight` default to false. Defining a command does not
-establish that its timeline operation is implemented.
+## Commands
 
-Selection, preview, highlight, and Apply commands include `expectedRevision`.
-The helper accepts them only while that review revision is current, so a delayed
-retransmission cannot undo a newer choice. Apply also includes the Controls view
-UUID and a fresh `applyGesture` UUID. The Apply button exposes that gesture in
-its accessibility identifier only after a click and while disabled awaiting
-acknowledgment. The helper checks the button in the sole selected clip's focused
-Controls window before starting the edit. Apply retries carry the same gesture and
-revision; acknowledgment or timeout clears the identifier.
+| Command | Purpose |
+| --- | --- |
+| `status`, `cancel` | Poll an owned request or stop it |
+| `include`, `includeGroup`, `selectAll`, `deselectAll` | Change cut inclusion |
+| `preview` | Toggle the timeline overlay; `included` must be a JSON boolean |
+| `recalculate` | Refresh cuts from retained measurements |
+| `adjustCut` | Narrow or reset a cut boundary |
+| `audition`, `stopAudition` | Play or stop a source-audio comparison |
+| `highlight` | Request worker-managed cut navigation |
+| `prepareNavigation`, `navigationFinished` | Coordinate Workflow SDK navigation |
+| `apply` | Apply the reviewed plan after a native gesture |
+| `retryVerification` | Check an existing result without importing again |
 
-Distributed notifications are untrusted. The helper must require an existing
-matching job, validate command payloads and current capabilities, and run the
-separate project-state and recovery checks before any timeline edit. Receiving a
-message itself does not authorize an edit. Rendering never launches the helper
-or sends review commands.
+Capabilities advertised by the worker determine which commands are available. Defining a command does not enable it. `canApply` and `canHighlight` default to false.
 
-## Focused checks
+## Acknowledgments and timeouts
 
-- `AudioPlugin/test-factory.sh`: independent scenarios for settings/native state,
-  Analyze connection, heartbeats, lost preview/retry delivery, selection, Apply,
-  navigation, and recovery. Each starts with a fresh view, processor, and private
-  settings store. The harness also checks the shared protocol state fixture.
-- `ReviewTransportTests`: Swift schema round trips, malformed/oversized command
-  rejection, settings validation and default-disabled capabilities.
-- The current window sends `status`, `cancel` (when replacing a request),
-  `preview`, `apply`, `retryVerification`, `highlight`, `include`, `selectAll`, and `deselectAll`. Selection acknowledgments must contain the requested inclusion values before Apply is re-enabled. Other schema commands remain available for future integration.
-- All live Final Cut checks use only the workspace integration library.
+Clients resend an unacknowledged command with the same request, revision, and gesture/edit identity. An acknowledged Apply is only polled. The worker applies a plan at most once; stale retransmissions cannot undo newer choices or start another verification attempt.
 
-## Preview visibility
+Identical responses refresh the connection heartbeat without rebuilding the table. Equal revisions cannot acknowledge pending edits or restore an invalidated review. After 15 seconds without an accepted response, the connection invalidates the review and clears pending mutation commands. Read-only polling can continue, but it cannot restore Apply eligibility. Terminal states with no pending operation need no heartbeat.
 
-`preview` requires `included` as a JSON boolean (`true`/`false`, not `1`/`0`).
-The helper returns optional `previewVisible` in review responses. A new analysis
-starts with preview enabled. A pending toggle is retransmitted until a newer
-response reports the requested visibility (or leaves review). The checkbox stays
-disabled and displays the last confirmed state while acknowledgment is pending.
-Visibility does not alter cut inclusion or Apply eligibility. The checkbox is enabled only
-for an idle review response that advertises this field. Closing the window does
-not cancel analysis or hide the overlay. Apply and cancellation clear it.
+Unknown jobs are ignored. A new view cannot adopt a global “latest” job. Saved-result recovery is an explicit action.
 
-## Settings previews
+## Settings updates
 
-Controls coalesces valid detection/output edits for 180 ms. A `recalculate`
-command contains `expectedRevision`, the native `view` UUID, a new `settingsEdit`
-UUID, an increasing per-view `settingsSequence`, typed `settings` and `output`,
-and the boolean `verifySettings`. Invalid partial input is kept locally with
-Apply disabled. Recalculation requires the existing job and its retained
-measurements, the original selected clip/project, and the unique view ID in the
-focused native Controls window. Hidden or stale editors in Final Cut's window
-list cannot stand in for that focused window.
-Numeric values use the same shortest Float decimal representation as Analyze's
-URL, so unchanged padding cannot gain a frame from JSON's Float-to-Double
-promotion. Host-induced duplicate editor-end events retain the current edit
-identity and cannot restart a completed check.
+A `recalculate` command includes `expectedRevision`, `view`, `settingsEdit`, increasing per-view `settingsSequence`, typed `settings`, `output`, and `verifySettings`. Workflow automatic updates also require `localPreview: true` and `automaticPreview: true`.
 
-The helper enters `recalculating`, publishes provisional cut rows immediately,
-and echoes `settingsEdit`, `settings`, `output`, and `provisional`. Apply,
-selection, and navigation stay disabled. Detection fields and output remain
-editable. Older or repeated edit sequences cannot replace the latest edit;
-the exact pending payload is retried until its edit UUID is acknowledged.
-Old responses cannot postpone an unacknowledged settings timeout.
+Invalid partial input stays local with Apply disabled. Older edit sequences cannot replace the latest edit. Responses echo the edit identity and settings; provisional rows do not enable selection, navigation, or Apply. Those actions wait for an acknowledged ready review.
 
-While a detection field is being edited, `verifySettings: false` requests only
-the preview. Host verification starts after Return or after editing ends, to
-avoid moving keyboard focus into Final Cut while the user types. It exports
-fresh XML, checks the project baseline, selected occurrence, controller
-settings, source media, and cut representability without rerendering audio.
-Rapid edits cancel an older check; its cleanup finishes before the latest check
-starts. Only the latest successful check returns to `review`. Failure or
-cancellation cannot enable Apply, and the final Apply checks still run.
+The Workflow frontend waits 250 ms after a valid edit before requesting an eligible local refresh. It reuses the last analyzed audio without another Share. Legacy Controls has a separate 180 ms coalescing path and can request host settings verification after editing ends. Both paths retain fresh Apply checks.
 
-A recreated view reconnects using the coordinator's current settings rather
-than the original Analyze values. A new Analyze is required after changing
-timeline content, source media, or audio processing. This retained-review path
-does not make unknown processing eligible for the repeat-analysis cache.
+Recalculation cannot capture changed audio processing or media. Use a new Analyze after those changes. Local settings refresh does not make an effect chain eligible for cross-Analyze measurement caching.
 
-## Navigation and verification
+## Navigation and result recovery
 
-`highlight` requires the exact current `cutID` and `canHighlight`; it moves the playhead to the range start after baseline verification, without changing inclusion. The transient `navigating` state blocks Apply, settings, and selection mutations until navigation finishes. Helpers without a navigation implementation leave the capability disabled.
+Navigation requires the current cut ID and revision. Workflow navigation also carries a fresh gesture and native view identity. The `navigating` state blocks conflicting actions until the move finishes.
 
-Optional `canRetryVerification` is true only for a failed/cancelled job with a pending imported result. `retryVerification` enters `verifying`, retains single-operation ownership, and invokes a verification-only operation. Duplicate requests while busy do not start another verification, and retry never invokes Apply or import. A later failure remains retryable. Existing job revisions stay monotonic when reopened from a saved result. Controls can adopt a saved verification receipt after restart using the explicit `silentsnip://verify` request.
+`canRetryVerification` is available only when a failed or cancelled request has a pending result. Retry enters `verifying` under the existing operation owner. It never calls Apply or imports again. Retransmissions from the preceding revision return status rather than starting another attempt.
 
-The plug-in includes `expectedRevision` in every verification retry. The helper
-accepts it only while that failed/cancelled revision is current. Once the attempt
-starts, retransmissions of the old request return the cached status, including
-after another failure; they cannot create a repeated verification loop. A newer
-response releases the pending button. A rejection because another review owns
-the coordinator also publishes a newer explanation. Retry restarts polling if a
-previous connection timed out. The helper's reliable in-process command path
-may omit `expectedRevision`.
+Saved-result recovery starts an explicit `silentsnip://verify` request. The worker validates the requesting view, matching artifacts, and library/project identity before checking the existing result. See [recovery](../docs/recovery.md).
 
-`verifying` and `navigating` are busy states; Controls disables detection fields and Apply for both. Settings recovery uses the exact selected imported occurrence's `silentsnip.setting.0`–`.3`, `silentsnip.saveSettings`, and `silentsnip.status` controls, followed by host re-export checks.
+## Legacy Controls reconnection
 
+A visible, unedited Audio Unit view without a request posts this bounded string to `local.silentsnip.review.reconnect.v1`:
 
-## Single-window reconnection
+```json
+{"version":1,"view":"UUID"}
+```
 
-On appearance, a view with no request publishes a bounded string envelope to
-`local.silentsnip.review.reconnect.v1`: `{"version":1,"view":"UUID"}`. It retries
-while visible and unedited. The view exposes that UUID in its Cancel button's
-accessibility identifier, `silentsnip.review.reconnect.UUID`.
+Its Cancel button exposes `silentsnip.review.reconnect.UUID` as an accessibility identifier. The worker checks the pinned project, original selected clip, focused Controls window, and exact identifier before replying to `local.silentsnip.review.connected.v1.UUID`.
 
-The helper checks the pinned project, original selected clip and focused Silent Snip
-Controls window, then locates the exact button identifier in that window. Only
-then does it send a reply to `local.silentsnip.review.connected.v1.UUID` containing
-`version`, `view`, `request`, four `settings` values and `output`. The recreated
-view restores those submitted values without rewriting AU document state,
-subscribes to the specific request and polls status. Apply remains disabled
-until a validated review arrives. Duplicate handshakes cannot reset an existing
-connection; edited views do not reconnect. There is no global latest-job adoption.
+The reply contains `version`, `view`, `request`, the four settings values, and `output`. The view restores submitted values without rewriting AU document state, subscribes to the request, and polls. Apply remains disabled until a valid review arrives. Duplicate handshakes cannot reset an existing connection, and edited views do not reconnect.
 
-Verify Existing Result uses `silentsnip://verify?view=UUID&result=ENCODED_FILE_URL`.
-The helper verifies the requesting native view before loading a local
-`Silent Snip.fcpxml` recovery receipt, connects the view to the saved request, and
-starts verification without importing again. Failures return a view-scoped
-error. A view that loses connection after Apply can recover status by returning
-to the original clip's Controls, or verify the saved result explicitly.
+Legacy saved-result recovery uses `silentsnip://verify?view=UUID&result=ENCODED_FILE_URL`. Failures are returned to that view; the recovery action does not import the result again.

@@ -53,6 +53,7 @@ venv/
 .LSOverride
 /.idea/
 /.vscode/
+/AGENTS.md
 *.swp
 *.swo
 *~

@@ -1,201 +1,96 @@
-# Silent Snip workflow
+# Using Silent Snip
 
-Updated November 7, 2026. The default interface is **Window → Extensions → Silent Snip**. Select one supported clip, Analyze, review, then explicitly Apply to a new cleaned project. You do not add Silent Snip Audio to the clip. Worker **69** / frontend **27** changes new output to editable source clips, preserving original media references and supported audio effects, volume and automation. The original project and source files stay unchanged. The installed pair passed package checks, scoped native removal/gap, effect-editing, Cancel and window-sizing checks, an independent 57-clip result audit, and final source/host preservation checks. See the [versioned status and limits](workflow-extension-prototype.md#worker-69--frontend-27-editable-audio-cuts-and-operation-stability).
+Silent Snip analyzes one selected clip, lets you review proposed cuts, and creates a cleaned copy of the project. The original project and source files stay unchanged.
 
-Worker **67** / frontend **25** removes the **Update Cuts** button. Eligible detection and output changes automatically refresh ranges from the last analyzed audio after a **250 ms pause**. This includes measurements of the last processed Final Cut render when one was used; it does not capture later changes to the audio or effects. Fresh Analyze and verified Apply remain explicit actions. Native typing checks on plain audio and Gate→Limiter fixtures passed without a new Share or Analyze request; see the [versioned checks and limits](workflow-extension-prototype.md#worker-67--frontend-25-automatic-retained-audio-range-updates).
+Complete [setup](setup.md) first. Keep Final Cut in front while Silent Snip operates its Share panels and project controls.
 
-Historical worker **55** / frontend **17** introduced **Update Cuts**, **Go to Cut**, and **Verify Existing Result…** and packaged an AU-free worker with the separate Workflow frontend. These three feature flows passed scoped native validation, including restart recovery and the installed AU-free worker. See the [versioned Workflow evidence](workflow-extension-prototype.md) for current status, and [timings and sound checks](workflow-throughput.md) for fixture-specific audio evidence. Historical Audio Unit, voice-over, and general-project results do not establish the new frontend's behavior, every plugin, or every timeline topology.
+## 1. Select a clip
 
-> **Advanced effect preservation:** Final Cut XML can omit private audio effect settings. For a static effect chain directly on one audio-only clip that fills the project, Silent Snip imports the cut geometry and copies the original effects onto the retained clips in Final Cut. Worker 79 uses this route for both Remove Silence and one-second gaps. Other effect layouts, component effects, and animated effects can stop the operation. See the [bug-sweep fixtures and verification](bug-sweep.md) and [the original effect preservation investigation](workflow-extension-prototype.md#native-audio-effect-preservation-correction).
+Open a project, select a clip with audio in the primary storyline, and choose **Window → Extensions → Silent Snip**. Click **Connect to Final Cut Pro** if shown. The top bar shows the selected clip's name. No Silent Snip effect is required.
 
-## 1. Install and prepare
+To analyze part of the clip, use Final Cut's Range Selection tool (**R**) to select a span within that one clip. Cut Review shows the analyzed span, and cuts stay inside it.
 
-Copy **Silent Snip.app** and **Silent Snip Workflow Prototype.app** into the same Applications folder and open both once. Follow [first-time setup](setup.md) for the worker's control-access grant, the frontend's Final Cut Automation connection, and the **Silent Snip** Share destination. Keep its action pointing to the worker **Silent Snip.app**. The worker runs in the background without a Dock or menu bar icon. Opening the Workflow extension starts it when needed; quitting Final Cut ends its session after cleanup.
+## 2. Set detection and output
 
-For source development, quit Final Cut and both Silent Snip apps and run `Scripts/build.sh --release`. It builds and registers the pair in place. Keep both registered bundles there, or copy both into Applications and point Share at the copied worker. Ad hoc worker rebuilds can require refreshing its existing control-access grant.
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Silence Threshold | −40 dBFS | Audio below this level in every channel counts as quiet. Move toward zero to include louder pauses. |
+| Minimum Silence | 0.5 s | Minimum removable pause after speech padding and frame alignment, before Target Pause shortening. |
+| Before Speech | 0.1 s | Quiet audio to keep immediately before speech resumes. |
+| After Speech | 0.1 s | Quiet audio to keep immediately after speech ends. |
 
-Share is part of the helper's implementation. The normal user interaction does not require manually exporting XML, choosing an export method, or sending a project to Silent Snip.
+Detection measures loudness in 0.01-second windows. It does not identify speech or breaths. Minimum Silence accepts 0.0001–10 seconds; very short values still depend on measurement and frame alignment.
 
-Final Cut's native Share interface remains visible. Silent Snip creates no covering or separate progress window. Keep Final Cut in front during host automation; analysis and file processing run in the background, but the Share, project-navigation, and import steps still use its interface.
+Choose an output mode:
 
-XML capture now always uses the Share exchange; the unused Export XML / Go to Folder / Save-dialog driver has been removed. The helper still starts and confirms the Silent Snip Share destination through Accessibility. Apple's documented exchange supplies output paths and delivery, but does not provide a command here to initiate sharing without host UI.
+- **Remove Silence** closes each included removal. Set **Target Pause** above 0 to retain some original room tone: a 0.4-second target shortens a qualifying two-second pause to roughly 0.4 seconds. Shorter pauses stay intact. Use 0 for standard removal.
+- **Replace with 1-Second Gaps** replaces each included range with an editable gap, rounded to the nearest project frame. This can lengthen a pause that was shorter than one second.
 
-Host actions are conditional: range clearing is skipped when the timeline is verified to have no range selection, export tabs already selected are left alone, and opening an already visible imported project skips Libraries navigation and the filmstrip switch. Timeline focus uses the direct Accessibility property first, with a verified menu fallback. Existing selected ranges still use the host's advertised Clear Selected Ranges shortcut (or its menu fallback), followed by verification. Project opening selects the exact browser item through Accessibility, with a hit-tested single-click fallback, verifies sole selection and browser focus, then invokes Clip → Open Clip. It confirms the requested timeline before exporting its XML for identity/content verification.
+Cuts snap inward to boundaries shared by video frames and audio samples. Padding and alignment can leave more silence than the target. For example, 29.97 fps with 48 kHz audio uses a five-frame cut grid.
 
-## 2. Select the audio clip
+Use **Save Settings** to store detection and output values for this project. Settings are saved separately for each library/project identity.
 
-Open a project and select the particular clip occurrence with audio in the primary storyline. Open **Window → Extensions → Silent Snip**. If shown, use **Connect to Final Cut Pro** to connect the frontend to the current project. No Silent Snip effect is required.
+## 3. Analyze audio
 
-The top bar shows the verified name of the selected timeline clip. To work on part of a clip, use Final Cut Pro's Range Selection tool (**R**) and select a span within one supported clip. Cut Review shows the analyzed time span. The review and its applied cuts stay inside that span.
+Click **Analyze Audio**. Silent Snip captures the project and checks the selected clip and media. It reads source audio for unprocessed clips and uses a checked Final Cut render when processing requires it.
 
-The supported target is one normal-speed direct asset clip with enabled audio and available source media. It can be audio-only or a camera clip with linked video/audio. Cuts trim the selected clip and its linked video together. Retained clips reference the original media and preserve their editable audio processing. Source trims and repeated uses of the same file are distinguished by the selected occurrence. Split audio/video edits, connected targets, compounds, multicam, and retiming still require additional support.
+Analysis proposes cuts; it does not apply them. If no usable silence is found, the review explains why and Apply stays disabled. **Cancel** stops an operation or discards a review.
 
-Other project content is checked for compatibility. Retimed or nested targets, ambiguous selections, disabled audio, unsupported transitions, nested connections, connected dialogue, conflicting lanes, and some timed automation/component trims can prevent output. An isolated analysis render does not remove these editing restrictions.
+Closing the extension or changing projects clears its active review. Reopen the extension and analyze again to edit.
 
-## 3. Set detection and output
+## 4. Review the cuts
 
-The four detection controls are in the Workflow window:
+Check the proposed start, end, and duration of each cut. The timeline preview uses green start boundaries and orange end boundaries, with numbers matching the list. These are preview overlays; the timeline has not been edited yet.
 
-| Setting | Default | Meaning |
-|---|---|---|
-| Silence Threshold | −40 dBFS | Windows below this level in every channel qualify as quiet. Raising it toward zero includes louder quiet material. |
-| Minimum Silence | 0.5 seconds | A pause qualifies when its removable portion reaches this length after padding and frame rounding, before any target-pause shortening. |
-| Before Speech | 0.1 seconds | Retain this much quiet audio immediately before speech resumes. |
-| After Speech | 0.1 seconds | Retain this much quiet audio immediately after speech ends. |
+| Action | Control |
+| --- | --- |
+| Keep or cut a pause | Toggle its checkbox, or press **Space** on the active row |
+| Move between rows | **Up / Down** while the list has focus |
+| Jump to a cut | **Go to Cut**, double-click its row, or press **Return** |
+| Select a group | **Shift-click** or **Shift–Up / Shift–Down**, then **Keep Selected / Cut Selected** |
+| Include or exclude all eligible cuts | **Select All / Deselect All** |
+| Narrow a removal | Use its **Start / End** steppers; **Reset Cut** restores the proposal |
+| Audition plain source audio | **Play Original / Play Proposed Cut** |
 
-Minimum Silence accepts 0.0001–10 seconds. Analysis measures audio in 0.01-second windows, and cuts snap inward to boundaries shared by project frames and audio samples. At 29.97 fps with 48 kHz audio, that grid is five video frames. With the default 0.1-second padding on each side, a quiet interval generally needs at least Minimum Silence plus 0.2 seconds, and inward alignment can require more.
+Audition includes a short amount of audio on each side of the cut and uses the same source level for both versions. It is available for plain source audio. Unavailable cuts explain their restriction and remain unchecked.
 
-Choose **Remove Silence** to close the selected pauses, or **Replace with 1-Second Gaps** to replace each selected pause with an editable gap. One second is rounded to the nearest project frame. Gap mode can lengthen a pause that was shorter than one second.
+### Change settings during review
 
-With **Remove Silence**, set **Target Pause** to retain original room tone. A target of 0.4 seconds trims the middle of a qualifying two-second pause and leaves roughly 0.4 seconds. Shorter pauses stay intact. Speech padding and inward grid rounding can leave a little more room tone. Use 0 for standard silence removal.
+Valid detection or output edits refresh eligible ranges after a 250 ms pause, using the last analyzed audio. Apply and other cut actions wait for the latest update. Typing, pressing Return, and saving settings do not start another audio export.
 
-Use **Save Settings** to persist the detection and output values for the current project. An already queued retained-audio update can finish after saving. Settings are keyed by library URL and project UID in the frontend's own store. Reopening the extension or returning to the original project loads its saved settings. Start a new analysis to create a review.
+Unchanged cuts keep their inclusion choices and boundary adjustments. When a kept pause splits or merges, the affected cuts stay unchecked and show **Review**.
 
-After analysis, a valid detection or output edit disables stale cut selection, navigation and Apply while eligible ranges refresh automatically after a **250 ms pause**. Incomplete or invalid input waits for a valid value. These updates reuse the last analyzed measurements and perform no new export. Typing, Return, leaving a field, **Save Settings** and status polling do not start a fresh Analyze or Apply. If retained updates are unavailable for the analyzed layout, click **Analyze Again** after changing settings. Changes to volume, processing effects, source media or timeline content always require a fresh analysis using **Analyze Audio** or **Analyze Again**.
+Use **Analyze Again** after changing volume, effects, presets, bypass, source media, or timeline content. Also use it when the analyzed layout cannot refresh ranges from retained audio.
 
-## 4. Analyze
+## 5. Apply cuts
 
-Click **Analyze Audio**. It does not apply cuts. The button disables immediately while the request connects; repeated clicks cannot cancel and replace a pending analysis. A failed launch or response timeout releases it for retry.
+Click **Apply Cuts** when you have at least one eligible cut selected. Silent Snip:
 
-The main window has a plain, stationary body. Only analyzed timestamp rows scroll; settings, Start/End/Duration headings, review totals and primary actions stay in place. The list fills the remaining height, and the declared minimum content size is **460 × 540** to keep controls visible. Expanded long messages show up to three selectable lines while retaining the full value and tooltip. The helper restores the outer window to **615 × 736 points**; this requires its control-access grant. Worker69/frontend27 corrected a native Window → Zoom operation back to that size. This observed correction does not disable Final Cut's resize handles or Zoom.
+1. Rechecks the project, source media, settings, and reviewed cuts.
+2. Saves recovery XML and the edit report.
+3. Creates one uniquely named cleaned project in the original event and library.
+4. Opens that project and checks its timeline, source references, and supported effect state.
 
-The background worker owns the operation while the frontend displays progress and review. Closing the extension or changing the active project invalidates the view's review; reopening loads saved project settings and requires a fresh analysis with **Analyze Audio**. Use **Cancel** to discard a review or stop an operation. Worker69/frontend27 retries the same request-bound Cancel until a terminal acknowledgment, so a lost command no longer leaves the review stuck and cannot target a later request. A stopped or interrupted import can be checked with **Verify Existing Result**. Another project cannot adopt a global latest review.
+The cleaned project contains the full supported edit, with retained source clips still trimmable. Linked camera audio and video receive the same cuts; compatible surrounding items follow the edit. Supported audio effects remain editable.
 
-The worker captures fresh project XML through Share and verifies the SDK-reported library/project identity and selected occurrence before accepting audio. It selects an analysis route:
+Listen around the joins and continue editing in the cleaned project. Delays, reverbs, and other effects with memory can react differently to the new boundaries even when their settings are preserved.
 
-- **Unprocessed clip:** decode the original source audio over the selected source interval.
-- **Processed clip filling the entire project:** when the XML proves that this is the only timeline item and every enabled audio component belongs to Dialogue, the app renders directly in the original project. The render’s fresh XML must match project identity, effects, media, timing, and full scope. No temporary project is imported or deleted.
-- **Mixed project:** direct primary clips and gaps can use a verified Dialogue render, with simple direct connected music and B-roll retained in the edit. Small edits with no earlier or overlapping Dialogue use a full-project render when extra duration is at most 30 seconds and no longer than the target; the app checks the whole duration and measures only the selected interval. Longer edits and clips with preceding Dialogue use an exact native selected range, verified against the clip's edges and duration before Share. The full-project XML still accompanies the selected-range audio. Other overlapping Dialogue prevents this direct route. Explicit Music/Effects export files are excluded through the verified native role layout.
-- **Other processed clips with reconstructable effect state:** the app creates an isolated analysis project referencing the original media. Every rendering audio filter is rejected before XML isolation because exported payloads do not prove complete native settings. It retains the target's audio processing, removes the passthrough Silent Snip controller, and excludes neighboring timeline items. It imports that project and requests rendered audio plus XML in one Share exchange. Before using the audio, it verifies that the delivered XML matches the intended isolated project, including timing, media, and rendering effects, and binds Final Cut's newly assigned project UUID. It then returns to and rechecks the original project. The preceding XML-only verification Share was removed because the render already delivers the project XML. It does not silently substitute source audio when rendering or verification fails.
+If Apply is interrupted, check for an existing result before trying again. Use [result recovery](recovery.md) to finish its checks without importing another project.
 
-An eligible direct render can leave a routing hint for a future **Analyze Audio** or **Analyze Again**, including after restarting the helper. Silent Snip keeps up to eight recent routes. A new request consumes only the hint for its exact library, project, and clip selection, leaving the other routes available. A matching hint lets Final Cut deliver fresh audio and project XML in one Share exchange. Silent Snip still pins the sources before Share, hashes them during rendering, and checks their mutation stamps and the scope in the delivered XML before accepting the audio. If no usable hint is available before Share, Silent Snip captures XML first. A failure after dispatch cleans up the delivered render without repeating the failed Share. **Clear Cached Audio** removes the routing hints.
+## Supported clips
 
-Every Analyze captures fresh project XML and checks source contents. For effects that cannot safely reuse measurements, source hashing overlaps host rendering and finishes before the review is published. When the project, source contents, selected occurrence, host session, and complete supported processing state match the process-local cache, Silent Snip recalculates cuts from retained measurements using the new threshold, minimum silence, and padding. A cache hit skips decoding and the isolated render. Preset names, omitted settings, partial native parameter lists, and unknown effects are insufficient evidence and force the normal route. See [cache limits and timing reports](analysis-speed.md).
+The target must be one normal-speed direct media clip in the primary storyline, with enabled audio and available source media. Audio-only clips and linked camera audio/video are supported. Selecting a range limits cuts within that clip; it does not expand the supported layouts.
 
-The isolated-render route passed fresh processed removal and gap runs with Noise Gate and Limiter; see the milestone evidence. The uniquely named analysis project imports into the original event. After verified rendering and return to the original project, the helper removes only its exact generated project through Final Cut. Unverified or interrupted cleanup leaves the project in place and records `Cleanup-Status.txt` in the analysis job folder.
+Retimed, compound, multicam, or connected targets; split audio/video edits; unsupported transitions; component trims; nested connections; and cuts crossing fades can prevent output. Simple connected music or B-roll can follow supported cuts, but connected dialogue and conflicting lanes can block the edit.
 
-An ineligible mixed-project processed Analyze cache miss requires three Share exchanges (original XML, isolated audio plus XML, and restored-original XML), down from four. Apply captures fresh processed audio and project XML, with a separate imported-result verification exchange. A locally updated processed preview can also need its selected-clip audio recheck. These are source-level operation counts, not measured live speedups. During analysis the captured XML bytes are reused; the missing-callback fallback parses only changed XML while retaining its existing three-second stability requirement. Audio and source-content checks remain in place.
+### Clips with audio effects
 
-Simple direct connected music and B-roll follow the same project-time cuts as the target. The cleaned copy keeps the surrounding visual edit and supported source-backed audio, including editable gains, effect chains, source-time curves and annotations. Gap output leaves the corresponding intervals empty. Connected dialogue and fades remain protected; nested/retimed connections, overlapping lane conflicts, and unsupported trims are rejected before Apply. See [versioned verification scope and timing](workflow-throughput.md).
+Final Cut XML can omit private effect settings. To retain those settings, Silent Snip uses native Copy and effects-only Paste Attributes on a narrower layout:
 
-### Using other audio plugins
+- One enabled audio-only clip fills the whole project, with no clip fades.
+- Static effects are applied directly to that clip.
+- The audio is eligible for the original project's Dialogue render.
 
-Apply your Noise Gate, Compressor, EQ, Limiter, or third-party Audio Unit to the selected clip, then click **Analyze Audio** in the Workflow window. Silent Snip measures Final Cut's processed output from the complete effect chain without adding its own effect. Processing order matters: Final Cut renders the existing chain in that order.
+Both removal and one-second-gap output use this route. Gaps are excluded from the effects transfer. Animated effects, component-level effects, and effects on broader project layouts can block Apply, even when analysis succeeds.
 
-Apply captures fresh native processed sound to verify the current effects and reviewed candidates. The cleaned project uses the original source media and retains editable effects on the supported layout. You can adjust effects in the cleaned project as after manual clip cuts.
-
-A delay, reverb, compressor or other stateful effect can react differently at the new clip boundaries, just as after manual cuts. Preserving source bytes and effect settings therefore does not promise exact equality to slices from the uncut project's continuous render. Historical workers40–68 used durable processed audio to preserve those rendered intervals instead; those saved projects still require their `Processed Audio/<request UUID>/Processed-Audio.wav` media and retain compatible Retry Verification.
-
-A noise gate can make background noise qualify as silence; compression, makeup gain, or limiting can change what falls below the detection threshold. Set those effects first and analyze again after changing their settings, order, presets, or bypass state. Apply verifies the original project, current processing, source contents, reviewed cuts and imported project before reporting completion. Strict fingerprints include exported effect data and source references. They cannot establish settings omitted by Final Cut; the native route preserves those by retaining and cutting the host’s actual clip instances.
-
-Final Cut renders supported effect chains; each installed plugin and routing setup still needs to be renderable and verifiable in the host. This does not certify every plugin or timeline. Supported source-time automation remains attached to retained clips. A proposed cut intersecting a protected fade is unavailable. Empty/invalid animations and trimmed audio components still prevent Apply. Retimed clips, compound clips, and external sidechain routing remain outside the verified scope. New cut boundaries use the shared video/audio grid. Normal-speed direct camera clips are supported with linked video cuts; split audio/video edits and retiming remain unsupported.
-
-Detection measures RMS loudness in 10 ms windows. A window is quiet only when every channel is below the threshold. Adjacent quiet windows form candidate pauses. The detector retains before/after padding, rounds removal boundaries inward to project frames, and applies Minimum Silence to the resulting removal. Entirely silent targets are not automatically deleted.
-
-This is level detection, not a speech or breath classifier. Quiet breaths can qualify. RMS values can differ from Final Cut's peak meter readings.
-
-The helper checks whether the proposed edits can be represented in an editable output project before enabling Apply. The window displays operation status, measured decoding progress when available, and elapsed time; host operations can show indeterminate progress.
-
-## 5. Review
-
-Verified cut rows may arrive with “Preview ready” while temporary-project cleanup finishes. Apply, cut selection, and navigation remain disabled until the operation returns to review. Cancellation discards this early result. Each job records time to preview separately from completion time; restoring the Workflow window can still delay when the user sees it.
-
-Read the summary and proposed start/end times and durations. Ineligible ranges are marked unavailable. Included cuts have thin rounded dotted boundaries: green at the start and orange at the end, with small inward brackets and faint shading across the removal range. Compact number badges match the review rows; crowded badges are omitted at dense zoom levels while the boundaries remain. These are helper overlays, not native markers or edits.
-
-Unchanged status polls keep the connection alive without rebuilding the cut list.
-
-Closing the Workflow window invalidates its review and clears the preview. Applying, cancelling, replacing the review, or editing settings also clears its old preview. The overlay stays above the verified project during hover redraws. Switching to another app immediately hides it while retaining the review; returning to Final Cut restores it from fresh geometry. Other normal Final Cut windows restore project-relative ordering, and floating panels and menus remain above it. Geometry that cannot be verified hides the overlay.
-
-Click a cut row to make it active. Use **Go to Cut**, double-click the row, or press **Return** while the list has focus to move to its start. **Up** and **Down** move between rows, and **Space** toggles the active cut. The extension moves the playhead through Final Cut’s timeline SDK on supported pairs. The worker verifies the playhead and selected occurrence. [Apple’s timeline SDK guide](https://developer.apple.com/documentation/professional-video-applications/interacting-with-the-final-cut-pro-timeline)
-
-Use the checkboxes or **Select All / Deselect All** to choose cuts. Shift-click a row or use **Shift–Up / Shift–Down** to select a consecutive group, then choose **Keep Selected** or **Cut Selected**. Unavailable cuts explain their restrictions and stay unchecked. The worker acknowledges changes before enabling Apply.
-
-For plain source audio, use **Play Original** and **Play Proposed Cut** to hear the active pause with about 350 ms of context on each side, up to the clip edges. Both versions play at the same source level. Use the **Start** and **End** steppers to narrow an eligible cut by one edit-grid interval at a time. **Reset Cut** restores its original proposal.
-
-Valid detection or output edits automatically recalculate from retained measurements for source audio and eligible verified renders. Unchanged cuts keep their choices and boundary adjustments. If a kept pause changes, the overlapping new cuts stay unchecked and show **Review**. Use **Analyze Again** after changing settings on an isolated-render or unsupported layout.
-
-Automatic range updates perform no Share exchange and do not activate Final Cut Pro when another app is in front. They check the visible settings snapshot, current project and selected occurrence before accepting a result. Apply later obtains fresh project/audio evidence and requires the reviewed cut candidates to match. Automatic range updates do not replace Analyze after timeline, source media, volume, processing effects, presets or bypass changes.
-
-Apply requires a valid review, at least one eligible included cut, unchanged submitted settings, and a plan that has not already been consumed. Changing timeline content, processing effects, or source media requires fresh analysis; Apply checks for stale project state before generating output.
-
-If **Go to Cut** detects a changed project, Silent Snip discards the stale review and preview and requires a fresh analysis. A recoverable navigation error keeps the review. Failed or cancelled timecode entry attempts bounded cleanup only while Silent Snip still owns the field, project, and keyboard focus.
-
-## 6. Apply Cuts
-
-Click the separate **Apply Cuts** button. The helper:
-
-1. Captures the original project again and compares its identity, timeline, effects, frame rate, duration, and source media with the analyzed baseline. Current processed sound is rendered continuously, including the project's enabled audio roles. For one unprocessed audio-only clip spanning the project, the Workflow extension can stage the edit from the Analyze capture and skip the native WAV render. The full source content check still runs before a fresh original-project XML export. That export must match the staged input, allowing regenerated original-media bookmark text, before the helper sends the cleaned project.
-2. Builds the selected cuts in one FCPXML transformation using the chosen output mode. For a supported native effect chain, Silent Snip first imports the cut geometry and verifies the result's project identity, timeline and source references. It then transfers the original effects to the retained audio clips in one Paste Attributes operation. In gap mode the gaps stay outside the effects selection. The journal records the transfer, and the worker verifies the saved result.
-3. Saves recovery XML, edited XML, the edit report with retained source intervals, and exact detection settings in a new result folder.
-4. Sends exactly one uniquely named cleaned project to the original event and library. The name contains the clip name and a stable request suffix. No **Replace** or **Keep Both** decision is authorized for a new cleaned-project result.
-5. Opens the new project, re-exports it, and verifies the intended event/library, host project identity, timeline, media references, audio effects and source fingerprints. Original media are checked before completion.
-
-The guarded direct Accessibility Share route introduced in worker68 remains eligible for original-project Apply exchanges when the current Workflow project, selection, focus and native controls are verified. Generated-result verification keeps the ordinary production Share route. Worker69's source-backed output needs no new durable mix. Final full source validation still completes before the last original-project XML capture and single import. Fresh effects rendering, reviewed-candidate checks and strict final verification remain. See the [worker71 native-effect correction, timing and limits](workflow-extension-prototype.md#native-audio-effect-preservation-correction); worker68's separate hash-composition and timing results remain [historical](workflow-extension-prototype.md#worker-68-guarded-apply-dispatch-and-phase-local-source-validation).
-
-Historical worker53 placed processed PCM clips directly in the primary storyline for audio-only results, with real primary gaps in one-second-gap mode. That route required no video occurrences, including disabled or connected video; video projects kept their existing primary storyline. Its frontend-8 native removal and gap fixtures verified two direct primary PCM clips with zero connected PCM; gap mode added one real one-second gap. Exact retained PCM, positive-zero gap samples, notes/marker placement, and fresh post-Apply original/source checks passed for those saved results. These proofs do not apply to worker69's new editable-cut output. See [worker-53 evidence](workflow-extension-prototype.md#worker-53-audio-only-pcm-in-the-primary-storyline).
-
-Import delivery is asynchronous. The helper waits for the uniquely named result to become available. It records dialogs in `Import-Dialogs.json`. Only an identified completed-import warning is acknowledged automatically for a new cleaned-project result; replacement and unrecognized dialogs remain open. Retry Verification never imports again or accepts a replacement prompt. Historical pending replacement receipts retain their separately scoped verification rules.
-
-The original project and source media remain unchanged. Each new analysis can create a separately named result project in the original event; retrying verification never creates another project. Final Cut assigns a new internal project identity. The pre-Apply project is also saved as `Before-Cuts.fcpxml` on disk. Retained source clips remain trimmable in the cleaned timeline with their independently editable audio effects. Surrounding visual content and supported connections remain in the cleaned copy.
-
-**September 22 validation:** manual host XML replacement probes in this checkout’s required integration library kept one project across repeated replacements. This establishes the host’s name-based replacement behavior, not an automatic Analyze/Apply run of the updated helper. See [replacement evidence and limitations](xml-replacement.md).
-
-New cleaned clips keep their supported processing effects editable. A legacy Silent Snip detector already present in the original remains part of that original; the Workflow route does not add or require one. Exact submitted detection settings are saved in `Analysis-Settings.json`; retained source intervals are saved in `Edit-Report.json`. Older processed-audio results keep their durable-media provenance and verification. Older saved results that include the detector retain their separate `controllerSettingsPreserved` and settings-recovery checks.
-
-## 7. Continue editing or recover
-
-Listen around cut boundaries and continue editing in the new cleaned project. Open the unchanged original project to return to the pre-Apply edit. The saved `Before-Cuts.fcpxml` is an additional recovery copy with a distinct recovery name and identity. Recovery history stays in the result folders until explicitly imported.
-
-Result artifacts live under `~/Library/Application Support/Silent Snip/Results/<request UUID>/`:
-
-| Artifact | Purpose |
-|---|---|
-| `Silent Snip.fcpxml` | Generated edited project. |
-| `Before-Cuts.fcpxml` | Separately named recovery project referencing existing source media. |
-| `Edit-Report.json` | Generated edits and retained source intervals. Historical processed-audio results also include durable-media provenance, PCM/format hashes, identity and scope. |
-| `Analysis-Settings.json` | Exact detection settings used. |
-| `Import-Status.txt` | Whether import was requested or verification completed. |
-| `Import-Dialogs.json` | Observed import dialogs and warnings, when present. |
-| `Verification-*.fcpxmld` | Host re-exports for verification and recovery; older runs used `Imported.fcpxmld`. |
-| `Verification-Receipt.json` | Saved expected-XML hash, request settings, and bound host project identity for resuming verification. |
-| `Import-Verification.json` | Comparison report, when comparison is reached. |
-| `Verification-Share-Timing-*.json` | Detailed timing for each read-only result-verification Share exchange. |
-| `Result-Verification-Timing-*.json` | Standalone Retry Verification timing; Apply uses its parent timer instead. |
-
-Apply timing lives separately in `Temporary/<request UUID>/Apply-Timing.json`. Worker68 adds `verification.*` details and counters there so result lookup, Share, XML comparison and source validation can be distinguished. Concurrent validation/capture and nested detail timings overlap; do not sum them as if they were sequential stages.
-
-Worker69's new editable results reference the original source media; keep those files available when archiving or moving the edit. Historical processed-audio projects also reference `Processed Audio/<request UUID>/Processed-Audio.wav` beside `Results`. Preserve those older durable files: moving or deleting them without relinking can make their cleaned audio unavailable. Uninstalling the app, clearing disposable caches, and `Scripts/uninstall-local.sh --remove-data` keep this durable media. Manual deletion is appropriate only after it has been archived or relinked and no remaining project depends on that location.
-
-If Apply stops before delivery, no result import was requested. If delivery was attempted but verification fails or is interrupted, the cleaned project may already exist: check it before importing again. The original project stays unchanged. Lost Apply messages are retried using the same job identity and cannot apply a consumed plan twice. After 15 seconds without an accepted response, the window disables the old review and permits fresh Analyze; first check for the existing result. A running helper operation still blocks a new analysis until it finishes. Existing result folders are not overwritten.
-
-The worker retains operation progress independently of the frontend. The connected view polls its latest revision, rejects stale responses, and disables a timed-out review. Reopening the Workflow window requires a fresh analysis for editing; saved-result recovery is separate and cannot turn an old plan into an applicable review.
-
-After an import or verification failure, use **Retry Verification** when offered. It opens the existing result, exports it again, and compares its timeline and media; it never imports another project. A lost retry message can be resent safely with its original revision.
-
-After restarting the helper or frontend, open the original project **or its existing cleaned result**, open **Window → Extensions → Silent Snip**, choose **Verify Existing Result**, and select `Silent Snip.fcpxml` from the saved result folder. No selected clip or Silent Snip detector is required for this recovery action. The worker verifies the fresh native gesture, current library/project identity, matching saved artifacts, and a fresh XML capture before navigating to the saved result. Once a host result identity is bound, later comparisons must match it and the complete expected timeline. Recovery does not import, apply cuts, or restore an old review. A recoverable failure offers **Retry Verification**.
-
-Older result adoption requires matching saved artifacts; altered or mismatched files are rejected. The worker keeps at most 24 pending receipt locations in memory, while older results remain on disk and can be chosen again. For historical results containing detector instances, the retained settings-recovery code writes only to exact verified imported occurrences and re-exports to check host retention. It is compatibility behavior, separate from per-project Workflow settings. See the [legacy effect guide](../AudioPlugin/README.md) for its retired Controls interface.
-
-## 8. Verification boundary
-
-Historical evidence establishes editable XML cut structure, source interval preservation, and selected earlier button/native-edit flows. It also records Final Cut dropping Silent Snip settings on XML import. Those early findings alone do not establish a later build’s automatic analysis/import verification; versioned native results are recorded separately below and in the Workflow frontend report.
-
-Historical September 17 Analyze follow-up (superseded two-window design): after stopping stale helpers, the six-second generated fixture completed automatic processed-audio analysis, render/original verification, and temporary-project cleanup. Its recreated Controls view lost the review, prompting the now-removed helper-owned window. The new window passed focused tests and a subsequent live Analyze completed after restarting the helper to recognize the permission already granted. The helper window visibly showed one selected 1.933-second cut, with selection, preview, and Apply enabled. No permission setting or binary changed during that restart. No Apply was tested. Evidence and limitations: `build/AnalyzeVisibilityVerification/Notes.md`. Any future Final Cut integration test must use a small disposable project in this workspace's existing **Cutdown Integration.fcpbundle**, reference generated source media in place, and avoid copied, optimized, or proxy media.
-
-Historical build 47 passed Analyze → review → Apply on the five-minute linked-camera Gate → Limiter fixture in the required library, without a manual verification retry. It retained the same 60 cuts, passed strict project/source verification with one completed result verification capture, and matched all 9,192,000 retained stereo frames against the captured native 24-bit/48 kHz mix. Helper processing took 28.93 seconds on this 652 MB camera source; build 46 took 34.39 seconds on the same fixture. These individual runs do not establish a general speedup. The three-second complete-flow target remains unmet. See [current timing and sound evidence](workflow-throughput.md#build-47-guard-apply-source-validation-and-new-processed-media).
-
-That build also passed a separate one-minute Gate → Limiter → AUDelay fixture with connected Music and custom Room Tone in one-second-gap mode. Strict project/source verification and exact native PCM comparison passed for all 2,795,200 retained stereo frames and 528,000 inserted positive-zero frames. This fixture took 32.04 seconds of helper processing and does not certify every plugin or project layout.
-
-## Manual snapshot review update
-
-Worker 55 / frontend 17 exposes the retained-measurement update in the Workflow window. It preserves the bound project identity and uses an explicit native gesture. The source/direct-render eligibility and fresh Apply validation described above remain; scoped native validation of these controls is recorded in the [current report](workflow-extension-prototype.md).
-
-Historical build 36 introduced explicit **Update Cuts** for source-audio and verified direct-render clips. That Audio Unit flow used retained 10 ms RMS measurements and the detector; typing, Return, blur, Save, and status polling never start it. **Analyze Audio** always performs a fresh project/audio analysis, subject to the verified cache reuse described above. Changing clip volume, processing effects, or source media requires that fresh analysis. Dirty previews hide their old timeline overlay and cannot authorize Apply. Closing Controls with an unsubmitted draft requires a fresh audio analysis on reopening.
-
-For a locally updated processed preview, Apply obtains current processed audio and full-project XML together, checks the original project/selection/source contents, reruns detection using the reviewed settings, and requires the same candidate ranges and protection states. A mismatch stops before project creation/import and requires Analyze Audio again. User include/exclude choices remain attached to matching reviewed ranges. Worker69 then creates source-backed editable cuts and strictly verifies the imported effects and source references. Disposable delivery WAVs are evidence for those checks, not replacement audio in the new cleaned project.
-
-Go to Cut uses the retained analysis timecodes with current project, selection, and boundary checks. It moves only the playhead and performs no Share exchange. Apply verifies full project state and original sources; historical processed-audio results additionally retain their durable-media checks.
-
-The build-36 native Analyze → Update Cuts → Apply tests passed for a sole linked-camera target and a target inside a larger edit, both with Noise Gate and Limiter. Those earlier results matched processed-audio hashes, reviewed ranges, imported fingerprints, editable effects, and source contents. Changing the target volume after review stopped Apply before project creation/import; restoring volume and explicitly analyzing again recovered successfully. Go to Cut reached two exact nonzero timecodes without Share and restored the original selected clip. All live tests used disposable projects in the required workspace library. See [historical results](general-project-performance.md#manual-review-without-repeated-share) and [current sound-preservation checks](workflow-throughput.md).
-
-For that build-36 milestone, the Swift suite (471 tests, one existing benchmark skip), Controls harness (48 groups), and passthrough audio harness (60 cases) passed. The measured local-update gain concerns retained-audio preview work; it does not establish faster initial renders, universal project support, or a sonic guarantee for arbitrary third-party effects. Versioned output behavior and native sound comparisons are recorded in [workflow throughput](workflow-throughput.md).
+Keep the original native project and media. Recovery XML alone cannot restore effect settings that Final Cut leaves out of its exports.
